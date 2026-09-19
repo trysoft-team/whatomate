@@ -22,6 +22,7 @@ services:
       LD_LIBRARY_PATH: /usr/local/lib
     volumes:
       - ./uploads:/app/uploads:rw
+      - ./audio:/app/audio:rw
       - ./config.toml:/app/config.toml:ro
       - ./piper-models:/opt/piper/custom:ro
     command: ["server", "-migrate", "-config", "/app/config.toml"]

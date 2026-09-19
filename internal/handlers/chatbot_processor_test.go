@@ -740,6 +740,71 @@ func TestMatchFlowTrigger_Match(t *testing.T) {
 	assert.Nil(t, noMatch)
 }
 
+func TestResolveInboundChatbotFlow_KeywordTakesPriority(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+
+	keywordFlow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "Keyword Flow",
+		TriggerKeywords: models.StringArray{"order"},
+		IsEnabled:       true,
+	}
+	defaultFlow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "Default Flow",
+		IsEnabled:       true,
+	}
+	require.NoError(t, app.DB.Create(keywordFlow).Error)
+	require.NoError(t, app.DB.Create(defaultFlow).Error)
+	account.DefaultChatbotFlowID = &defaultFlow.ID
+
+	matched := app.resolveInboundChatbotFlow(account, "I want to order")
+	require.NotNil(t, matched)
+	assert.Equal(t, keywordFlow.ID, matched.ID)
+}
+
+func TestResolveInboundChatbotFlow_UsesAccountDefault(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+
+	defaultFlow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "Default Flow",
+		IsEnabled:       true,
+	}
+	require.NoError(t, app.DB.Create(defaultFlow).Error)
+	account.DefaultChatbotFlowID = &defaultFlow.ID
+
+	matched := app.resolveInboundChatbotFlow(account, "hello there")
+	require.NotNil(t, matched)
+	assert.Equal(t, defaultFlow.ID, matched.ID)
+}
+
+func TestDefaultChatbotFlowForAccount_SkipsDisabled(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+
+	disabledFlow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "Disabled Default",
+		IsEnabled:       false,
+	}
+	require.NoError(t, app.DB.Create(disabledFlow).Error)
+	require.NoError(t, app.DB.Model(disabledFlow).Update("is_enabled", false).Error)
+	account.DefaultChatbotFlowID = &disabledFlow.ID
+
+	assert.Nil(t, app.defaultChatbotFlowForAccount(account))
+}
+
 // =============================================================================
 // evaluateExpression (package-level, not on App)
 // =============================================================================

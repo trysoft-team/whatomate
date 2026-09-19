@@ -272,6 +272,22 @@ func (a *App) requireAuth(r *fastglue.Request, resource, action string) (orgID, 
 	return orgID, userID, nil
 }
 
+// requireSuperAdmin extracts the organization ID and user ID and verifies the
+// caller is a super admin. On failure it writes 401 or 403 and returns
+// errEnvelopeSent, so callers should `return nil` early.
+func (a *App) requireSuperAdmin(r *fastglue.Request) (orgID, userID uuid.UUID, err error) {
+	orgID, userID, err = a.getOrgAndUserID(r)
+	if err != nil {
+		_ = r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+		return uuid.Nil, uuid.Nil, errEnvelopeSent
+	}
+	if !a.IsSuperAdmin(userID) {
+		_ = r.SendErrorEnvelope(fasthttp.StatusForbidden, "Insufficient permissions", nil, "")
+		return uuid.Nil, uuid.Nil, errEnvelopeSent
+	}
+	return orgID, userID, nil
+}
+
 // decodeRequest decodes a JSON request body into the provided struct.
 // Returns nil on success, otherwise sends a 400 error envelope and returns errEnvelopeSent.
 func (a *App) decodeRequest(r *fastglue.Request, v any) error {

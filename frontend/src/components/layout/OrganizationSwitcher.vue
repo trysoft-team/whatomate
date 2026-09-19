@@ -26,7 +26,7 @@ const organizationsStore = useOrganizationsStore()
 const authStore = useAuthStore()
 
 const isSuperAdmin = computed(() => authStore.user?.is_super_admin || false)
-const canCreateOrg = computed(() => authStore.hasPermission('organizations', 'write'))
+const canCreateOrg = computed(() => isSuperAdmin.value)
 
 const shouldShowSwitcher = computed(() =>
   isSuperAdmin.value || organizationsStore.isMultiOrg

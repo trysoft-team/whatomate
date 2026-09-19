@@ -321,7 +321,7 @@ App-level Embedded Signup keys (`app_id`, `app_secret`, `config_id`, `webhook_ve
    | Webhook Verify Token | no | An additional accepted verify token. `GET /api/webhook` checks the global `whatsapp.webhook_verify_token` first, then any account's token. |
    | API Version | no | Per-account override of `whatsapp.api_version`. |
 
-   Accounts also carry the toggles `is_default_incoming`, `is_default_outgoing`, `auto_read_receipt` and `business_calling_enabled`.
+   Accounts also carry the toggles `is_default_incoming`, `is_default_outgoing`, `auto_read_receipt` and `business_calling_enabled`, plus an optional `default_chatbot_flow_id` used when an inbound message does not match another flow's trigger keywords.
 
 <Aside type="caution">
   Access tokens are encrypted at rest using `app.encryption_key`. If you haven't set that, tokens are stored in plaintext.

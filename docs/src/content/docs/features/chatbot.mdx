@@ -31,7 +31,7 @@ Configure global chatbot behavior including greeting messages, fallback messages
 The greeting message is automatically sent to new contacts when they first message your business (or after the session timeout expires). You can optionally add interactive buttons (up to 10) to guide users to common actions.
 
 ### Fallback Message
-When no keyword rules, AI contexts, or conversation flows match an incoming message, the fallback message is sent. Like the greeting message, you can add interactive buttons to help users navigate.
+When no keyword rules, AI contexts, conversation flows, or the account's default chat flow match an incoming message, the fallback message is sent. Like the greeting message, you can add interactive buttons to help users navigate.
 
 ### Interactive Buttons
 Both greeting and fallback messages support WhatsApp interactive buttons:
@@ -179,6 +179,8 @@ AI Contexts allow you to:
 ![Conversation Flows](/whatomate/images/07-conversation-flows.png)
 
 Design multi-step conversation flows with branching logic to guide customers through complex interactions.
+
+Each WhatsApp account can pick a **default chat flow** on the account details page. Keyword-triggered flows still take priority; the default starts for any other inbound message once the chatbot is enabled.
 
 ### Flow Builder
 

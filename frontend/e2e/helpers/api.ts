@@ -103,7 +103,7 @@ export class ApiHelper {
     return { user: result.data.user }
   }
 
-  // Create a new organization (requires organizations:write permission)
+  // Create a new organization (super admin only)
   async createOrganization(name: string): Promise<Organization> {
     const response = await this.request.post(`${BASE_URL}/api/organizations`, {
       headers: this.csrfHeaders,

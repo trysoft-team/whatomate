@@ -11,7 +11,7 @@ Whatomate is multi-tenant — each organization has its own isolated data (conta
 
 ## List Organizations
 
-Retrieve all organizations. Requires super admin or `organizations:read` permission.
+Retrieve all organizations. Super admin only.
 
 ```bash
 GET /api/organizations
@@ -28,6 +28,7 @@ GET /api/organizations
         "id": "uuid",
         "name": "Acme Corp",
         "slug": "acme-corp-a1b2c3d4",
+        "member_count": 3,
         "created_at": "2024-01-01T00:00:00Z"
       }
     ]
@@ -52,6 +53,7 @@ GET /api/organizations/current
     "id": "uuid",
     "name": "Acme Corp",
     "slug": "acme-corp-a1b2c3d4",
+    "member_count": 3,
     "created_at": "2024-01-01T00:00:00Z"
   }
 }
@@ -66,7 +68,7 @@ POST /api/organizations
 ```
 
 <Aside type="note">
-  Requires `organizations:write` permission.
+  Super admin only.
 </Aside>
 
 ### Request Body
@@ -90,7 +92,64 @@ POST /api/organizations
     "id": "uuid",
     "name": "New Organization",
     "slug": "new-organization-a1b2c3d4",
+    "member_count": 1,
     "created_at": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+## Update Organization
+
+Rename an organization. Super admin only.
+
+```bash
+PUT /api/organizations/{id}
+```
+
+### Request Body
+
+```json
+{
+  "name": "Renamed Organization"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | New organization name |
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "uuid",
+    "name": "Renamed Organization",
+    "slug": "acme-corp-a1b2c3d4",
+    "member_count": 3,
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+## Delete Organization
+
+Soft-delete an organization and its memberships. Super admin only.
+
+You cannot delete the organization you are currently using, the last remaining organization, or an organization whose users have no other membership.
+
+```bash
+DELETE /api/organizations/{id}
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Organization deleted successfully"
   }
 }
 ```

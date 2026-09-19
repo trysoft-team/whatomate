@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
-import { api } from '@/services/api'
+import { api, chatbotService } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { getErrorMessage } from '@/lib/api-utils'
 import { getQualityBadgeClass, getQualityRatingLabel, getVerificationBadgeClass, getVerificationStatusLabel, formatLimitTier } from '@/lib/utils'
@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { IconButton } from '@/components/shared'
 import {
   AlertDialog,
@@ -58,6 +59,8 @@ interface WhatsAppAccount {
   is_default_incoming: boolean
   is_default_outgoing: boolean
   auto_read_receipt: boolean
+  business_calling_enabled?: boolean
+  default_chatbot_flow_id?: string
   status: string
   has_access_token: boolean
   has_app_secret: boolean
@@ -69,6 +72,12 @@ interface WhatsAppAccount {
   updated_by_name?: string
   created_at: string
   updated_at: string
+}
+
+interface ChatbotFlowOption {
+  id: string
+  name: string
+  enabled: boolean
 }
 
 interface TestResult {
@@ -120,7 +129,11 @@ const form = ref({
   is_default_outgoing: false,
   auto_read_receipt: false,
   business_calling_enabled: false,
+  default_chatbot_flow_id: '',
 })
+
+const chatbotFlows = ref<ChatbotFlowOption[]>([])
+const NONE_CHAT_FLOW = 'none'
 
 const breadcrumbs = computed(() => [
   { label: t('nav.settings'), href: '/settings' },
@@ -165,6 +178,17 @@ function syncForm() {
     is_default_outgoing: account.value.is_default_outgoing,
     auto_read_receipt: account.value.auto_read_receipt,
     business_calling_enabled: account.value.business_calling_enabled ?? false,
+    default_chatbot_flow_id: account.value.default_chatbot_flow_id || '',
+  }
+}
+
+async function loadChatbotFlows() {
+  try {
+    const response = await chatbotService.listFlows({ limit: 200 })
+    const data = (response.data as any).data || response.data
+    chatbotFlows.value = data.flows || []
+  } catch {
+    chatbotFlows.value = []
   }
 }
 
@@ -260,12 +284,18 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function setDefaultChatbotFlow(value: unknown) {
+  const selected = String(value ?? '')
+  form.value.default_chatbot_flow_id = selected === NONE_CHAT_FLOW ? '' : selected
+}
+
 onMounted(async () => {
   if (isNew.value) {
+    await loadChatbotFlows()
     isLoading.value = false
     hasChanges.value = false
   } else {
-    await loadAccount()
+    await Promise.all([loadChatbotFlows(), loadAccount()])
   }
 })
 </script>
@@ -426,6 +456,32 @@ onMounted(async () => {
             </Badge>
           </div>
         </div>
+
+        <template v-if="chatbotFlows.length > 0">
+          <Separator />
+
+          <div class="space-y-1.5">
+            <Label class="text-xs">{{ $t('accounts.defaultChatbotFlow', 'Default Chat Flow') }}</Label>
+            <Select
+              :model-value="form.default_chatbot_flow_id || NONE_CHAT_FLOW"
+              :disabled="!canWrite"
+              @update:model-value="setDefaultChatbotFlow"
+            >
+              <SelectTrigger>
+                <SelectValue :placeholder="$t('accounts.selectChatFlow', 'Select a chat flow')" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem :value="NONE_CHAT_FLOW">{{ $t('accounts.noDefaultChatFlow', 'None') }}</SelectItem>
+                <SelectItem v-for="flow in chatbotFlows" :key="flow.id" :value="flow.id">
+                  {{ flow.name }}<span v-if="!flow.enabled" class="text-muted-foreground"> ({{ $t('common.disabled', 'disabled') }})</span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p class="text-[11px] text-muted-foreground">
+              {{ $t('accounts.defaultChatbotFlowDesc', 'Inbound messages that do not match another flow’s trigger keywords start this flow.') }}
+            </p>
+          </div>
+        </template>
 
         <Separator />
 

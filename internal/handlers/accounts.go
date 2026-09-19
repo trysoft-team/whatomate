@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/crypto"
@@ -20,18 +21,19 @@ import (
 
 // AccountRequest represents the request body for creating/updating an account
 type AccountRequest struct {
-	Name                   string `json:"name" validate:"required"`
-	AppID                  string `json:"app_id"`
-	PhoneID                string `json:"phone_id" validate:"required"`
-	BusinessID             string `json:"business_id" validate:"required"`
-	AccessToken            string `json:"access_token" validate:"required"`
-	AppSecret              string `json:"app_secret"` // Meta App Secret for webhook signature verification
-	WebhookVerifyToken     string `json:"webhook_verify_token"`
-	APIVersion             string `json:"api_version"`
-	IsDefaultIncoming      bool   `json:"is_default_incoming"`
-	IsDefaultOutgoing      bool   `json:"is_default_outgoing"`
-	AutoReadReceipt        bool   `json:"auto_read_receipt"`
-	BusinessCallingEnabled bool   `json:"business_calling_enabled"`
+	Name                   string          `json:"name" validate:"required"`
+	AppID                  string          `json:"app_id"`
+	PhoneID                string          `json:"phone_id" validate:"required"`
+	BusinessID             string          `json:"business_id" validate:"required"`
+	AccessToken            string          `json:"access_token" validate:"required"`
+	AppSecret              string          `json:"app_secret"` // Meta App Secret for webhook signature verification
+	WebhookVerifyToken     string          `json:"webhook_verify_token"`
+	APIVersion             string          `json:"api_version"`
+	IsDefaultIncoming      bool            `json:"is_default_incoming"`
+	IsDefaultOutgoing      bool            `json:"is_default_outgoing"`
+	AutoReadReceipt        bool            `json:"auto_read_receipt"`
+	BusinessCallingEnabled bool            `json:"business_calling_enabled"`
+	DefaultChatbotFlowID   json.RawMessage `json:"default_chatbot_flow_id"`
 }
 
 // AccountResponse represents the response for an account (without sensitive data)
@@ -47,6 +49,7 @@ type AccountResponse struct {
 	IsDefaultOutgoing      bool       `json:"is_default_outgoing"`
 	AutoReadReceipt        bool       `json:"auto_read_receipt"`
 	BusinessCallingEnabled bool       `json:"business_calling_enabled"`
+	DefaultChatbotFlowID   string     `json:"default_chatbot_flow_id,omitempty"`
 	Status                 string     `json:"status"`
 	HasAccessToken         bool       `json:"has_access_token"`
 	HasAppSecret           bool       `json:"has_app_secret"`
@@ -130,6 +133,12 @@ func (a *App) CreateAccount(r *fastglue.Request) error {
 		Status:                 "active",
 		CreatedByID:            &userID,
 		UpdatedByID:            &userID,
+	}
+
+	if flowID, applied, err := a.parseDefaultChatbotFlowField(orgID, req.DefaultChatbotFlowID); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
+	} else if applied {
+		account.DefaultChatbotFlowID = flowID
 	}
 
 	if err := a.encryptAccountSecrets(&account); err != nil {
@@ -247,6 +256,13 @@ func (a *App) UpdateAccount(r *fastglue.Request) error {
 	}
 	account.AutoReadReceipt = req.AutoReadReceipt
 	account.BusinessCallingEnabled = req.BusinessCallingEnabled
+	clearDefaultFlow := false
+	if flowID, applied, err := a.parseDefaultChatbotFlowField(orgID, req.DefaultChatbotFlowID); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
+	} else if applied {
+		account.DefaultChatbotFlowID = flowID
+		clearDefaultFlow = flowID == nil
+	}
 
 	// Handle default flags
 	if req.IsDefaultIncoming && !account.IsDefaultIncoming {
@@ -266,6 +282,12 @@ func (a *App) UpdateAccount(r *fastglue.Request) error {
 	if err := a.DB.Save(account).Error; err != nil {
 		a.Log.Error("Failed to update account", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update account", nil, "")
+	}
+	if clearDefaultFlow {
+		if err := a.DB.Model(account).Updates(map[string]any{"default_chatbot_flow_id": nil}).Error; err != nil {
+			a.Log.Error("Failed to clear default chatbot flow", "error", err)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update account", nil, "")
+		}
 	}
 
 	// Invalidate cache
@@ -473,6 +495,9 @@ func accountToResponse(acc models.WhatsAppAccount) AccountResponse {
 		CreatedAt:              acc.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:              acc.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+	if acc.DefaultChatbotFlowID != nil {
+		resp.DefaultChatbotFlowID = acc.DefaultChatbotFlowID.String()
+	}
 	if acc.CreatedBy != nil {
 		resp.CreatedByName = acc.CreatedBy.FullName
 	}
@@ -486,6 +511,44 @@ func generateVerifyToken() string {
 	bytes := make([]byte, 32)
 	_, _ = rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+// parseDefaultChatbotFlowField returns the flow ID to store. applied is false when the
+// JSON field was omitted so callers can leave the current value unchanged.
+func (a *App) parseDefaultChatbotFlowField(orgID uuid.UUID, raw json.RawMessage) (*uuid.UUID, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return nil, true, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, true, fmt.Errorf("invalid default chatbot flow ID")
+	}
+	id, err := a.resolveDefaultChatbotFlowID(orgID, s)
+	if err != nil {
+		return nil, true, err
+	}
+	return id, true, nil
+}
+
+// resolveDefaultChatbotFlowID validates an optional chatbot flow ID belongs to the org.
+// An empty value clears the account default.
+func (a *App) resolveDefaultChatbotFlowID(orgID uuid.UUID, raw string) (*uuid.UUID, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid default chatbot flow ID")
+	}
+	var flow models.ChatbotFlow
+	if err := a.DB.Where("id = ? AND organization_id = ?", id, orgID).First(&flow).Error; err != nil {
+		return nil, fmt.Errorf("chatbot flow not found")
+	}
+	return &id, nil
 }
 
 // validateAccountCredentials validates WhatsApp account credentials with Meta API

@@ -88,6 +88,15 @@ func (a *App) getChatbotFlowsCached(orgID uuid.UUID) ([]models.ChatbotFlow, erro
 	ctx := context.Background()
 	cacheKey := fmt.Sprintf("%s%s", flowsCachePrefix, orgID.String())
 
+	if a.Redis == nil {
+		var flows []models.ChatbotFlow
+		if err := a.DB.Where("organization_id = ? AND is_enabled = true", orgID).
+			Find(&flows).Error; err != nil {
+			return nil, err
+		}
+		return flows, nil
+	}
+
 	// Try cache first
 	cached, err := a.Redis.Get(ctx, cacheKey).Result()
 	if err == nil && cached != "" {

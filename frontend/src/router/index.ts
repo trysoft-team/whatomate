@@ -6,6 +6,7 @@ declare module 'vue-router' {
   interface RouteMeta {
     requiresAuth?: boolean
     permission?: string // Resource permission required (e.g., 'analytics', 'chat')
+    superAdmin?: boolean
   }
 }
 
@@ -163,6 +164,12 @@ const router = createRouter({
           name: 'settings',
           component: () => import('@/views/settings/SettingsView.vue'),
           meta: { permission: 'settings.general' }
+        },
+        {
+          path: 'settings/organizations',
+          name: 'organizations',
+          component: () => import('@/views/settings/OrganizationsView.vue'),
+          meta: { superAdmin: true }
         },
         {
           path: 'settings/chatbot',
@@ -339,7 +346,14 @@ const router = createRouter({
 
 // Navigation items with permissions in priority order (matches AppLayout.vue)
 // Used to find the first accessible route for a user
-const navigationOrder = [
+type NavAccess = {
+  path: string
+  permission?: string
+  superAdmin?: boolean
+  childPaths?: NavAccess[]
+}
+
+const navigationOrder: NavAccess[] = [
   { path: '/', permission: 'analytics' },
   { path: '/chat', permission: 'chat' },
   { path: '/chatbot', permission: 'settings.chatbot', childPaths: [
@@ -361,6 +375,7 @@ const navigationOrder = [
   ]},
   { path: '/settings', permission: 'settings.general', childPaths: [
     { path: '/settings', permission: 'settings.general' },
+    { path: '/settings/organizations', superAdmin: true },
     { path: '/settings/chatbot', permission: 'settings.chatbot' },
     { path: '/settings/accounts', permission: 'accounts' },
     { path: '/settings/canned-responses', permission: 'canned_responses' },
@@ -377,16 +392,19 @@ const navigationOrder = [
 ]
 
 // Find the first accessible route for the user
+function canAccessNav(entry: NavAccess, authStore: ReturnType<typeof useAuthStore>): boolean {
+  if (entry.superAdmin) return !!authStore.user?.is_super_admin
+  return !!entry.permission && authStore.hasPermission(entry.permission, 'read')
+}
+
 function getFirstAccessibleRoute(authStore: ReturnType<typeof useAuthStore>): string {
   for (const item of navigationOrder) {
-    // Check if user has permission for this item
-    if (authStore.hasPermission(item.permission, 'read')) {
+    if (canAccessNav(item, authStore)) {
       return item.path
     }
-    // Check child paths if available
     if (item.childPaths) {
       for (const child of item.childPaths) {
-        if (authStore.hasPermission(child.permission, 'read')) {
+        if (canAccessNav(child, authStore)) {
           return child.path
         }
       }
@@ -412,6 +430,9 @@ router.beforeEach(async (to, _from, next) => {
     }
 
     // Check permission-based access
+    if (to.meta.superAdmin && !authStore.user?.is_super_admin) {
+      return next({ path: getFirstAccessibleRoute(authStore) })
+    }
     const requiredPermission = to.meta.permission
     if (requiredPermission) {
       if (!authStore.hasPermission(requiredPermission, 'read')) {

@@ -22,7 +22,7 @@ func TestApp_CreateOrganization_Success(t *testing.T) {
 	org := testutil.CreateTestOrganization(t, app.DB)
 	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
 	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
-	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("create-org")), testutil.WithRoleID(&role.ID))
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("create-org")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
 
 	req := testutil.NewJSONRequest(t, map[string]string{
 		"name": "New Test Organization",
@@ -52,7 +52,7 @@ func TestApp_CreateOrganization_EmptyName(t *testing.T) {
 	org := testutil.CreateTestOrganization(t, app.DB)
 	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
 	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
-	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("create-org-empty")), testutil.WithRoleID(&role.ID))
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("create-org-empty")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
 
 	req := testutil.NewJSONRequest(t, map[string]string{
 		"name": "",
@@ -76,6 +76,23 @@ func TestApp_CreateOrganization_Unauthorized(t *testing.T) {
 	err := app.CreateOrganization(req)
 	require.NoError(t, err)
 	assert.Equal(t, fasthttp.StatusUnauthorized, testutil.GetResponseStatusCode(req))
+}
+
+func TestApp_CreateOrganization_ForbiddenForOrgAdmin(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("create-org-admin")), testutil.WithRoleID(&role.ID))
+
+	req := testutil.NewJSONRequest(t, map[string]string{"name": "Should Fail"})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+
+	err := app.CreateOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusForbidden, testutil.GetResponseStatusCode(req))
 }
 
 // --- ListOrganizationMembers Tests ---
@@ -825,4 +842,126 @@ func TestApp_HasPermission_RemovedMemberLosesForeignOrgAccess(t *testing.T) {
 
 	assert.False(t, app.HasPermission(user.ID, models.ResourceTags, models.ActionWrite, foreignOrg.ID),
 		"removed member must not fall back to their home-org role")
+}
+
+func TestApp_UpdateOrganization_Success(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("update-org")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
+
+	req := testutil.NewJSONRequest(t, map[string]string{"name": "Renamed Org"})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+	testutil.SetPathParam(req, "id", org.ID.String())
+
+	err := app.UpdateOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var resp struct {
+		Data handlers.OrganizationResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+	assert.Equal(t, "Renamed Org", resp.Data.Name)
+	assert.Equal(t, org.ID, resp.Data.ID)
+}
+
+func TestApp_UpdateOrganization_EmptyName(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("update-org-empty")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
+
+	req := testutil.NewJSONRequest(t, map[string]string{"name": "  "})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+	testutil.SetPathParam(req, "id", org.ID.String())
+
+	err := app.UpdateOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusBadRequest, testutil.GetResponseStatusCode(req))
+}
+
+func TestApp_DeleteOrganization_Success(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	home := testutil.CreateTestOrganization(t, app.DB)
+	target := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, home.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, home.ID, testutil.WithEmail(testutil.UniqueEmail("delete-org")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
+
+	req := testutil.NewGETRequest(t)
+	testutil.SetAuthContext(req, home.ID, user.ID)
+	testutil.SetPathParam(req, "id", target.ID.String())
+
+	err := app.DeleteOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var count int64
+	app.DB.Model(&models.Organization{}).Where("id = ?", target.ID).Count(&count)
+	assert.Equal(t, int64(0), count)
+}
+
+func TestApp_DeleteOrganization_CurrentOrgRejected(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	_ = testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("delete-current-org")), testutil.WithRoleID(&role.ID), testutil.WithSuperAdmin())
+
+	req := testutil.NewGETRequest(t)
+	testutil.SetAuthContext(req, org.ID, user.ID)
+	testutil.SetPathParam(req, "id", org.ID.String())
+
+	err := app.DeleteOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusBadRequest, testutil.GetResponseStatusCode(req))
+}
+
+func TestApp_UpdateOrganization_ForbiddenForOrgAdmin(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, org.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("update-org-admin")), testutil.WithRoleID(&role.ID))
+
+	req := testutil.NewJSONRequest(t, map[string]string{"name": "Should Fail"})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+	testutil.SetPathParam(req, "id", org.ID.String())
+
+	err := app.UpdateOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusForbidden, testutil.GetResponseStatusCode(req))
+}
+
+func TestApp_DeleteOrganization_ForbiddenForOrgAdmin(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	home := testutil.CreateTestOrganization(t, app.DB)
+	target := testutil.CreateTestOrganization(t, app.DB)
+	allPerms := testutil.GetOrCreateTestPermissions(t, app.DB)
+	role := testutil.CreateTestRole(t, app.DB, home.ID, "admin", allPerms)
+	user := testutil.CreateTestUser(t, app.DB, home.ID, testutil.WithEmail(testutil.UniqueEmail("delete-org-admin")), testutil.WithRoleID(&role.ID))
+
+	req := testutil.NewGETRequest(t)
+	testutil.SetAuthContext(req, home.ID, user.ID)
+	testutil.SetPathParam(req, "id", target.ID.String())
+
+	err := app.DeleteOrganization(req)
+	require.NoError(t, err)
+	assert.Equal(t, fasthttp.StatusForbidden, testutil.GetResponseStatusCode(req))
 }

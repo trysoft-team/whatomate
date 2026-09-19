@@ -21,7 +21,8 @@ import {
   Tags,
   PhoneCall,
   PhoneForwarded,
-  ScrollText
+  ScrollText,
+  Building2
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 
@@ -30,6 +31,8 @@ export interface NavItem {
   path: string
   icon: Component
   permission?: string
+  /** When true, only super admins see this item */
+  superAdmin?: boolean
   childPermissions?: string[]
   children?: NavItem[]
 }
@@ -140,6 +143,7 @@ export const navigationSections: NavSection[] = [
         childPermissions: ['settings.general', 'settings.chatbot', 'accounts', 'contacts', 'canned_responses', 'tags', 'teams', 'users', 'roles', 'api_keys', 'webhooks', 'custom_actions', 'settings.sso', 'audit_logs'],
         children: [
           { name: 'nav.general', path: '/settings', icon: Settings, permission: 'settings.general' },
+          { name: 'nav.organizations', path: '/settings/organizations', icon: Building2, superAdmin: true },
           { name: 'nav.chatbot', path: '/settings/chatbot', icon: Bot, permission: 'settings.chatbot' },
           { name: 'nav.accounts', path: '/settings/accounts', icon: Users, permission: 'accounts' },
           { name: 'nav.contacts', path: '/settings/contacts', icon: Contact, permission: 'contacts' },

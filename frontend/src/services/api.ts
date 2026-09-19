@@ -737,12 +737,15 @@ export interface Organization {
   id: string
   name: string
   slug?: string
+  member_count?: number
   created_at: string
 }
 
 export const organizationsService = {
   list: () => api.get<{ organizations: Organization[] }>('/organizations'),
   create: (data: { name: string }) => api.post('/organizations', data),
+  update: (id: string, data: { name: string }) => api.put(`/organizations/${id}`, data),
+  delete: (id: string) => api.delete(`/organizations/${id}`),
   // Members
   addMember: (data: { user_id?: string; email?: string; role_id?: string }) =>
     api.post('/organizations/members', data),

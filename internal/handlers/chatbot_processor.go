@@ -297,22 +297,9 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		return
 	}
 
-	// Try to match flow trigger keywords first (before greeting to avoid duplicate messages)
-	if flow := a.matchFlowTrigger(account.OrganizationID, messageText); flow != nil {
-		if flow.Graph == nil {
-			a.Log.Error("Triggered chatbot flow has no v2 graph; ignoring", "flow", flow.ID)
-			return
-		}
-		session.CurrentFlowID = &flow.ID
-		session.CurrentStep = ""
-		session.StepRetries = 0
-		session.SessionData = models.JSONB{
-			"_flow_id":   flow.ID.String(),
-			"_flow_name": flow.Name,
-		}
-		if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData); err != nil {
-			a.Log.Error("Chat graph runner failed at flow start", "error", err, "session", session.ID, "flow", flow.ID)
-		}
+	// Keyword-triggered flows win; otherwise start this account's default flow.
+	if flow := a.resolveInboundChatbotFlow(account, messageText); flow != nil {
+		a.startChatbotFlow(account, contact, session, flow, messageText, buttonID, flowResponseData)
 		return
 	}
 
@@ -698,6 +685,53 @@ func (a *App) logSessionMessage(sessionID uuid.UUID, direction models.Direction,
 	}
 	if err := a.DB.Create(&msg).Error; err != nil {
 		a.Log.Error("Failed to log session message", "error", err)
+	}
+}
+
+// resolveInboundChatbotFlow returns a keyword-triggered flow, or the account
+// default flow when no trigger matches.
+func (a *App) resolveInboundChatbotFlow(account *models.WhatsAppAccount, messageText string) *models.ChatbotFlow {
+	if account == nil {
+		return nil
+	}
+	if flow := a.matchFlowTrigger(account.OrganizationID, messageText); flow != nil {
+		return flow
+	}
+	return a.defaultChatbotFlowForAccount(account)
+}
+
+// defaultChatbotFlowForAccount returns the account's default enabled chatbot flow.
+func (a *App) defaultChatbotFlowForAccount(account *models.WhatsAppAccount) *models.ChatbotFlow {
+	if account == nil || account.DefaultChatbotFlowID == nil {
+		return nil
+	}
+	flow, err := a.getChatbotFlowByIDCached(account.OrganizationID, *account.DefaultChatbotFlowID)
+	if err != nil || flow == nil {
+		a.Log.Debug("Default chatbot flow not available",
+			"error", err,
+			"flow", account.DefaultChatbotFlowID,
+			"account", account.Name,
+		)
+		return nil
+	}
+	return flow
+}
+
+// startChatbotFlow begins a v2 chatbot graph for the contact's session.
+func (a *App) startChatbotFlow(account *models.WhatsAppAccount, contact *models.Contact, session *models.ChatbotSession, flow *models.ChatbotFlow, messageText, buttonID string, flowResponseData map[string]any) {
+	if flow.Graph == nil {
+		a.Log.Error("Triggered chatbot flow has no v2 graph; ignoring", "flow", flow.ID)
+		return
+	}
+	session.CurrentFlowID = &flow.ID
+	session.CurrentStep = ""
+	session.StepRetries = 0
+	session.SessionData = models.JSONB{
+		"_flow_id":   flow.ID.String(),
+		"_flow_name": flow.Name,
+	}
+	if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData); err != nil {
+		a.Log.Error("Chat graph runner failed at flow start", "error", err, "session", session.ID, "flow", flow.ID)
 	}
 }
 

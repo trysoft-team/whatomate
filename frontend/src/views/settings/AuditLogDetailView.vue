@@ -23,7 +23,7 @@ const resourceRouteMap: Record<string, (id: string) => string> = {
   chatbot_flow: (id) => `/chatbot/flows/${id}`,
   keyword_rule: (id) => `/chatbot/keywords/${id}`,
   account: (id) => `/settings/accounts/${id}`,
-  organization: () => `/settings`,
+  organization: () => `/settings/organizations`,
   user: (id) => `/settings/users/${id}`,
   role: (id) => `/settings/roles/${id}`,
   team: (id) => `/settings/teams/${id}`,

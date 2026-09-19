@@ -39,6 +39,7 @@ GET /api/accounts
         "is_default_outgoing": true,
         "auto_read_receipt": false,
         "business_calling_enabled": false,
+        "default_chatbot_flow_id": "uuid",
         "status": "active",
         "has_access_token": true,
         "has_app_secret": true,
@@ -82,6 +83,7 @@ GET /api/accounts/{id}
     "is_default_outgoing": true,
     "auto_read_receipt": false,
     "business_calling_enabled": false,
+    "default_chatbot_flow_id": "uuid",
     "status": "active",
     "has_access_token": true,
     "has_app_secret": true,
@@ -107,6 +109,7 @@ GET /api/accounts/{id}
 | `has_app_secret` | boolean | Whether a Meta App Secret is stored |
 | `phone_number` | string | The display phone number, when available |
 | `display_name` | string | Verified display name, when available |
+| `default_chatbot_flow_id` | string | Optional chatbot flow started for inbound messages that do not match another flow's trigger keywords |
 | `status` | string | Account status (see table below) |
 | `created_by_name` / `updated_by_name` | string | Names of the users who created/last updated the account |
 
@@ -133,7 +136,8 @@ POST /api/accounts
   "is_default_incoming": false,
   "is_default_outgoing": false,
   "auto_read_receipt": false,
-  "business_calling_enabled": false
+  "business_calling_enabled": false,
+  "default_chatbot_flow_id": "uuid"
 }
 ```
 
@@ -153,6 +157,7 @@ POST /api/accounts
 | `is_default_outgoing` | boolean | No | Use this account as the default for outgoing messages |
 | `auto_read_receipt` | boolean | No | Automatically send read receipts for incoming messages |
 | `business_calling_enabled` | boolean | No | Enrolled in the Business Calling API (required to send Call buttons) |
+| `default_chatbot_flow_id` | string | No | Chatbot flow to start for unmatched inbound messages. Send an empty string to clear. Must belong to the same organization |
 
 ### Response
 

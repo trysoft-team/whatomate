@@ -98,7 +98,7 @@ This is the complete seeded catalogue — exactly the permissions returned by `G
 | `api_keys` | read, write, delete | API key management |
 | `canned_responses` | read, write, delete | Saved reply templates |
 | `custom_actions` | read, write, delete | Custom action buttons |
-| `organizations` | read, write, delete, assign | Organizations; `assign` manages members |
+| `organizations` | read, write, delete, assign | Members (`assign`). Create/rename/delete of workspaces is super-admin only. |
 | `call_logs` | read | Voice call history |
 | `ivr_flows` | read, write, delete | IVR call flow definitions |
 | `call_transfers` | read, write | Voice call transfers |
@@ -175,7 +175,7 @@ Super admins have additional privileges:
 
 - Access to all organizations, even without explicit membership
 - Can switch to any organization using the `X-Organization-ID` header
-- Can create new organizations
+- Can create, rename, and delete organizations from **Settings → Organizations**
 
 <Aside type="caution">
   The `X-Organization-ID` header switches the org for a single request. A super admin may name any

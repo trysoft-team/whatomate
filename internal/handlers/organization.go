@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +14,7 @@ import (
 	"github.com/shridarpatil/whatomate/internal/utils"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
+	"gorm.io/gorm"
 )
 
 // generalSettingsSnapshot extracts the fields shown on the General tab into a
@@ -330,22 +333,28 @@ func (a *App) ShouldMaskPhoneNumbers(orgID any) bool {
 
 // OrganizationResponse represents an organization in API responses
 type OrganizationResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	Slug      string    `json:"slug,omitempty"`
-	CreatedAt string    `json:"created_at"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug,omitempty"`
+	MemberCount int64     `json:"member_count"`
+	CreatedAt   string    `json:"created_at"`
 }
 
-// ListOrganizations returns all organizations (super admin or users with organizations:read)
-func (a *App) ListOrganizations(r *fastglue.Request) error {
-	userID, ok := r.RequestCtx.UserValue("user_id").(uuid.UUID)
-	if !ok {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+func organizationToResponse(org models.Organization, memberCount int64) OrganizationResponse {
+	return OrganizationResponse{
+		ID:          org.ID,
+		Name:        org.Name,
+		Slug:        org.Slug,
+		MemberCount: memberCount,
+		CreatedAt:   org.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
 
-	// Super admins or users with organizations:read permission
-	if !a.IsSuperAdmin(userID) && !a.HasPermission(userID, models.ResourceOrganizations, models.ActionRead) {
-		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Insufficient permissions", nil, "")
+// ListOrganizations returns all organizations. Super admin only.
+func (a *App) ListOrganizations(r *fastglue.Request) error {
+	_, _, err := a.requireSuperAdmin(r)
+	if err != nil {
+		return nil
 	}
 
 	var orgs []models.Organization
@@ -354,14 +363,10 @@ func (a *App) ListOrganizations(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to list organizations", nil, "")
 	}
 
+	memberCounts := a.organizationMemberCounts()
 	response := make([]OrganizationResponse, len(orgs))
 	for i, org := range orgs {
-		response[i] = OrganizationResponse{
-			ID:        org.ID,
-			Name:      org.Name,
-			Slug:      org.Slug,
-			CreatedAt: org.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		}
+		response[i] = organizationToResponse(org, memberCounts[org.ID])
 	}
 
 	return r.SendEnvelope(map[string]any{
@@ -381,12 +386,7 @@ func (a *App) GetCurrentOrganization(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Organization not found", nil, "")
 	}
 
-	return r.SendEnvelope(OrganizationResponse{
-		ID:        org.ID,
-		Name:      org.Name,
-		Slug:      org.Slug,
-		CreatedAt: org.CreatedAt.Format("2006-01-02T15:04:05Z"),
-	})
+	return r.SendEnvelope(organizationToResponse(org, a.organizationMemberCounts()[org.ID]))
 }
 
 // CreateOrganizationRequest represents the request body for creating an organization
@@ -396,7 +396,7 @@ type CreateOrganizationRequest struct {
 
 // CreateOrganization creates a new organization
 func (a *App) CreateOrganization(r *fastglue.Request) error {
-	_, userID, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionWrite)
+	_, userID, err := a.requireSuperAdmin(r)
 	if err != nil {
 		return nil
 	}
@@ -485,11 +485,132 @@ func (a *App) CreateOrganization(r *fastglue.Request) error {
 	a.logAudit(org.ID, userID, "organization", org.ID, models.AuditActionCreated, nil,
 		map[string]any{"name": org.Name, "slug": org.Slug})
 
-	return r.SendEnvelope(OrganizationResponse{
-		ID:        org.ID,
-		Name:      org.Name,
-		Slug:      org.Slug,
-		CreatedAt: org.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	return r.SendEnvelope(organizationToResponse(org, 1))
+}
+
+func (a *App) organizationMemberCounts() map[uuid.UUID]int64 {
+	type row struct {
+		OrganizationID uuid.UUID
+		Count          int64
+	}
+	var rows []row
+	a.DB.Model(&models.UserOrganization{}).
+		Select("organization_id, count(*) as count").
+		Group("organization_id").
+		Scan(&rows)
+	out := make(map[uuid.UUID]int64, len(rows))
+	for _, rec := range rows {
+		out[rec.OrganizationID] = rec.Count
+	}
+	return out
+}
+
+// UpdateOrganization renames an organization.
+func (a *App) UpdateOrganization(r *fastglue.Request) error {
+	_, userID, err := a.requireSuperAdmin(r)
+	if err != nil {
+		return nil
+	}
+
+	id, err := parsePathUUID(r, "id", "organization")
+	if err != nil {
+		return nil
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := a.decodeRequest(r, &req); err != nil {
+		return nil
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Organization name is required", nil, "")
+	}
+
+	var org models.Organization
+	if err := a.DB.Where("id = ?", id).First(&org).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Organization not found", nil, "")
+	}
+
+	old := org
+	org.Name = name
+	if err := a.DB.Save(&org).Error; err != nil {
+		a.Log.Error("Failed to update organization", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update organization", nil, "")
+	}
+
+	a.logAudit(org.ID, userID, "organization", org.ID, models.AuditActionUpdated, &old, &org)
+
+	return r.SendEnvelope(organizationToResponse(org, a.organizationMemberCounts()[org.ID]))
+}
+
+var errUsersOnlyInOrg = errors.New("users belong only to this organization")
+
+// DeleteOrganization soft-deletes an organization and its memberships.
+func (a *App) DeleteOrganization(r *fastglue.Request) error {
+	currentOrgID, userID, err := a.requireSuperAdmin(r)
+	if err != nil {
+		return nil
+	}
+
+	id, err := parsePathUUID(r, "id", "organization")
+	if err != nil {
+		return nil
+	}
+
+	var org models.Organization
+	if err := a.DB.Where("id = ?", id).First(&org).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Organization not found", nil, "")
+	}
+
+	if id == currentOrgID {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Switch to another organization before deleting this one", nil, "")
+	}
+
+	var orgCount int64
+	if err := a.DB.Model(&models.Organization{}).Count(&orgCount).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to delete organization", nil, "")
+	}
+	if orgCount <= 1 {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Cannot delete the last organization", nil, "")
+	}
+
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		var homeUsers []models.User
+		if err := tx.Where("organization_id = ?", id).Find(&homeUsers).Error; err != nil {
+			return err
+		}
+		for i := range homeUsers {
+			var other models.UserOrganization
+			if err := tx.Where("user_id = ? AND organization_id <> ?", homeUsers[i].ID, id).
+				Order("is_default DESC").
+				First(&other).Error; err != nil {
+				return errUsersOnlyInOrg
+			}
+			if err := tx.Model(&homeUsers[i]).Update("organization_id", other.OrganizationID).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Where("organization_id = ?", id).Delete(&models.UserOrganization{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&org).Error
+	})
+	if err != nil {
+		if errors.Is(err, errUsersOnlyInOrg) {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Move users out of this organization before deleting it", nil, "")
+		}
+		a.Log.Error("Failed to delete organization", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to delete organization", nil, "")
+	}
+
+	a.logAudit(id, userID, "organization", id, models.AuditActionDeleted, &org, nil)
+
+	return r.SendEnvelope(map[string]any{
+		"message": "Organization deleted successfully",
 	})
 }
 

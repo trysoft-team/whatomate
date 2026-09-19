@@ -8,13 +8,14 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PageHeader, AuditLogPanel } from '@/components/shared'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { toast } from 'vue-sonner'
 import { Settings, Bell, Loader2, Globe, Phone, Upload, Play, Pause, Music } from 'lucide-vue-next'
 import { usersService, organizationService } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
+import { getTimezoneGroups } from '@/lib/timezones'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -44,6 +45,9 @@ const generalSettings = ref({
   meta_app_secret: '',
   has_meta_app_secret: false
 })
+
+const timezoneGroups = computed(() => getTimezoneGroups(generalSettings.value.default_timezone))
+const timezoneItemClass = 'text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100'
 
 // Notification Settings
 const notificationSettings = ref({
@@ -285,12 +289,19 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
                       <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white/70 light:bg-white light:border-gray-200 light:text-gray-700">
                         <SelectValue :placeholder="$t('settings.selectTimezone')" />
                       </SelectTrigger>
-                      <SelectContent class="bg-[#141414] border-white/[0.08] light:bg-white light:border-gray-200">
-                        <SelectItem value="UTC" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">UTC</SelectItem>
-                        <SelectItem value="America/New_York" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">Eastern Time</SelectItem>
-                        <SelectItem value="America/Los_Angeles" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">Pacific Time</SelectItem>
-                        <SelectItem value="Europe/London" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">London</SelectItem>
-                        <SelectItem value="Asia/Tokyo" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">Tokyo</SelectItem>
+                      <SelectContent class="bg-[#141414] border-white/[0.08] light:bg-white light:border-gray-200 max-h-80">
+                        <SelectGroup v-for="group in timezoneGroups" :key="group.region">
+                          <SelectLabel class="text-white/40 light:text-gray-500">{{ group.region }}</SelectLabel>
+                          <SelectItem
+                            v-for="tz in group.timezones"
+                            :key="tz.value"
+                            :value="tz.value"
+                            :text-value="tz.label"
+                            :class="timezoneItemClass"
+                          >
+                            {{ tz.label }}
+                          </SelectItem>
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                   </div>
