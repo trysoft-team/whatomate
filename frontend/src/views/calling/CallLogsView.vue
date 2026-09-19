@@ -110,7 +110,9 @@ async function viewDetail(log: CallLog) {
     callLogsService.getRecordingURL(log.id)
       .then(res => {
         const data = (res.data as any).data ?? res.data
-        recordingURL.value = data.url
+        const url = data.url as string
+        const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
+        recordingURL.value = url.startsWith('http') ? url : `${basePath}${url}`
       })
       .catch(() => {
         recordingURL.value = null

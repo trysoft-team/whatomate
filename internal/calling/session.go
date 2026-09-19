@@ -142,13 +142,13 @@ type Manager struct {
 	db       *gorm.DB
 	wsHub    *websocket.Hub
 	config   *config.CallingConfig
-	s3       *storage.S3Client // nil when recording is disabled
+	recordings storage.Uploader // nil when recording is disabled (S3 or local_path)
 	redis    *redis.Client
 	assigner *assignment.Assigner
 }
 
 // NewManager creates a new call session manager
-func NewManager(cfg *config.CallingConfig, s3Client *storage.S3Client, db *gorm.DB, rd *redis.Client, waClient *whatsapp.Client, wsHub *websocket.Hub, assigner *assignment.Assigner, log logf.Logger) *Manager {
+func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm.DB, rd *redis.Client, waClient *whatsapp.Client, wsHub *websocket.Hub, assigner *assignment.Assigner, log logf.Logger) *Manager {
 	// Apply defaults for server-level config
 	if cfg.AudioDir == "" {
 		cfg.AudioDir = "./audio"
@@ -175,7 +175,7 @@ func NewManager(cfg *config.CallingConfig, s3Client *storage.S3Client, db *gorm.
 		redis:    rd,
 		wsHub:    wsHub,
 		config:   cfg,
-		s3:       s3Client,
+		recordings: recordings,
 		assigner: assigner,
 	}
 }
@@ -541,7 +541,7 @@ func durationSince(from *time.Time, now time.Time) int {
 
 // newRecorderIfEnabled creates a CallRecorder if recording is enabled, or returns nil.
 func (m *Manager) newRecorderIfEnabled() *CallRecorder {
-	if !m.config.RecordingEnabled || m.s3 == nil {
+	if !m.config.RecordingEnabled || m.recordings == nil {
 		return nil
 	}
 	rec, err := NewCallRecorder()
@@ -629,7 +629,7 @@ func (m *Manager) finalizeRecording(orgID, callLogID uuid.UUID, callerRec, agent
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := m.s3.Upload(ctx, s3Key, f, "audio/ogg"); err != nil {
+	if err := m.recordings.Upload(ctx, s3Key, f, "audio/ogg"); err != nil {
 		m.log.Error("Failed to upload recording to S3", "error", err, "call_log_id", callLogID)
 		if dbErr := m.db.Model(&models.CallLog{}).
 			Where("id = ?", callLogID).

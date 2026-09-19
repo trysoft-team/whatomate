@@ -78,6 +78,9 @@ COPY --from=piper-dl /tmp/piper/piper /usr/local/bin/piper
 COPY --from=piper-dl /tmp/piper/lib*.so* /usr/local/lib/
 COPY --from=piper-dl /tmp/piper/espeak-ng-data /usr/share/espeak-ng-data
 RUN ldconfig
+# Piper bundles libespeak-ng 1.52; Debian's 1.51 is missing
+# espeak_TextToPhonemesWithTerminator and must not win the lookup.
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 # Install default voice model
 COPY --from=piper-dl /tmp/piper-models /opt/piper/models

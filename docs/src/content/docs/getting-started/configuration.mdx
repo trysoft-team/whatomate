@@ -83,7 +83,7 @@ api_window_seconds = 60
 
 [tts]
 # piper_binary = "/usr/local/bin/piper"
-# piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
+# piper_model = "/opt/piper/models/en_US-lessac-high.onnx"
 # opusenc_binary = "opusenc"
 
 [calling]
@@ -178,12 +178,8 @@ JWTs are stored in httpOnly cookies — the frontend never sees them.
 
 Controls media storage (template samples, uploaded files, call recordings).
 
-- `type = "local"` — files under `local_path` (default `./uploads`). Suitable for single-host deployments. The directory must be writable by the process and persisted (Docker volume).
-- `type = "s3"` — fill in `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`.
-
-<Aside type="caution">
-  Call recording is **S3-only**. If `calling.recording_enabled = true` but no S3 client is configured, recording is silently skipped — recordings are never written to `local_path`.
-</Aside>
+- `type = "local"` — files under `local_path` (default `./uploads`). Suitable for single-host deployments. The directory must be writable by the process and persisted (Docker volume). Call recordings land in `local_path/recordings/{org-id}/{call-log-id}.ogg`.
+- `type = "s3"` — fill in `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`. Call recordings are uploaded to the bucket.
 
 ### `[whatsapp]`
 
@@ -226,8 +222,10 @@ Implemented as Redis fixed-window counters. The limiter **fails open**: if Redis
 Optional, only used when an IVR step needs to synthesize speech (welcome prompt, menu read-out). All three keys are paths to external binaries / models:
 
 - `piper_binary` — [piper](https://github.com/rhasspy/piper) standalone TTS executable.
-- `piper_model` — `.onnx` voice model from [piper-voices](https://huggingface.co/rhasspy/piper-voices).
+- `piper_model` — `.onnx` voice model from [piper-voices](https://huggingface.co/rhasspy/piper-voices). Pair it with the matching `.onnx.json` next to the model. For US English IVR, `en_US-lessac-high` is the highest-quality single speaker; the Docker image ships `en_US-lessac-medium`.
 - `opusenc_binary` — `opusenc` from `opus-tools` (`apt install opus-tools` / `dnf install opus-tools`). Defaults to looking up `opusenc` in `PATH`.
+
+The Docker image sets `LD_LIBRARY_PATH=/usr/local/lib` so Piper uses its bundled `libespeak-ng` 1.52 instead of Debian's 1.51. See [Calling → Text-to-Speech](/whatomate/features/calling/#text-to-speech-ivr-greetings).
 
 If unset, IVR flows still work but cannot synthesize new audio prompts on the fly — only pre-rendered Opus files in `calling.audio_dir` will play.
 
@@ -242,7 +240,7 @@ Required only if you use WhatsApp voice calling / IVR.
 | `hold_music_file`, `ringback_file` | Filenames inside `audio_dir`. `hold_music_file` defaults to `hold_music.opus`; `ringback_file` has no default (hold music is used instead). Both can be overridden per organization under **Settings → Calling**. |
 | `transfer_timeout_secs` | How long to wait for an agent to accept a transferred call before falling through. Default `120`. |
 | `per_agent_timeout_secs` | Per-agent ring time when routing to a team; if an agent doesn't answer within this window, the next agent is tried. A team's own `per_agent_timeout_secs` wins when set; otherwise this value; otherwise `15`. |
-| `recording_enabled` | Records both directions per call and uploads the OGG/Opus file to S3. **Requires a configured `[storage]` S3 bucket** — with no S3 client, recording is skipped entirely. |
+| `recording_enabled` | Records both directions per call and stores an OGG/Opus file. Uses S3 when `s3_bucket` is set; otherwise writes to `[storage] local_path`. |
 | `udp_port_min`, `udp_port_max` | RTP/SRTP UDP port range. Whatever range you set must be open in your firewall / security group. Default `10000–10100` gives 100 concurrent streams. |
 | `public_ip` | **Required on AWS / GCP / Azure**, where the host's network interface does not have its public IP attached. Pion uses this for ICE candidate generation. |
 | `relay_only` | If `true`, advertises only TURN candidates (no host/srflx). Useful when the network is too restricted for direct UDP. |
@@ -421,7 +419,7 @@ The bundled [`docker/docker-compose.yml`](https://github.com/shridarpatil/whatom
 docker compose up -d
 ```
 
-It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (see [`docker/.env.example`](https://github.com/shridarpatil/whatomate/blob/main/docker/.env.example)). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time.
+It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (see [`docker/.env.example`](https://github.com/shridarpatil/whatomate/blob/main/docker/.env.example)). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
 
 There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` and `redis`.
 

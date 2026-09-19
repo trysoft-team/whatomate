@@ -94,7 +94,7 @@ type CallingConfig struct {
 	PublicIP            string            `koanf:"public_ip"`    // Public IP for NAT mapping (required on AWS/cloud)
 	RelayOnly           bool              `koanf:"relay_only"`   // Force all media through TURN relay (no direct UDP)
 	ICEServers          []ICEServerConfig `koanf:"ice_servers"`
-	RecordingEnabled    bool              `koanf:"recording_enabled"` // Enable call recording to S3
+	RecordingEnabled    bool              `koanf:"recording_enabled"` // Enable call recording (S3 or local_path)
 }
 
 type AppConfig struct {

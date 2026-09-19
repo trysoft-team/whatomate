@@ -81,7 +81,7 @@ api_window_seconds = 60        # Time window for global API rate limit (0 = 60)
 # Install opusenc: apt install opus-tools (Debian/Ubuntu) / dnf install opus-tools (Fedora)
 [tts]
 # piper_binary = "/usr/local/bin/piper"
-# piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
+# piper_model = "/opt/piper/models/en_US-lessac-high.onnx"  # Docker image also ships en_US-lessac-medium
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 
 # WhatsApp Calling / WebRTC
@@ -91,7 +91,7 @@ audio_dir = "./audio"         # Directory for IVR audio files
 # hold_music_file = "hold_music.opus"
 # ringback_file = "ringback.opus"
 transfer_timeout_secs = 120   # How long to wait for agent to accept transfer
-recording_enabled = true      # Record calls to S3 (requires [storage] s3 config)
+recording_enabled = true      # Record calls to S3 when configured, otherwise local_path
 udp_port_min = 10000          # WebRTC UDP port range start
 udp_port_max = 10100          # WebRTC UDP port range end
 # public_ip = "1.2.3.4"      # Public IP for NAT mapping (required on AWS/cloud)

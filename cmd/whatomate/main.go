@@ -209,15 +209,23 @@ func runServer(args []string) {
 		HTTPClient: httpClient,
 	}
 
-	// Initialize S3 client for call recordings (optional)
+	// Initialize recording storage (S3 when configured, otherwise local_path)
 	var s3Client *storage.S3Client
-	if cfg.Calling.RecordingEnabled && cfg.Storage.S3Bucket != "" {
-		var err error
-		s3Client, err = storage.NewS3Client(&cfg.Storage)
-		if err != nil {
-			lo.Warn("Failed to initialize S3 client for recordings, recording disabled", "error", err)
-		} else {
-			lo.Info("S3 client initialized for call recordings", "bucket", cfg.Storage.S3Bucket)
+	var recordings storage.Uploader
+	if cfg.Calling.RecordingEnabled {
+		if cfg.Storage.S3Bucket != "" {
+			var err error
+			s3Client, err = storage.NewS3Client(&cfg.Storage)
+			if err != nil {
+				lo.Warn("Failed to initialize S3 client for recordings, falling back to local storage", "error", err)
+			} else {
+				recordings = s3Client
+				lo.Info("S3 client initialized for call recordings", "bucket", cfg.Storage.S3Bucket)
+			}
+		}
+		if recordings == nil {
+			recordings = storage.NewLocalFS(cfg.Storage.LocalPath)
+			lo.Info("Call recordings stored locally", "path", cfg.Storage.LocalPath)
 		}
 	}
 
@@ -226,7 +234,7 @@ func runServer(args []string) {
 	app.Assigner = assigner
 
 	// Initialize CallManager (per-org calling_enabled DB setting controls access)
-	app.CallManager = calling.NewManager(&cfg.Calling, s3Client, db, rdb, waClient, wsHub, assigner, lo)
+	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, rdb, waClient, wsHub, assigner, lo)
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
 
@@ -831,6 +839,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Call Logs
 	g.GET("/api/call-logs", app.ListCallLogs)
 	g.GET("/api/call-logs/{id}", app.GetCallLog)
+	g.GET("/api/call-logs/{id}/recording/file", app.ServeCallRecordingFile)
 	g.GET("/api/call-logs/{id}/recording", app.GetCallRecording)
 
 	// Call Transfers

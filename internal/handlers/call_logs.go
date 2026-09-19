@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"os"
+	"strings"
 	"time"
 
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/internal/storage"
 	"github.com/shridarpatil/whatomate/internal/utils"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -144,21 +147,80 @@ func (a *App) GetCallLog(r *fastglue.Request) error {
 	})
 }
 
-// GetCallRecording returns a presigned S3 URL for a call recording.
+// GetCallRecording returns a playback URL for a call recording.
+// S3-backed recordings get a 15-minute presigned URL. Local recordings get an
+// authenticated same-origin URL served by ServeCallRecordingFile.
 // Users without call_logs:read permission can only access recordings for their own calls.
 func (a *App) GetCallRecording(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	callLog, err := a.loadCallLogForRecording(r)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+		return nil
 	}
 
-	if a.S3Client == nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Recording not available", nil, "")
+	if a.S3Client != nil {
+		url, err := a.S3Client.GetPresignedURL(r.RequestCtx, callLog.RecordingS3Key, 15*time.Minute)
+		if err != nil {
+			a.Log.Error("Failed to generate presigned URL", "error", err, "call_log_id", callLog.ID)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate recording URL", nil, "")
+		}
+		return r.SendEnvelope(map[string]any{
+			"url":      url,
+			"duration": callLog.RecordingDuration,
+		})
+	}
+
+	base := strings.TrimSuffix(a.Config.Server.BasePath, "/")
+	return r.SendEnvelope(map[string]any{
+		"url":      base + "/api/call-logs/" + callLog.ID.String() + "/recording/file",
+		"duration": callLog.RecordingDuration,
+	})
+}
+
+// ServeCallRecordingFile streams a locally stored recording. Used when storage
+// type is local (or S3 is not configured). Same permission rules as GetCallRecording.
+func (a *App) ServeCallRecordingFile(r *fastglue.Request) error {
+	callLog, err := a.loadCallLogForRecording(r)
+	if err != nil {
+		return nil
+	}
+
+	fs := storage.NewLocalFS(a.Config.Storage.LocalPath)
+	fullPath, err := fs.Resolve(callLog.RecordingS3Key)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
+	}
+
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Recording file not found", nil, "")
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid file path", nil, "")
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		a.Log.Error("Failed to read recording file", "path", fullPath, "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to read recording", nil, "")
+	}
+
+	r.RequestCtx.Response.Header.Set("Cache-Control", "private, max-age=3600")
+	r.RequestCtx.SetContentType("audio/ogg")
+	r.RequestCtx.SetBody(data)
+	r.RequestCtx.SetStatusCode(fasthttp.StatusOK)
+	return nil
+}
+
+func (a *App) loadCallLogForRecording(r *fastglue.Request) (*models.CallLog, error) {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		_ = r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+		return nil, errEnvelopeSent
 	}
 
 	logID, err := parsePathUUID(r, "id", "call log")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	query := a.DB.Where("id = ? AND organization_id = ?", logID, orgID)
@@ -168,21 +230,14 @@ func (a *App) GetCallRecording(r *fastglue.Request) error {
 
 	var callLog models.CallLog
 	if err := query.First(&callLog).Error; err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Call log not found", nil, "")
+		_ = r.SendErrorEnvelope(fasthttp.StatusNotFound, "Call log not found", nil, "")
+		return nil, errEnvelopeSent
 	}
 
 	if callLog.RecordingS3Key == "" {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
+		_ = r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
+		return nil, errEnvelopeSent
 	}
 
-	url, err := a.S3Client.GetPresignedURL(r.RequestCtx, callLog.RecordingS3Key, 15*time.Minute)
-	if err != nil {
-		a.Log.Error("Failed to generate presigned URL", "error", err, "call_log_id", logID)
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate recording URL", nil, "")
-	}
-
-	return r.SendEnvelope(map[string]any{
-		"url":      url,
-		"duration": callLog.RecordingDuration,
-	})
+	return &callLog, nil
 }

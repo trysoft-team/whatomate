@@ -257,7 +257,12 @@ Hold music is configurable per organization from **Settings > Organization > Cal
 
 ## Call Recording
 
-When enabled, calls are recorded during the agent-caller bridge phase. Recordings are saved as OGG/Opus files and uploaded to S3.
+When enabled, calls are recorded during the agent-caller bridge phase. Recordings are saved as OGG/Opus files.
+
+Storage depends on `[storage]`:
+
+- `type = "s3"` with a bucket — upload to S3 (presigned playback URLs)
+- `type = "local"` (or no S3 bucket) — write under `local_path/recordings/{org-id}/{call-log-id}.ogg` and play back through an authenticated API URL
 
 To enable, add to your `config.toml`:
 
@@ -265,20 +270,30 @@ To enable, add to your `config.toml`:
 [calling]
 recording_enabled = true
 
+# Local (default when S3 is not configured)
 [storage]
-type = "s3"
-s3_bucket = "your-bucket"
-s3_region = "us-east-1"
-s3_key = "AKIA..."
-s3_secret = "..."
+type = "local"
+local_path = "./uploads"
+
+# Or S3
+# [storage]
+# type = "s3"
+# s3_bucket = "your-bucket"
+# s3_region = "us-east-1"
+# s3_key = "AKIA..."
+# s3_secret = "..."
 ```
 
-<Aside type="caution">
-  Recording is **S3-only**. With `recording_enabled = true` but no S3 client configured, recording
-  is silently skipped — nothing is written to local storage.
+<Aside type="note">
+  Persist `local_path` across restarts (Docker: mount `./uploads`). S3 is still recommended for multi-host production.
 </Aside>
 
-Recordings are accessible from the call log detail view, which generates time-limited presigned URLs for playback.
+Recordings show up on the call log detail page with an in-browser player.
+
+- **S3** — the UI fetches a 15-minute presigned URL.
+- **Local** — the UI plays `/api/call-logs/{id}/recording/file` (cookie-authenticated, same origin).
+
+The `recording_s3_key` field on the call log is the storage key in both cases (`recordings/{org-id}/{call-log-id}.ogg`).
 
 <Aside type="note">
   Only the agent-caller conversation is recorded. The IVR portion (automated prompts before an agent connects) is not recorded.
@@ -377,7 +392,7 @@ ringback_file = "ringback.opus"        # Ringback tone for outgoing calls (no de
 max_call_duration = 300                # Max call duration in seconds (default 300)
 transfer_timeout_secs = 120            # Seconds to wait for a team to accept a transfer
 per_agent_timeout_secs = 0             # Global default: seconds to ring each agent before rotating (0 → falls back to 15; a team's own setting overrides this)
-recording_enabled = false              # Enable call recording to S3
+recording_enabled = false              # Enable call recording (S3 or local_path)
 udp_port_min = 10000                   # WebRTC UDP port range start
 udp_port_max = 10100                   # WebRTC UDP port range end
 public_ip = ""                         # Public IP for NAT (required on cloud/AWS)
@@ -452,6 +467,9 @@ sudo dnf install espeak-ng opus-tools
 wget https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
 tar xf piper_linux_x86_64.tar.gz
 sudo mv piper/piper /usr/local/bin/
+# Also install Piper's bundled libs (required; see espeak-ng note below)
+sudo cp piper/lib*.so* /usr/local/lib/
+sudo ldconfig
 ```
 
 ### Download a Voice Model
@@ -460,17 +478,18 @@ Piper voices are available at [huggingface.co/rhasspy/piper-voices](https://hugg
 
 **Choosing a voice:**
 - Browse voices and listen to samples at [rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/)
-- Voices come in quality levels: `low`, `medium`, and `high` — `medium` is a good balance of quality and speed
-- For US English, `en_US-lessac-medium` is recommended (~60MB)
+- Piper's `low` / `medium` / `high` labels are model size, not sample rate (output is 22.05 kHz either way)
+- For a consistent US English IVR voice, **`en_US-lessac-high`** is the best quality (~109MB). `en_US-lessac-medium` (~63MB) is the default shipped in the Docker image and is fine for testing.
+- Skip multi-speaker LibriTTS models for IVR — they vary speaker identity between prompts.
 
 ```bash
 mkdir -p /opt/piper/models
 
-# Download model and config
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx \
-  -O /opt/piper/models/en_US-lessac-medium.onnx
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json \
-  -O /opt/piper/models/en_US-lessac-medium.onnx.json
+# Recommended: high-quality Lessac
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx \
+  -O /opt/piper/models/en_US-lessac-high.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx.json \
+  -O /opt/piper/models/en_US-lessac-high.onnx.json
 ```
 
 ### Configure TTS
@@ -480,7 +499,7 @@ Add to your `config.toml`:
 ```toml
 [tts]
 piper_binary = "/usr/local/bin/piper"
-piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
+piper_model = "/opt/piper/models/en_US-lessac-high.onnx"
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 ```
 
@@ -488,14 +507,18 @@ piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
 
 ```bash
 echo "Press 1 for sales, press 2 for support." | piper \
-  --model /opt/piper/models/en_US-lessac-medium.onnx \
+  --model /opt/piper/models/en_US-lessac-high.onnx \
   --output_file test.wav
 opusenc --bitrate 24 test.wav test.ogg
 # Play: aplay test.wav  OR  ffplay test.ogg
 ```
 
+<Aside type="caution">
+  Piper 2023.11.14 ships `libespeak-ng` 1.52 (`espeak_TextToPhonemesWithTerminator`). Debian Bookworm's `espeak-ng` is 1.51 and will win the dynamic linker lookup, causing `symbol lookup error` at generation time. The Docker image sets `LD_LIBRARY_PATH=/usr/local/lib` so Piper's bundled library is used. For a host install, copy Piper's `lib*.so*` into `/usr/local/lib` and export the same variable (or run Piper without the distro `libespeak-ng1` on the linker path).
+</Aside>
+
 <Aside type="tip">
-  Generated audio files are cached in the `audio_dir` (default: `./audio`) using a SHA256 hash of the text. The same text always reuses the existing file, so regeneration is instant after the first run.
+  Generated audio files are cached in the `audio_dir` (default: `./audio`) using a SHA256 hash of the text. The same text always reuses the existing file, so regeneration is instant after the first run. Changing the voice model does **not** bust this cache — delete `audio_dir/tts_*.ogg` (or recreate the container's `/app/audio`) after switching models.
 </Aside>
 
 ## Firewall & Network

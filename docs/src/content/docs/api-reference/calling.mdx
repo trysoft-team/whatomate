@@ -73,6 +73,7 @@ GET /api/call-logs
         "answered_at": "2024-01-01T00:00:05Z",
         "ended_at": "2024-01-01T00:01:37Z",
         "disconnected_by": "agent",
+        "recording_s3_key": "recordings/org-uuid/call-uuid.ogg",
         "recording_duration": 92,
         "contact": { "id": "uuid", "phone_number": "+15551234567" },
         "agent": { "id": "uuid", "full_name": "Jane Agent" }
@@ -124,7 +125,7 @@ GET /api/call-logs/{id}
 
 ### Get Call Recording
 
-Get a short-lived presigned URL for a call's audio recording. Requires S3 storage to be configured and the call to have a recording.
+Get a playback URL for a call's audio recording. S3-backed recordings return a 15-minute presigned URL. Local recordings return an authenticated path (`/api/call-logs/{id}/recording/file`). The call must have a recording.
 
 ```bash
 GET /api/call-logs/{id}/recording
@@ -142,9 +143,33 @@ GET /api/call-logs/{id}/recording
 }
 ```
 
+Local storage example:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "url": "/api/call-logs/550e8400-e29b-41d4-a716-446655440000/recording/file",
+    "duration": 92
+  }
+}
+```
+
 <Aside type="note">
-  The presigned URL expires after 15 minutes. Returns `404` if no recording exists or storage is not configured.
+  S3 presigned URLs expire after 15 minutes. The local file URL is cookie-authenticated and same-origin. Returns `404` if no recording exists.
 </Aside>
+
+### Download Call Recording (local storage)
+
+Stream the OGG/Opus file for a locally stored recording. Same permission rules as Get Call Recording. Not used when recordings live on S3 (use the presigned URL instead).
+
+```bash
+GET /api/call-logs/{id}/recording/file
+```
+
+#### Response
+
+`200` with `Content-Type: audio/ogg` and `Cache-Control: private, max-age=3600`. Returns `404` if the call has no recording or the file is missing on disk.
 
 ### Hold Call
 

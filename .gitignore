@@ -54,6 +54,7 @@ tmp/
 temp/
 uploads/
 audio/
+piper-models/
 
 # Test results
 test-results/
