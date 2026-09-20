@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "whatomate",
+  "project_id": "760af21d-2464-43b8-832c-1fcf2259f06b"
+}
