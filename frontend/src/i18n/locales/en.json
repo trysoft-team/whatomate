@@ -263,6 +263,8 @@
     "accounts": "Accounts",
     "cannedResponses": "Canned Responses",
     "tags": "Tags",
+    "contactLists": "Contact lists",
+    "googleCredentials": "Google",
     "teams": "Teams",
     "users": "Users",
     "roles": "Roles",

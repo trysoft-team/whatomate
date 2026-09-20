@@ -1,17 +1,24 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/expr-lang/expr"
 	"github.com/google/uuid"
+	"github.com/shridarpatil/whatomate/internal/crypto"
+	wmgoogle "github.com/shridarpatil/whatomate/internal/google"
+	"github.com/shridarpatil/whatomate/internal/mail"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"gorm.io/gorm"
 )
 
 // maxChatGraphIterations bounds non-blocking node chains within a single
@@ -88,15 +95,17 @@ func (a *App) runChatGraph(
 		flowResponseData: flowResponseData,
 	}
 
+	// Ensure resume paths (e.g. Delay poller) can reload this flow.
+	if session.CurrentFlowID == nil {
+		session.CurrentFlowID = &flow.ID
+	}
+
 	// Seed built-in template variables so {{phone_number}} / {{contact_name}}
-	// work in any outgoing message without needing an upstream api_call.
-	if session.SessionData == nil {
-		session.SessionData = models.JSONB{}
-	}
-	session.SessionData["phone_number"] = session.PhoneNumber
-	if contact != nil {
-		session.SessionData["contact_name"] = contact.ProfileName
-	}
+	// and whatsCRM aliases {{senderMobile}} / {{senderName}} / {{senderMessage}}
+	// (also {{{…}}}) work in any outgoing message without an upstream api_call.
+	// senderMessage is taken from this webhook's inbound text before we clear
+	// the trigger on a fresh session entry.
+	seedChatSessionBuiltins(session, contact, userInput)
 
 	if session.CurrentStep == "" {
 		session.CurrentStep = graph.EntryNode
@@ -185,6 +194,40 @@ func (a *App) runChatGraph(
 	return errChatGraphRunaway
 }
 
+// seedChatSessionBuiltins writes the per-turn template variables into
+// SessionData. Whatomate canonical names (phone_number, contact_name) and
+// whatsCRM aliases (senderMobile, senderName, senderMessage) are kept in
+// sync so authors can use either family — including {{{triple}}} braces.
+// senderMessage is only overwritten when this webhook carried inbound text,
+// so fire-and-forget node chains in the same turn keep the last inbound.
+func seedChatSessionBuiltins(session *models.ChatbotSession, contact *models.Contact, userInput string) {
+	if session.SessionData == nil {
+		session.SessionData = models.JSONB{}
+	}
+	session.SessionData["phone_number"] = session.PhoneNumber
+	session.SessionData["senderMobile"] = session.PhoneNumber
+	if contact != nil {
+		session.SessionData["contact_name"] = contact.ProfileName
+		session.SessionData["senderName"] = contact.ProfileName
+	}
+	if userInput != "" {
+		session.SessionData["senderMessage"] = userInput
+	}
+	// Envelope used by set_variable path lookups (whatsCRM Response Saver style).
+	inbound := map[string]any{
+		"senderName":   session.SessionData["senderName"],
+		"senderMobile": session.SessionData["senderMobile"],
+		"senderMessage": session.SessionData["senderMessage"],
+		"msgContext": map[string]any{
+			"type": "text",
+			"text": map[string]any{
+				"body": session.SessionData["senderMessage"],
+			},
+		},
+	}
+	session.SessionData["__inbound__"] = inbound
+}
+
 // executeChatNode dispatches by node type. Phase 1 implements only
 // message, buttons, and end. Other types return an error until their
 // PR lands.
@@ -199,6 +242,8 @@ func (a *App) executeChatNode(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		return a.execChatMessage(node, ctx)
 	case ChatNodeButtons:
 		return a.execChatButtons(node, ctx)
+	case ChatNodeList:
+		return a.execChatList(node, ctx)
 	case ChatNodePrompt:
 		return a.execChatPrompt(node, ctx)
 	case ChatNodeAPICall:
@@ -219,6 +264,22 @@ func (a *App) executeChatNode(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		return a.execChatGotoFlow(node, ctx)
 	case ChatNodeWhatsAppFlow:
 		return a.execChatWhatsAppFlow(node, ctx)
+	case ChatNodeWATemplate:
+		return a.execChatWATemplate(node, ctx)
+	case ChatNodeDelay:
+		return a.execChatDelay(node, ctx)
+	case ChatNodeResetSession:
+		return a.execChatResetSession(node, ctx)
+	case ChatNodeSetLabels:
+		return a.execChatSetLabels(node, ctx)
+	case ChatNodeDisableBot:
+		return a.execChatDisableBot(node, ctx)
+	case ChatNodeSendEmail:
+		return a.execChatSendEmail(node, ctx)
+	case ChatNodePhonebook:
+		return a.execChatPhonebook(node, ctx)
+	case ChatNodeGoogleService:
+		return a.execChatGoogleService(node, ctx)
 	case ChatNodeEnd:
 		return a.execChatEnd(node, ctx)
 	default:
@@ -227,20 +288,97 @@ func (a *App) executeChatNode(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 	}
 }
 
-// execChatMessage sends a text message and falls through. The message
-// body is rendered with processTemplate against SessionData so authors
-// can interpolate captured variables (e.g. "Hi {{customer_name}}").
-// Config: { "message": "..." } or "text" for compatibility.
+// execChatMessage sends a text/media/location message. By default it
+// falls through (fire-and-forget). Config:
+//
+//	{
+//	  "media_type": "text"|"image"|"audio"|"video"|"document"|"location", // default text
+//	  "message"|"text": "...",          // text body (text type)
+//	  "preview_url": true,              // Meta link preview for text
+//	  "media_url": "https://...",       // public link for media types
+//	  "caption": "...",                 // image/video/document caption
+//	  "filename": "...",                // document filename hint
+//	  "latitude": -1.2, "longitude": 36.8, "name": "...", "address": "...",
+//	  "wait_for_reply": true,           // yield until next inbound (moveToNextNode:false)
+//	  "store_as": "senderMessage"       // when wait_for_reply; default senderMessage
+//	}
 func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
-	text := stringFromConfig(node.Config, "message", "text")
-	if text == "" {
+	wait := boolFromConfig(node.Config, "wait_for_reply")
+	if wait && !ctx.consumed && (ctx.userInput != "" || ctx.buttonID != "") {
+		ctx.consumed = true
+		storeAs := stringFromConfig(node.Config, "store_as")
+		if storeAs == "" {
+			storeAs = "senderMessage"
+		}
+		if ctx.session.SessionData == nil {
+			ctx.session.SessionData = models.JSONB{}
+		}
+		value := ctx.userInput
+		if value == "" {
+			value = ctx.buttonID
+		}
+		ctx.session.SessionData[storeAs] = value
 		return nodeOutcome{outcome: "default"}, nil
 	}
-	text = processTemplate(text, ctx.session.SessionData)
-	if err := a.sendAndSaveTextMessage(ctx.account, ctx.contact, text); err != nil {
-		return nodeOutcome{}, fmt.Errorf("send message: %w", err)
+
+	mediaType := stringFromConfig(node.Config, "media_type")
+	if mediaType == "" {
+		mediaType = "text"
 	}
-	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, text, node.ID)
+
+	logPreview := ""
+	switch mediaType {
+	case "text", "":
+		text := stringFromConfig(node.Config, "message", "text")
+		if text == "" && !wait {
+			return nodeOutcome{outcome: "default"}, nil
+		}
+		if text == "" {
+			return nodeOutcome{}, fmt.Errorf("message node %q has no text configured", node.ID)
+		}
+		text = processTemplate(text, ctx.session.SessionData)
+		preview := boolFromConfig(node.Config, "preview_url")
+		if err := a.sendAndSaveTextMessageOpts(ctx.account, ctx.contact, text, preview); err != nil {
+			return nodeOutcome{}, fmt.Errorf("send message: %w", err)
+		}
+		logPreview = text
+
+	case "image", "audio", "video", "document":
+		link := processTemplate(stringFromConfig(node.Config, "media_url", "link"), ctx.session.SessionData)
+		if link == "" {
+			return nodeOutcome{}, fmt.Errorf("message node %q missing media_url", node.ID)
+		}
+		caption := processTemplate(stringFromConfig(node.Config, "caption"), ctx.session.SessionData)
+		filename := processTemplate(stringFromConfig(node.Config, "filename"), ctx.session.SessionData)
+		if err := a.sendAndSaveMediaByLink(ctx.account, ctx.contact, mediaType, link, caption, filename); err != nil {
+			return nodeOutcome{}, fmt.Errorf("send %s: %w", mediaType, err)
+		}
+		logPreview = caption
+		if logPreview == "" {
+			logPreview = link
+		}
+
+	case "location":
+		lat := floatFromConfig(node.Config, "latitude")
+		lng := floatFromConfig(node.Config, "longitude")
+		name := processTemplate(stringFromConfig(node.Config, "name", "location_name"), ctx.session.SessionData)
+		address := processTemplate(stringFromConfig(node.Config, "address", "location_address"), ctx.session.SessionData)
+		if err := a.sendAndSaveLocationMessage(ctx.account, ctx.contact, lat, lng, name, address); err != nil {
+			return nodeOutcome{}, fmt.Errorf("send location: %w", err)
+		}
+		logPreview = name
+		if logPreview == "" {
+			logPreview = fmt.Sprintf("%g,%g", lat, lng)
+		}
+
+	default:
+		return nodeOutcome{}, fmt.Errorf("message node %q has unsupported media_type %q", node.ID, mediaType)
+	}
+
+	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, logPreview, node.ID)
+	if wait {
+		return nodeOutcome{yield: true}, nil
+	}
 	return nodeOutcome{outcome: "default"}, nil
 }
 
@@ -289,6 +427,56 @@ func (a *App) execChatButtons(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 	}
 	if err := a.sendAndSaveInteractiveButtons(ctx.account, ctx.contact, body, buttons); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send buttons: %w", err)
+	}
+	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
+	return nodeOutcome{yield: true}, nil
+}
+
+// execChatList sends an interactive list message and waits for a row tap.
+// Config:
+//
+//	{
+//	  "body": "...", "header": "...", "footer": "...", "button": "Menu",
+//	  "store_as": "choice",
+//	  "sections": [{ "title": "...", "rows": [{ "id": "...", "title": "...", "description": "..." }] }]
+//	}
+func (a *App) execChatList(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	if !ctx.consumed && ctx.buttonID != "" {
+		ctx.consumed = true
+		if storeAs := stringFromConfig(node.Config, "store_as"); storeAs != "" {
+			if ctx.session.SessionData == nil {
+				ctx.session.SessionData = models.JSONB{}
+			}
+			value := ctx.userInput
+			if value == "" {
+				value = ctx.buttonID
+			}
+			ctx.session.SessionData[storeAs] = value
+		}
+		return nodeOutcome{outcome: "button:" + ctx.buttonID}, nil
+	}
+
+	body := stringFromConfig(node.Config, "body", "message", "text")
+	if body == "" {
+		body = node.Label
+	}
+	body = processTemplate(body, ctx.session.SessionData)
+	header := processTemplate(stringFromConfig(node.Config, "header"), ctx.session.SessionData)
+	footer := processTemplate(stringFromConfig(node.Config, "footer"), ctx.session.SessionData)
+	button := processTemplate(stringFromConfig(node.Config, "button", "button_text"), ctx.session.SessionData)
+	sections := listSectionsFromConfig(node.Config)
+	if len(sections) == 0 {
+		return nodeOutcome{}, fmt.Errorf("list node %q has no sections/rows configured", node.ID)
+	}
+	for i := range sections {
+		sections[i].Title = processTemplate(sections[i].Title, ctx.session.SessionData)
+		for j := range sections[i].Rows {
+			sections[i].Rows[j].Title = processTemplate(sections[i].Rows[j].Title, ctx.session.SessionData)
+			sections[i].Rows[j].Description = processTemplate(sections[i].Rows[j].Description, ctx.session.SessionData)
+		}
+	}
+	if err := a.sendAndSaveInteractiveList(ctx.account, ctx.contact, body, button, header, footer, sections); err != nil {
+		return nodeOutcome{}, fmt.Errorf("send list: %w", err)
 	}
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
 	return nodeOutcome{yield: true}, nil
@@ -461,22 +649,47 @@ func (a *App) execChatAPICall(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 	return nodeOutcome{outcome: "http:2xx"}, nil
 }
 
-// execChatCondition is a pure-branch node: evaluates a free-form
-// boolean expression against SessionData and returns "true" or "false"
-// so an edge can route accordingly. No message is sent.
+// execChatCondition branches the graph. Two modes:
 //
-// Config:
+//  1. Expression (legacy / power users):
+//     { "mode": "expression", "expression": "tier == \"premium\"" }
+//     Outcomes: "true" / "false".
 //
-//	{
-//	  "expression": "status == \"active\" and (tier == \"premium\" or amount > 100)"
-//	}
+//  2. Rules (whatsCRM-style named branches):
+//     {
+//       "mode": "rules",
+//       "variable": "senderMessage",   // optional; empty = senderMessage
+//       "rules": [
+//         { "name": "Yes", "operator": "text_exact", "value": "yes",
+//           "case_sensitive": false, "handle": "yes" },
+//         { "name": "Range", "operator": "number_between",
+//           "value": "1", "value_to": "10", "handle": "mid" }
+//       ]
+//     }
+//     Outcomes: first matching rule's handle, else "else".
 //
-// The expression is evaluated by github.com/expr-lang/expr. SessionData
-// keys are available as top-level identifiers. Unknown identifiers
-// resolve to nil (so `status == "active"` evaluates false when status
-// isn't set, rather than throwing). Compile/runtime errors map to
-// outcome "false" so the inbound webhook doesn't error.
+// Compile/runtime errors in expression mode map to "false". Empty rules
+// with no match → "else".
 func (a *App) execChatCondition(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	mode := stringFromConfig(node.Config, "mode")
+	rules := conditionRulesFromConfig(node.Config)
+	if mode == "rules" || (mode == "" && len(rules) > 0) {
+		left := conditionLeftValue(node.Config, ctx)
+		for _, rule := range rules {
+			if matchConditionRule(rule, left) {
+				handle := rule.Handle
+				if handle == "" {
+					handle = slugHandle(rule.Name)
+				}
+				if handle == "" {
+					handle = "matched"
+				}
+				return nodeOutcome{outcome: handle}, nil
+			}
+		}
+		return nodeOutcome{outcome: "else"}, nil
+	}
+
 	expression := stringFromConfig(node.Config, "expression")
 	if expression == "" {
 		a.Log.Warn("condition node missing expression",
@@ -494,6 +707,125 @@ func (a *App) execChatCondition(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, 
 		return nodeOutcome{outcome: "true"}, nil
 	}
 	return nodeOutcome{outcome: "false"}, nil
+}
+
+type conditionRule struct {
+	Name          string
+	Operator      string
+	Value         string
+	ValueTo       string
+	CaseSensitive bool
+	Handle        string
+}
+
+func conditionRulesFromConfig(cfg map[string]any) []conditionRule {
+	raw, ok := cfg["rules"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]conditionRule, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, conditionRule{
+			Name:          stringFromConfig(m, "name"),
+			Operator:      stringFromConfig(m, "operator", "type"),
+			Value:         stringFromConfig(m, "value"),
+			ValueTo:       stringFromConfig(m, "value_to", "to"),
+			CaseSensitive: boolFromConfig(m, "case_sensitive") || boolFromConfig(m, "caseSensitive"),
+			Handle:        stringFromConfig(m, "handle"),
+		})
+	}
+	return out
+}
+
+func conditionLeftValue(cfg map[string]any, ctx *chatNodeCtx) string {
+	varName := stringFromConfig(cfg, "variable", "input_variable")
+	if varName == "" {
+		varName = "senderMessage"
+	}
+	if ctx.session.SessionData != nil {
+		if v, ok := ctx.session.SessionData[varName]; ok && v != nil {
+			return fmt.Sprint(v)
+		}
+	}
+	// Fall back to this turn's inbound text when the named var isn't set.
+	if varName == "senderMessage" {
+		return ctx.userInput
+	}
+	return ""
+}
+
+func matchConditionRule(rule conditionRule, left string) bool {
+	op := strings.ToLower(strings.TrimSpace(rule.Operator))
+	right := rule.Value
+	leftCmp, rightCmp := left, right
+	if !rule.CaseSensitive {
+		leftCmp = strings.ToLower(left)
+		rightCmp = strings.ToLower(right)
+	}
+
+	switch op {
+	case "text_exact", "exact", "eq", "equals":
+		return leftCmp == rightCmp
+	case "text_contains", "contains":
+		return strings.Contains(leftCmp, rightCmp)
+	case "text_starts_with", "starts_with", "startswith":
+		return strings.HasPrefix(leftCmp, rightCmp)
+	case "text_ends_with", "ends_with", "endswith":
+		return strings.HasSuffix(leftCmp, rightCmp)
+	case "number_equals", "number_eq":
+		ln, lok := parseConditionNumber(left)
+		rn, rok := parseConditionNumber(right)
+		return lok && rok && ln == rn
+	case "number_greater", "number_gt", "gt":
+		ln, lok := parseConditionNumber(left)
+		rn, rok := parseConditionNumber(right)
+		return lok && rok && ln > rn
+	case "number_less", "number_lt", "lt":
+		ln, lok := parseConditionNumber(left)
+		rn, rok := parseConditionNumber(right)
+		return lok && rok && ln < rn
+	case "number_between", "between":
+		ln, lok := parseConditionNumber(left)
+		from, fok := parseConditionNumber(right)
+		to, tok := parseConditionNumber(rule.ValueTo)
+		return lok && fok && tok && ln >= from && ln <= to
+	default:
+		// Unknown operator: treat as text_exact so misconfigs don't silently match.
+		return leftCmp == rightCmp
+	}
+}
+
+func parseConditionNumber(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	var f float64
+	if _, err := fmt.Sscan(s, &f); err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+func slugHandle(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '_':
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 // evaluateConditionExpression compiles + runs a boolean expression via
@@ -595,43 +927,91 @@ type scheduleLogger interface {
 	Warn(msg string, args ...any)
 }
 
-// execChatSetVariable assigns one or more values into SessionData. Each
-// value runs through processTemplate against current SessionData first,
-// so authors can compose new variables from existing ones (e.g.
-// "greeting" = "Hello {{customer_name}}!"). Non-blocking; outcome
-// "default".
-//
-// Config:
+// execChatSetVariable assigns values into SessionData. Supports:
 //
 //	{
-//	  "set": {
-//	    "greeting":  "Hello {{customer_name}}!",
-//	    "tier":      "premium"
-//	  }
+//	  "set": { "greeting": "Hello {{contact_name}}!" },
+//	  "paths": [
+//	    { "name": "body", "path": "msgContext.text.body" },
+//	    { "name": "raw",  "path": "senderMessage" }
+//	  ]
 //	}
+//
+// "set" values are templated. "paths" walk SessionData["__inbound__"]
+// (seeded each turn) with dotted keys. Non-blocking; outcome "default".
 func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
-	assignments, _ := node.Config["set"].(map[string]any)
-	if len(assignments) == 0 {
-		return nodeOutcome{outcome: "default"}, nil
-	}
-
 	if ctx.session.SessionData == nil {
 		ctx.session.SessionData = models.JSONB{}
 	}
+
+	assignments, _ := node.Config["set"].(map[string]any)
 	for name, raw := range assignments {
 		if name == "" {
 			continue
 		}
 		tmpl, ok := raw.(string)
 		if !ok {
-			// Non-string assignments are stored verbatim — useful for
-			// numbers or booleans authored directly in the editor.
 			ctx.session.SessionData[name] = raw
 			continue
 		}
 		ctx.session.SessionData[name] = processTemplate(tmpl, ctx.session.SessionData)
 	}
+
+	if paths, ok := node.Config["paths"].([]any); ok {
+		inbound, _ := ctx.session.SessionData["__inbound__"].(map[string]any)
+		for _, item := range paths {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := stringFromConfig(m, "name", "var", "varName")
+			path := stringFromConfig(m, "path", "responsePath", "response_path")
+			if name == "" || path == "" {
+				continue
+			}
+			if v, ok := lookupDottedPath(inbound, path); ok {
+				ctx.session.SessionData[name] = v
+			} else if v, ok := lookupDottedPath(map[string]any(ctx.session.SessionData), path); ok {
+				// Allow paths against session itself (e.g. senderMessage).
+				ctx.session.SessionData[name] = v
+			}
+		}
+	}
+
 	return nodeOutcome{outcome: "default"}, nil
+}
+
+// lookupDottedPath walks a nested map using a.b.c notation. Also accepts
+// whatsCRM-style prefixes like "message.msgContext.text.body".
+func lookupDottedPath(root map[string]any, path string) (any, bool) {
+	if root == nil || path == "" {
+		return nil, false
+	}
+	path = strings.TrimPrefix(path, "message.")
+	parts := strings.Split(path, ".")
+	var cur any = root
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[part]
+			if !ok {
+				return nil, false
+			}
+			cur = next
+		case models.JSONB:
+			next, ok := node[part]
+			if !ok {
+				return nil, false
+			}
+			cur = next
+		default:
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 // execChatAIResponse invokes the configured LLM provider via the
@@ -687,6 +1067,12 @@ func (a *App) execChatAIResponse(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome,
 		return nodeOutcome{}, fmt.Errorf("send ai response: %w", err)
 	}
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, answer, node.ID)
+	if storeAs := stringFromConfig(node.Config, "store_as"); storeAs != "" {
+		if ctx.session.SessionData == nil {
+			ctx.session.SessionData = models.JSONB{}
+		}
+		ctx.session.SessionData[storeAs] = answer
+	}
 	return nodeOutcome{outcome: "default"}, nil
 }
 
@@ -723,7 +1109,16 @@ func (a *App) execChatTransfer(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, e
 	}
 
 	teamIDStr := stringFromConfig(node.Config, "team_id")
-	if teamIDStr != "" && teamIDStr != "_general" {
+	agentIDStr := stringFromConfig(node.Config, "user_id", "agent_id")
+	if agentIDStr != "" {
+		if parsed, err := uuid.Parse(agentIDStr); err == nil {
+			a.createTransferToAgent(ctx.account, ctx.contact, parsed, notes, models.TransferSourceFlow)
+		} else {
+			a.Log.Warn("transfer node has invalid user_id, falling back to queue",
+				"node", node.ID, "user_id", agentIDStr, "error", err)
+			a.createTransferToQueue(ctx.account, ctx.contact, models.TransferSourceFlow)
+		}
+	} else if teamIDStr != "" && teamIDStr != "_general" {
 		if parsed, err := uuid.Parse(teamIDStr); err == nil {
 			a.createTransferToTeam(ctx.account, ctx.contact, parsed, notes, models.TransferSourceFlow)
 		} else {
@@ -883,13 +1278,29 @@ func (a *App) execChatWhatsAppFlow(node *ChatNode, ctx *chatNodeCtx) (nodeOutcom
 
 	body := processTemplate(stringFromConfig(node.Config, "body", "message", "text"), ctx.session.SessionData)
 	header := processTemplate(stringFromConfig(node.Config, "header"), ctx.session.SessionData)
+	footer := processTemplate(stringFromConfig(node.Config, "footer"), ctx.session.SessionData)
 	cta := processTemplate(stringFromConfig(node.Config, "cta"), ctx.session.SessionData)
 
-	// Look up the first screen — same pattern as the legacy executor so
-	// existing WhatsAppFlow rows continue to work.
+	// Prefer local WhatsAppFlow row: resolve by meta id OR local UUID, require PUBLISHED when found.
 	firstScreen := ""
 	var waFlow models.WhatsAppFlow
+	found := false
 	if err := a.DB.Where("meta_flow_id = ?", flowID).First(&waFlow).Error; err == nil {
+		found = true
+	} else if id, err := uuid.Parse(flowID); err == nil {
+		if err := a.DB.Where("id = ? AND organization_id = ?", id, ctx.account.OrganizationID).First(&waFlow).Error; err == nil {
+			found = true
+			if waFlow.MetaFlowID != "" {
+				flowID = waFlow.MetaFlowID
+			}
+		}
+	}
+	if found {
+		if strings.ToUpper(waFlow.Status) != "PUBLISHED" {
+			a.Log.Warn("whatsapp_flow node references non-published flow",
+				"node", node.ID, "flow_id", flowID, "status", waFlow.Status)
+			return nodeOutcome{outcome: "default"}, nil
+		}
 		if len(waFlow.Screens) > 0 {
 			if screenMap, ok := waFlow.Screens[0].(map[string]any); ok {
 				if id, ok := screenMap["id"].(string); ok {
@@ -909,11 +1320,508 @@ func (a *App) execChatWhatsAppFlow(node *ChatNode, ctx *chatNodeCtx) (nodeOutcom
 	}
 
 	flowToken := fmt.Sprintf("chatbot_%s_%s_%d", ctx.session.ID.String(), node.ID, time.Now().UnixNano())
-	if err := a.sendAndSaveFlowMessage(ctx.account, ctx.contact, flowID, header, body, cta, flowToken, firstScreen); err != nil {
+	if err := a.sendAndSaveFlowMessage(ctx.account, ctx.contact, flowID, header, body, footer, cta, flowToken, firstScreen); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send whatsapp_flow: %w", err)
 	}
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
 	return nodeOutcome{yield: true}, nil
+}
+
+// execChatWATemplate sends an approved WhatsApp template and continues.
+// Config:
+//
+//	{
+//	  "template_id": "<uuid>",           // preferred
+//	  "template_name": "order_update", // fallback lookup with language
+//	  "language": "en",
+//	  "body_params": { "1": "{{order_id}}", "name": "{{contact_name}}" },
+//	  "wait_for_reply": false
+//	}
+func (a *App) execChatWATemplate(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	wait := boolFromConfig(node.Config, "wait_for_reply")
+	if wait && !ctx.consumed && (ctx.userInput != "" || ctx.buttonID != "") {
+		ctx.consumed = true
+		return nodeOutcome{outcome: "default"}, nil
+	}
+
+	var tmpl models.Template
+	found := false
+	if idStr := stringFromConfig(node.Config, "template_id"); idStr != "" {
+		if id, err := uuid.Parse(idStr); err == nil {
+			if err := a.DB.Where("id = ? AND organization_id = ?", id, ctx.account.OrganizationID).First(&tmpl).Error; err == nil {
+				found = true
+			}
+		}
+	}
+	if !found {
+		name := stringFromConfig(node.Config, "template_name", "name")
+		lang := stringFromConfig(node.Config, "language")
+		q := a.DB.Where("organization_id = ? AND whatsapp_account = ? AND name = ?",
+			ctx.account.OrganizationID, ctx.account.Name, name)
+		if lang != "" {
+			q = q.Where("language = ?", lang)
+		}
+		if err := q.First(&tmpl).Error; err == nil {
+			found = true
+		}
+	}
+	if !found {
+		a.Log.Warn("wa_template node template not found",
+			"node", node.ID, "session", ctx.session.ID)
+		return nodeOutcome{outcome: "default"}, nil
+	}
+	if strings.ToUpper(tmpl.Status) != "APPROVED" {
+		a.Log.Warn("wa_template node template not approved",
+			"node", node.ID, "template", tmpl.Name, "status", tmpl.Status)
+		return nodeOutcome{outcome: "default"}, nil
+	}
+
+	bodyParams := map[string]string{}
+	if raw, ok := node.Config["body_params"].(map[string]any); ok {
+		for k, v := range raw {
+			s := fmt.Sprint(v)
+			bodyParams[k] = processTemplate(s, ctx.session.SessionData)
+		}
+	} else if raw, ok := node.Config["variableMap"].(map[string]any); ok {
+		for k, v := range raw {
+			s := fmt.Sprint(v)
+			bodyParams[k] = processTemplate(s, ctx.session.SessionData)
+		}
+	}
+
+	sendCtx := context.Background()
+	if _, err := a.SendOutgoingMessage(sendCtx, OutgoingMessageRequest{
+		Account:    ctx.account,
+		Contact:    ctx.contact,
+		Type:       models.MessageTypeTemplate,
+		Template:   &tmpl,
+		BodyParams: bodyParams,
+	}, ChatbotSendOptions()); err != nil {
+		a.Log.Error("wa_template send failed",
+			"node", node.ID, "template", tmpl.Name, "error", err)
+		return nodeOutcome{outcome: "default"}, nil
+	}
+	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, tmpl.DisplayName, node.ID)
+	if wait {
+		return nodeOutcome{yield: true}, nil
+	}
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// execChatDelay parks the session for N seconds without holding the
+// inbound webhook open. A Redis-backed poller resumes the graph.
+// Config: { "seconds": 30 } — clamped to 1..3600; 0 advances immediately.
+func (a *App) execChatDelay(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	if ctx.session.SessionData == nil {
+		ctx.session.SessionData = models.JSONB{}
+	}
+
+	pending, _ := ctx.session.SessionData["__delay_pending"].(string)
+	if pending == node.ID {
+		resumeAt, _ := ctx.session.SessionData["__delay_resume_at"].(float64)
+		if resumeAt == 0 {
+			if v, ok := ctx.session.SessionData["__delay_resume_at"].(int64); ok {
+				resumeAt = float64(v)
+			}
+		}
+		if resumeAt > 0 && time.Now().Unix() < int64(resumeAt) {
+			// Still waiting — ignore early inbound and stay parked.
+			return nodeOutcome{yield: true}, nil
+		}
+		delete(ctx.session.SessionData, "__delay_pending")
+		delete(ctx.session.SessionData, "__delay_resume_at")
+		return nodeOutcome{outcome: "default"}, nil
+	}
+
+	seconds := intFromConfig(node.Config, "seconds", 0)
+	if seconds <= 0 {
+		return nodeOutcome{outcome: "default"}, nil
+	}
+	if seconds > 3600 {
+		seconds = 3600
+	}
+
+	resumeAt := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
+	ctx.session.SessionData["__delay_pending"] = node.ID
+	ctx.session.SessionData["__delay_resume_at"] = resumeAt
+	a.scheduleChatDelay(ctx.session.ID, seconds)
+	return nodeOutcome{yield: true}, nil
+}
+
+// execChatResetSession clears custom SessionData (keeps path audit +
+// builtins will be re-seeded next turn), resets step retries, and
+// continues via the default edge.
+func (a *App) execChatResetSession(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	_ = node
+	preserved := models.JSONB{}
+	if ctx.session.SessionData != nil {
+		if path, ok := ctx.session.SessionData["__path__"]; ok {
+			preserved["__path__"] = path
+		}
+	}
+	ctx.session.SessionData = preserved
+	ctx.session.StepRetries = 0
+	// Re-seed builtins immediately so following nodes in this turn still work.
+	seedChatSessionBuiltins(ctx.session, ctx.contact, ctx.userInput)
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// execChatSetLabels adds/removes tags on the contact and mirrors them into SessionData["tags"].
+// Config: { "add": ["vip"], "remove": ["lead"] }
+func (a *App) execChatSetLabels(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	add := stringSliceFromConfig(node.Config, "add", "labelsToAdd")
+	remove := stringSliceFromConfig(node.Config, "remove", "labelsToRemove")
+
+	tagSet := map[string]struct{}{}
+	if ctx.contact.Tags != nil {
+		for _, t := range ctx.contact.Tags {
+			if s, ok := t.(string); ok && s != "" {
+				tagSet[s] = struct{}{}
+			}
+		}
+	}
+	for _, t := range remove {
+		delete(tagSet, t)
+	}
+	for _, t := range add {
+		if t != "" {
+			tagSet[t] = struct{}{}
+		}
+	}
+	tags := make(models.JSONBArray, 0, len(tagSet))
+	tagStrings := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		tags = append(tags, t)
+		tagStrings = append(tagStrings, t)
+	}
+	sort.Strings(tagStrings)
+	if err := a.DB.Model(ctx.contact).Update("tags", tags).Error; err != nil {
+		return nodeOutcome{}, fmt.Errorf("update tags: %w", err)
+	}
+	ctx.contact.Tags = tags
+	if ctx.session.SessionData == nil {
+		ctx.session.SessionData = models.JSONB{}
+	}
+	ctx.session.SessionData["tags"] = tagStrings
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// execChatDisableBot mutes chatbot automation for this contact for a duration.
+// Config: { "hours": 1, "minutes": 30 }
+func (a *App) execChatDisableBot(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	hours := intFromConfig(node.Config, "hours", 0)
+	minutes := intFromConfig(node.Config, "minutes", 0)
+	total := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
+	if total <= 0 {
+		return nodeOutcome{outcome: "default"}, nil
+	}
+	until := time.Now().Add(total)
+	meta := ctx.contact.Metadata
+	if meta == nil {
+		meta = models.JSONB{}
+	}
+	meta["bot_muted_until"] = until.UTC().Format(time.RFC3339)
+	if err := a.DB.Model(ctx.contact).Update("metadata", meta).Error; err != nil {
+		return nodeOutcome{}, fmt.Errorf("mute bot: %w", err)
+	}
+	ctx.contact.Metadata = meta
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// execChatSendEmail sends HTML email via org SMTP settings.
+// Config: { "to", "subject", "html", "from?" } — no SMTP secrets in graph.
+func (a *App) execChatSendEmail(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	cfg, err := a.loadOrgSMTP(ctx.account.OrganizationID)
+	if err != nil {
+		a.Log.Warn("send_email: smtp not configured", "node", node.ID, "error", err)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	to := processTemplate(stringFromConfig(node.Config, "to"), ctx.session.SessionData)
+	subject := processTemplate(stringFromConfig(node.Config, "subject"), ctx.session.SessionData)
+	htmlBody := processTemplate(stringFromConfig(node.Config, "html", "body"), ctx.session.SessionData)
+	from := processTemplate(stringFromConfig(node.Config, "from"), ctx.session.SessionData)
+	recipients := mail.SplitAddresses(to)
+	if len(recipients) == 0 || subject == "" {
+		a.Log.Warn("send_email: missing to/subject", "node", node.ID)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	if err := mail.Send(cfg, mail.Message{From: from, To: recipients, Subject: subject, HTML: htmlBody}); err != nil {
+		a.Log.Error("send_email failed", "node", node.ID, "session", ctx.session.ID, "error", err)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+func (a *App) loadOrgSMTP(orgID uuid.UUID) (mail.SMTPConfig, error) {
+	var org models.Organization
+	if err := a.DB.Select("settings").Where("id = ?", orgID).First(&org).Error; err != nil {
+		return mail.SMTPConfig{}, err
+	}
+	if org.Settings == nil {
+		return mail.SMTPConfig{}, fmt.Errorf("no org settings")
+	}
+	host, _ := org.Settings["smtp_host"].(string)
+	if host == "" {
+		return mail.SMTPConfig{}, fmt.Errorf("smtp_host empty")
+	}
+	port := 587
+	if v, ok := org.Settings["smtp_port"].(float64); ok && v > 0 {
+		port = int(v)
+	} else if v, ok := org.Settings["smtp_port"].(int); ok && v > 0 {
+		port = v
+	}
+	user, _ := org.Settings["smtp_username"].(string)
+	from, _ := org.Settings["smtp_from"].(string)
+	sec, _ := org.Settings["smtp_security"].(string)
+	pass := ""
+	if enc, ok := org.Settings["smtp_password_encrypted"].(string); ok && enc != "" {
+		dec, err := crypto.Decrypt(enc, a.Config.App.EncryptionKey)
+		if err != nil {
+			return mail.SMTPConfig{}, fmt.Errorf("decrypt smtp password: %w", err)
+		}
+		pass = dec
+	}
+	return mail.SMTPConfig{
+		Host: host, Port: port, Username: user, Password: pass, From: from, Security: sec,
+	}, nil
+}
+
+// execChatPhonebook adds/removes the sender (or templated mobile) on a ContactList.
+// Config: { "action": "add"|"remove", "list_id", "remove_from_all", "mobile", "name" }
+func (a *App) execChatPhonebook(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	action := strings.ToLower(stringFromConfig(node.Config, "action"))
+	if action == "" {
+		action = "add"
+	}
+	mobile := processTemplate(stringFromConfig(node.Config, "mobile"), ctx.session.SessionData)
+	if mobile == "" {
+		mobile = ctx.session.PhoneNumber
+	}
+	name := processTemplate(stringFromConfig(node.Config, "name"), ctx.session.SessionData)
+	if name == "" && ctx.contact != nil {
+		name = ctx.contact.ProfileName
+	}
+	removeAll := boolFromConfig(node.Config, "remove_from_all") || boolFromConfig(node.Config, "removeFromAll")
+
+	if action == "remove" && removeAll {
+		if err := a.DB.Where("organization_id = ? AND phone_number = ?", ctx.account.OrganizationID, mobile).
+			Delete(&models.ContactListMember{}).Error; err != nil {
+			return nodeOutcome{}, fmt.Errorf("phonebook remove all: %w", err)
+		}
+		return nodeOutcome{outcome: "default"}, nil
+	}
+
+	listIDStr := stringFromConfig(node.Config, "list_id", "phonebook")
+	listID, err := uuid.Parse(listIDStr)
+	if err != nil {
+		a.Log.Warn("phonebook node missing/invalid list_id", "node", node.ID, "list_id", listIDStr)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	var list models.ContactList
+	if err := a.DB.Where("id = ? AND organization_id = ?", listID, ctx.account.OrganizationID).First(&list).Error; err != nil {
+		a.Log.Warn("phonebook list not found", "node", node.ID, "list_id", listID)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+
+	if action == "remove" {
+		if err := a.DB.Where("list_id = ? AND phone_number = ?", listID, mobile).
+			Delete(&models.ContactListMember{}).Error; err != nil {
+			return nodeOutcome{}, fmt.Errorf("phonebook remove: %w", err)
+		}
+		return nodeOutcome{outcome: "default"}, nil
+	}
+
+	var existing models.ContactListMember
+	err = a.DB.Where("list_id = ? AND phone_number = ?", listID, mobile).First(&existing).Error
+	contactID := &ctx.contact.ID
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		member := models.ContactListMember{
+			BaseModel:      models.BaseModel{ID: uuid.New()},
+			ListID:         listID,
+			OrganizationID: ctx.account.OrganizationID,
+			PhoneNumber:    mobile,
+			Name:           name,
+			ContactID:      contactID,
+			Vars:           models.JSONB{},
+		}
+		if err := a.DB.Create(&member).Error; err != nil {
+			return nodeOutcome{}, fmt.Errorf("phonebook add: %w", err)
+		}
+	} else if err != nil {
+		return nodeOutcome{}, err
+	} else {
+		updates := map[string]any{"name": name, "contact_id": contactID}
+		if err := a.DB.Model(&existing).Updates(updates).Error; err != nil {
+			return nodeOutcome{}, err
+		}
+	}
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// execChatGoogleService runs Sheets append/read/update using an org credential.
+// Config:
+//
+//	{
+//	  "credential_id": "<uuid>",
+//	  "action": "sheets_append" | "sheets_read" | "sheets_update",
+//	  "spreadsheet_id": "...",
+//	  "sheet_name": "Sheet1",          // append
+//	  "range": "Sheet1!A1:D10",        // read/update
+//	  "values": [["a","b"]] | "{{json}}",
+//	  "row": { "colA": "{{x}}" },      // append convenience mapping
+//	  "output_variable": "sheetData",
+//	  "map_first_row": true
+//	}
+func (a *App) execChatGoogleService(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
+	credIDStr := stringFromConfig(node.Config, "credential_id")
+	credID, err := uuid.Parse(credIDStr)
+	if err != nil {
+		a.Log.Warn("google_service missing credential_id", "node", node.ID)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	var cred models.GoogleCredential
+	if err := a.DB.Where("id = ? AND organization_id = ?", credID, ctx.account.OrganizationID).First(&cred).Error; err != nil {
+		a.Log.Warn("google_service credential not found", "node", node.ID)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	plain, err := crypto.Decrypt(cred.EncryptedJSON, a.Config.App.EncryptionKey)
+	if err != nil {
+		return nodeOutcome{}, fmt.Errorf("decrypt google cred: %w", err)
+	}
+	client, err := wmgoogle.NewSheetsClient(context.Background(), []byte(plain))
+	if err != nil {
+		a.Log.Error("google_service client", "error", err)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+
+	action := strings.ToLower(stringFromConfig(node.Config, "action"))
+	spreadsheetID := processTemplate(stringFromConfig(node.Config, "spreadsheet_id", "sheet_id"), ctx.session.SessionData)
+	if ctx.session.SessionData == nil {
+		ctx.session.SessionData = models.JSONB{}
+	}
+
+	switch action {
+	case "sheets_append", "append", "":
+		sheetName := processTemplate(stringFromConfig(node.Config, "sheet_name", "sheetName"), ctx.session.SessionData)
+		rows := parseSheetValues(node.Config, ctx.session.SessionData)
+		if len(rows) == 0 {
+			a.Log.Warn("google_service append: no values", "node", node.ID)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if err := client.AppendRows(context.Background(), spreadsheetID, sheetName, rows); err != nil {
+			a.Log.Error("sheets_append failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+	case "sheets_read", "read":
+		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), ctx.session.SessionData)
+		values, err := client.ReadRange(context.Background(), spreadsheetID, rangeA1)
+		if err != nil {
+			a.Log.Error("sheets_read failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		outVar := stringFromConfig(node.Config, "output_variable", "outputVariable")
+		if outVar == "" {
+			outVar = "sheetData"
+		}
+		if (boolFromConfig(node.Config, "map_first_row") || boolFromConfig(node.Config, "mapFirstRow")) && len(values) >= 2 {
+			headers := values[0]
+			row := values[1]
+			mapped := map[string]any{}
+			for i, h := range headers {
+				key := fmt.Sprint(h)
+				if i < len(row) {
+					mapped[key] = row[i]
+				}
+			}
+			ctx.session.SessionData[outVar] = mapped
+		} else {
+			ctx.session.SessionData[outVar] = values
+		}
+	case "sheets_update", "update":
+		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), ctx.session.SessionData)
+		rows := parseSheetValues(node.Config, ctx.session.SessionData)
+		if err := client.UpdateRange(context.Background(), spreadsheetID, rangeA1, rows); err != nil {
+			a.Log.Error("sheets_update failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+	default:
+		a.Log.Warn("google_service unknown action", "action", action, "node", node.ID)
+		return nodeOutcome{outcome: "error"}, nil
+	}
+	return nodeOutcome{outcome: "default"}, nil
+}
+
+// parseSheetValues builds rows from config.values (array) or config.row (object → single row).
+func parseSheetValues(cfg map[string]any, session models.JSONB) [][]any {
+	if raw, ok := cfg["values"]; ok {
+		switch v := raw.(type) {
+		case string:
+			templated := processTemplate(v, session)
+			var rows [][]any
+			if err := json.Unmarshal([]byte(templated), &rows); err == nil {
+				return rows
+			}
+		case []any:
+			out := make([][]any, 0, len(v))
+			for _, row := range v {
+				switch r := row.(type) {
+				case []any:
+					cells := make([]any, len(r))
+					for i, c := range r {
+						if s, ok := c.(string); ok {
+							cells[i] = processTemplate(s, session)
+						} else {
+							cells[i] = c
+						}
+					}
+					out = append(out, cells)
+				}
+			}
+			return out
+		}
+	}
+	if raw, ok := cfg["row"].(map[string]any); ok {
+		// Preserve insertion order is not guaranteed; sort keys for stability.
+		keys := make([]string, 0, len(raw))
+		for k := range raw {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		row := make([]any, 0, len(keys))
+		for _, k := range keys {
+			val := raw[k]
+			if s, ok := val.(string); ok {
+				row = append(row, processTemplate(s, session))
+			} else {
+				row = append(row, val)
+			}
+		}
+		return [][]any{row}
+	}
+	return nil
+}
+
+// stringSliceFromConfig reads a []string / []any config value.
+func stringSliceFromConfig(cfg map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		raw, ok := cfg[key]
+		if !ok {
+			continue
+		}
+		switch v := raw.(type) {
+		case []string:
+			return v
+		case []any:
+			out := make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok && s != "" {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // execChatEnd optionally sends a final message and returns an empty
@@ -988,6 +1896,44 @@ func intFromConfig(cfg map[string]any, key string, def int) int {
 	return def
 }
 
+// boolFromConfig returns a bool from config. Accepts bool or common string forms.
+func boolFromConfig(cfg map[string]any, key string) bool {
+	switch v := cfg[key].(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	}
+	return false
+}
+
+// floatFromConfig returns a float64 from config (JSON numbers / strings).
+func floatFromConfig(cfg map[string]any, key string) float64 {
+	switch v := cfg[key].(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case string:
+		var f float64
+		if _, err := fmt.Sscan(v, &f); err == nil {
+			return f
+		}
+	}
+	return 0
+}
+
 // buttonsFromConfig normalizes node.Config["buttons"] into the shape the
 // existing sendAndSaveInteractiveButtons helper expects.
 // Accepts: [{"id": "...", "title": "...", "type": "..."(optional)}, ...]
@@ -1000,6 +1946,45 @@ func buttonsFromConfig(cfg map[string]any) []map[string]any {
 	for _, item := range raw {
 		if m, ok := item.(map[string]any); ok {
 			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// listSectionsFromConfig normalizes Config["sections"] into WhatsApp list sections.
+func listSectionsFromConfig(cfg map[string]any) []whatsapp.ListSection {
+	raw, ok := cfg["sections"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]whatsapp.ListSection, 0, len(raw))
+	for _, item := range raw {
+		secMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		sec := whatsapp.ListSection{
+			Title: stringFromConfig(secMap, "title"),
+		}
+		rowsRaw, _ := secMap["rows"].([]any)
+		for _, rowItem := range rowsRaw {
+			rowMap, ok := rowItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := stringFromConfig(rowMap, "id")
+			title := stringFromConfig(rowMap, "title")
+			if id == "" || title == "" {
+				continue
+			}
+			sec.Rows = append(sec.Rows, whatsapp.ListRow{
+				ID:          id,
+				Title:       title,
+				Description: stringFromConfig(rowMap, "description"),
+			})
+		}
+		if len(sec.Rows) > 0 {
+			out = append(out, sec)
 		}
 	}
 	return out

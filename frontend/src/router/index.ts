@@ -223,6 +223,18 @@ const router = createRouter({
           meta: { permission: 'tags' }
         },
         {
+          path: 'settings/contact-lists',
+          name: 'contact-lists',
+          component: () => import('@/views/settings/ContactListsView.vue'),
+          meta: { permission: 'contacts' }
+        },
+        {
+          path: 'settings/google-credentials',
+          name: 'google-credentials',
+          component: () => import('@/views/settings/GoogleCredentialsView.vue'),
+          meta: { permission: 'settings.general' }
+        },
+        {
           path: 'settings/users',
           name: 'users',
           component: () => import('@/views/settings/UsersView.vue'),
@@ -381,6 +393,8 @@ const navigationOrder: NavAccess[] = [
     { path: '/settings/canned-responses', permission: 'canned_responses' },
     { path: '/settings/contacts', permission: 'contacts' },
     { path: '/settings/tags', permission: 'tags' },
+    { path: '/settings/contact-lists', permission: 'contacts' },
+    { path: '/settings/google-credentials', permission: 'settings.general' },
     { path: '/settings/teams', permission: 'teams' },
     { path: '/settings/users', permission: 'users' },
     { path: '/settings/roles', permission: 'roles' },

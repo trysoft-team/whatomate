@@ -23,14 +23,21 @@ func truncateLabel(s string, max int) string {
 	return string(runes[:max])
 }
 
-// SendTextMessage sends a text message to a recipient with optional reply context
+// SendTextMessage sends a text message to a recipient with optional reply context.
+// Link previews are disabled; use SendTextMessageWithPreview to enable them.
 func (c *Client) SendTextMessage(ctx context.Context, account *Account, rcpt Recipient, text string, replyToMsgID ...string) (string, error) {
+	return c.SendTextMessageWithPreview(ctx, account, rcpt, text, false, replyToMsgID...)
+}
+
+// SendTextMessageWithPreview sends a text message, optionally enabling Meta's
+// URL preview when the body contains a link.
+func (c *Client) SendTextMessageWithPreview(ctx context.Context, account *Account, rcpt Recipient, text string, previewURL bool, replyToMsgID ...string) (string, error) {
 	payload := map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    "individual",
 		"type":              "text",
 		"text": map[string]any{
-			"preview_url": false,
+			"preview_url": previewURL,
 			"body":        text,
 		},
 	}
@@ -44,7 +51,7 @@ func (c *Client) SendTextMessage(ctx context.Context, account *Account, rcpt Rec
 	}
 
 	url := c.buildMessagesURL(account)
-	c.Log.Debug("Sending text message", "phone", rcpt.Phone, "url", url)
+	c.Log.Debug("Sending text message", "phone", rcpt.Phone, "url", url, "preview_url", previewURL)
 
 	respBody, err := c.doRequest(ctx, "POST", url, payload, account.AccessToken)
 	if err != nil {
@@ -145,6 +152,111 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 		return "", err
 	}
 	c.Log.Info("Interactive message sent", "message_id", messageID, "phone", rcpt.Phone)
+	return messageID, nil
+}
+
+// ListRow is a single row inside an interactive list section.
+type ListRow struct {
+	ID          string
+	Title       string
+	Description string
+}
+
+// ListSection groups rows under an optional section title.
+type ListSection struct {
+	Title string
+	Rows  []ListRow
+}
+
+// SendInteractiveList sends a WhatsApp interactive list message with
+// author-defined sections/rows (header/footer/button optional).
+func (c *Client) SendInteractiveList(ctx context.Context, account *Account, rcpt Recipient, bodyText, buttonText, headerText, footerText string, sections []ListSection) (string, error) {
+	if bodyText == "" {
+		return "", fmt.Errorf("list body text is required")
+	}
+	if buttonText == "" {
+		buttonText = "Select an option"
+	}
+	buttonText = truncateLabel(buttonText, 20)
+
+	totalRows := 0
+	apiSections := make([]map[string]any, 0, len(sections))
+	for _, sec := range sections {
+		rows := make([]map[string]any, 0, len(sec.Rows))
+		for _, row := range sec.Rows {
+			if row.ID == "" || row.Title == "" {
+				continue
+			}
+			totalRows++
+			if totalRows > 10 {
+				return "", fmt.Errorf("maximum 10 list rows allowed")
+			}
+			entry := map[string]any{
+				"id":    row.ID,
+				"title": truncateLabel(row.Title, 24),
+			}
+			if row.Description != "" {
+				entry["description"] = truncateLabel(row.Description, 72)
+			}
+			rows = append(rows, entry)
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		secMap := map[string]any{"rows": rows}
+		if sec.Title != "" {
+			secMap["title"] = truncateLabel(sec.Title, 24)
+		}
+		apiSections = append(apiSections, secMap)
+	}
+	if len(apiSections) == 0 {
+		return "", fmt.Errorf("at least one list row is required")
+	}
+
+	interactive := map[string]any{
+		"type": "list",
+		"body": map[string]any{
+			"text": bodyText,
+		},
+		"action": map[string]any{
+			"button":   buttonText,
+			"sections": apiSections,
+		},
+	}
+	if headerText != "" {
+		interactive["header"] = map[string]any{
+			"type": "text",
+			"text": truncateLabel(headerText, 60),
+		}
+	}
+	if footerText != "" {
+		interactive["footer"] = map[string]any{
+			"text": truncateLabel(footerText, 60),
+		}
+	}
+
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"type":              "interactive",
+		"interactive":       interactive,
+	}
+	rcpt.SetOnPayload(payload)
+
+	url := c.buildMessagesURL(account)
+	c.Log.Debug("Sending interactive list message", "phone", rcpt.Phone, "sections", len(apiSections), "rows", totalRows)
+
+	respBody, err := c.doRequest(ctx, "POST", url, payload, account.AccessToken)
+	if err != nil {
+		c.Log.Error("Failed to send interactive list message", "error", err, "phone", rcpt.Phone)
+		return "", fmt.Errorf("failed to send interactive list message: %w", err)
+	}
+
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
+	}
+	c.Log.Info("Interactive list message sent", "message_id", messageID, "phone", rcpt.Phone)
 	return messageID, nil
 }
 
@@ -567,10 +679,10 @@ func ButtonURLParamsToComponents(buttonParams map[string]string, templateButtons
 }
 
 // SendFlowMessage sends an interactive WhatsApp Flow message
-// flowID is the Meta Flow ID, headerText is optional header, bodyText is the message body,
+// flowID is the Meta Flow ID, headerText/footerText are optional, bodyText is the message body,
 // ctaText is the button text, flowToken is a unique token for tracking the flow response,
 // and firstScreen is the name of the first screen to navigate to
-func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen string) (string, error) {
+func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen string, footerText ...string) (string, error) {
 	if flowID == "" {
 		return "", fmt.Errorf("flow ID is required")
 	}
@@ -615,6 +727,15 @@ func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Rec
 		interactive["header"] = map[string]any{
 			"type": "text",
 			"text": headerText,
+		}
+	}
+	footer := ""
+	if len(footerText) > 0 {
+		footer = footerText[0]
+	}
+	if footer != "" {
+		interactive["footer"] = map[string]any{
+			"text": truncateLabel(footer, 60),
 		}
 	}
 

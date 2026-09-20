@@ -24,6 +24,7 @@ import {
   Save,
   MessageSquare,
   MousePointerClick,
+  List,
   Globe,
   MessageCircle,
   Users,
@@ -31,6 +32,16 @@ import {
   Clock,
   ExternalLink,
   StopCircle,
+  Variable,
+  FileText,
+  Timer,
+  RotateCcw,
+  Bot,
+  Tag,
+  Ban,
+  Mail,
+  BookUser,
+  Sheet,
   ChevronDown,
   ChevronRight,
   Plus,
@@ -49,6 +60,17 @@ import type { PanelConfig, AvailableVariable } from '@/components/chatbot/PanelC
 
 import ChatbotTextNode from '@/components/chatbot/nodes/ChatbotTextNode.vue'
 import ChatbotButtonsNode from '@/components/chatbot/nodes/ChatbotButtonsNode.vue'
+import ChatbotListNode from '@/components/chatbot/nodes/ChatbotListNode.vue'
+import ChatbotSetVariableNode from '@/components/chatbot/nodes/ChatbotSetVariableNode.vue'
+import ChatbotWATemplateNode from '@/components/chatbot/nodes/ChatbotWATemplateNode.vue'
+import ChatbotDelayNode from '@/components/chatbot/nodes/ChatbotDelayNode.vue'
+import ChatbotResetNode from '@/components/chatbot/nodes/ChatbotResetNode.vue'
+import ChatbotAIResponseNode from '@/components/chatbot/nodes/ChatbotAIResponseNode.vue'
+import ChatbotSetLabelsNode from '@/components/chatbot/nodes/ChatbotSetLabelsNode.vue'
+import ChatbotDisableBotNode from '@/components/chatbot/nodes/ChatbotDisableBotNode.vue'
+import ChatbotSendEmailNode from '@/components/chatbot/nodes/ChatbotSendEmailNode.vue'
+import ChatbotPhonebookNode from '@/components/chatbot/nodes/ChatbotPhonebookNode.vue'
+import ChatbotGoogleServiceNode from '@/components/chatbot/nodes/ChatbotGoogleServiceNode.vue'
 import ChatbotApiNode from '@/components/chatbot/nodes/ChatbotApiNode.vue'
 import ChatbotWhatsAppFlowNode from '@/components/chatbot/nodes/ChatbotWhatsAppFlowNode.vue'
 import ChatbotTransferNode from '@/components/chatbot/nodes/ChatbotTransferNode.vue'
@@ -112,6 +134,17 @@ const nodeTypes: any = {
   message: markRaw(ChatbotTextNode),
   prompt: markRaw(ChatbotTextNode),
   buttons: markRaw(ChatbotButtonsNode),
+  list: markRaw(ChatbotListNode),
+  set_variable: markRaw(ChatbotSetVariableNode),
+  wa_template: markRaw(ChatbotWATemplateNode),
+  delay: markRaw(ChatbotDelayNode),
+  reset_session: markRaw(ChatbotResetNode),
+  ai_response: markRaw(ChatbotAIResponseNode),
+  set_labels: markRaw(ChatbotSetLabelsNode),
+  disable_bot: markRaw(ChatbotDisableBotNode),
+  send_email: markRaw(ChatbotSendEmailNode),
+  phonebook: markRaw(ChatbotPhonebookNode),
+  google_service: markRaw(ChatbotGoogleServiceNode),
   api_call: markRaw(ChatbotApiNode),
   whatsapp_flow: markRaw(ChatbotWhatsAppFlowNode),
   transfer: markRaw(ChatbotTransferNode),
@@ -122,19 +155,44 @@ const nodeTypes: any = {
   webhook: markRaw(ChatbotApiNode),
 }
 
-// Palette: 'prompt' and 'webhook' are internal-only — a Text node
-// becomes a prompt when the author sets an expected response.
-const palette: { type: ChatNodeType; label: string; icon: any; color: string }[] = [
-  { type: 'message', label: 'Text', icon: MessageSquare, color: 'bg-blue-600' },
-  { type: 'buttons', label: 'Buttons', icon: MousePointerClick, color: 'bg-purple-600' },
-  { type: 'api_call', label: 'API', icon: Globe, color: 'bg-orange-600' },
-  { type: 'whatsapp_flow', label: 'WA Flow', icon: MessageCircle, color: 'bg-green-600' },
-  { type: 'transfer', label: 'Transfer', icon: Users, color: 'bg-amber-600' },
-  { type: 'condition', label: 'Condition', icon: GitBranch, color: 'bg-indigo-600' },
-  { type: 'timing', label: 'Timing', icon: Clock, color: 'bg-cyan-600' },
-  { type: 'goto_flow', label: 'Go to Flow', icon: ExternalLink, color: 'bg-teal-600' },
-  { type: 'end', label: 'End', icon: StopCircle, color: 'bg-slate-600' },
+// Palette entries with categories for the searchable node menu.
+type PaletteItem = { type: ChatNodeType; label: string; icon: any; color: string; category: string }
+const palette: PaletteItem[] = [
+  { type: 'message', label: 'Text', icon: MessageSquare, color: 'bg-blue-600', category: 'Message' },
+  { type: 'buttons', label: 'Buttons', icon: MousePointerClick, color: 'bg-purple-600', category: 'Message' },
+  { type: 'list', label: 'List', icon: List, color: 'bg-violet-600', category: 'Message' },
+  { type: 'wa_template', label: 'WA Template', icon: FileText, color: 'bg-rose-600', category: 'Message' },
+  { type: 'whatsapp_flow', label: 'WA Flow', icon: MessageCircle, color: 'bg-green-600', category: 'Message' },
+  { type: 'ai_response', label: 'AI Response', icon: Bot, color: 'bg-emerald-700', category: 'Message' },
+  { type: 'api_call', label: 'API', icon: Globe, color: 'bg-orange-600', category: 'Request' },
+  { type: 'webhook', label: 'Webhook', icon: Globe, color: 'bg-orange-800', category: 'Request' },
+  { type: 'send_email', label: 'Email', icon: Mail, color: 'bg-red-600', category: 'Request' },
+  { type: 'google_service', label: 'Google', icon: Sheet, color: 'bg-yellow-600', category: 'Request' },
+  { type: 'set_variable', label: 'Set Variable', icon: Variable, color: 'bg-fuchsia-600', category: 'Input' },
+  { type: 'set_labels', label: 'Labels', icon: Tag, color: 'bg-pink-600', category: 'Input' },
+  { type: 'phonebook', label: 'Phonebook', icon: BookUser, color: 'bg-lime-700', category: 'Input' },
+  { type: 'condition', label: 'Condition', icon: GitBranch, color: 'bg-indigo-600', category: 'Logic' },
+  { type: 'delay', label: 'Delay', icon: Timer, color: 'bg-sky-600', category: 'Logic' },
+  { type: 'reset_session', label: 'Reset', icon: RotateCcw, color: 'bg-orange-700', category: 'Logic' },
+  { type: 'timing', label: 'Timing', icon: Clock, color: 'bg-cyan-600', category: 'Logic' },
+  { type: 'disable_bot', label: 'Disable Bot', icon: Ban, color: 'bg-stone-600', category: 'Logic' },
+  { type: 'transfer', label: 'Transfer', icon: Users, color: 'bg-amber-600', category: 'Logic' },
+  { type: 'goto_flow', label: 'Go to Flow', icon: ExternalLink, color: 'bg-teal-600', category: 'Logic' },
+  { type: 'end', label: 'End', icon: StopCircle, color: 'bg-slate-600', category: 'Logic' },
 ]
+
+const paletteCategories = ['All', 'Message', 'Request', 'Input', 'Logic'] as const
+const paletteCategory = ref<(typeof paletteCategories)[number]>('All')
+const paletteSearch = ref('')
+
+const filteredPalette = computed(() => {
+  const q = paletteSearch.value.trim().toLowerCase()
+  return palette.filter((p) => {
+    if (paletteCategory.value !== 'All' && p.category !== paletteCategory.value) return false
+    if (!q) return true
+    return p.label.toLowerCase().includes(q) || p.type.includes(q) || p.category.toLowerCase().includes(q)
+  })
+})
 
 const {
   nodes,
@@ -188,19 +246,55 @@ let nodeCounter = 0
 function defaultConfigFor(type: ChatNodeType): Record<string, any> {
   switch (type) {
     case 'message':
-      return { message: '' }
+      return { message: '', media_type: 'text', preview_url: false, wait_for_reply: false }
     case 'prompt':
       return { body: '', store_as: '', validation_regex: '', validation_error: 'Invalid input. Please try again.', max_retries: 3 }
     case 'buttons':
       return { body: '', buttons: [] }
+    case 'list':
+      return {
+        body: '',
+        header: '',
+        footer: '',
+        button: 'Select an option',
+        store_as: '',
+        sections: [{ title: '', rows: [{ id: `row_${Date.now()}`, title: '', description: '' }] }],
+      }
+    case 'set_variable':
+      return { set: {}, paths: [] }
+    case 'wa_template':
+      return { template_id: '', template_name: '', language: '', body_params: {}, wait_for_reply: false }
+    case 'delay':
+      return { seconds: 5 }
+    case 'reset_session':
+      return {}
+    case 'ai_response':
+      return { prompt_template: '', store_as: '' }
+    case 'set_labels':
+      return { add: [], remove: [] }
+    case 'disable_bot':
+      return { hours: 1, minutes: 0 }
+    case 'send_email':
+      return { to: '', subject: '', html: '<p>Hello {{contact_name}}</p>', from: '' }
+    case 'phonebook':
+      return { action: 'add', list_id: '', remove_from_all: false, mobile: '{{phone_number}}', name: '{{contact_name}}' }
+    case 'google_service':
+      return { credential_id: '', action: 'sheets_append', spreadsheet_id: '', sheet_name: 'Sheet1', row: {}, output_variable: 'sheetData' }
+    case 'condition':
+      return {
+        mode: 'rules',
+        variable: 'senderMessage',
+        expression: '',
+        rules: [
+          { name: 'Condition 1', operator: 'text_exact', value: '', case_sensitive: false, handle: 'condition_1' },
+        ],
+      }
     case 'api_call':
       return { url: '', method: 'GET', headers: {}, body: '', response_mapping: {}, message_template: '' }
     case 'whatsapp_flow':
-      return { flow_id: '', header: '', body: '', cta: 'Open' }
+      return { flow_id: '', header: '', body: 'Please fill out the form below.', footer: '', cta: 'Open Form' }
     case 'transfer':
       return { body: '', team_id: '_general', notes: '' }
-    case 'condition':
-      return { expression: '' }
     case 'timing':
       return {
         schedule: [
@@ -228,6 +322,17 @@ const paletteLabels: Record<string, string> = {
   message: 'Message',
   prompt: 'Prompt',
   buttons: 'Buttons',
+  list: 'List',
+  set_variable: 'Set Variable',
+  wa_template: 'WA Template',
+  delay: 'Delay',
+  reset_session: 'Reset',
+  ai_response: 'AI Response',
+  set_labels: 'Labels',
+  disable_bot: 'Disable Bot',
+  send_email: 'Email',
+  phonebook: 'Phonebook',
+  google_service: 'Google',
   api_call: 'API',
   whatsapp_flow: 'WhatsApp Flow',
   transfer: 'Transfer',
@@ -480,7 +585,7 @@ function loadGraph(graph: ChatFlowGraph) {
   // condition is a bare button id is normalized to "button:<id>" so it
   // attaches to the prefixed handle and re-saves in canonical form.
   const buttonNodeIds = new Set(
-    graph.nodes.filter((n) => n.type === 'buttons').map((n) => n.id),
+    graph.nodes.filter((n) => n.type === 'buttons' || n.type === 'list').map((n) => n.id),
   )
   const normalizeCondition = (e: ChatEdge) => {
     if (
@@ -736,21 +841,43 @@ onMounted(async () => {
       </div>
     </header>
 
-    <!-- Node palette -->
-    <div class="flex items-center gap-2 px-4 py-2 border-b bg-muted/30 overflow-x-auto shrink-0">
-      <span class="text-xs text-muted-foreground shrink-0">Add node:</span>
-      <Button
-        v-for="p in palette"
-        :key="p.type"
-        variant="outline"
-        size="sm"
-        class="h-7 text-xs gap-1.5 shrink-0"
-        @click="addNodeFromPalette(p.type)"
-      >
-        <div :class="['w-2 h-2 rounded-full', p.color]" />
-        <component :is="p.icon" class="w-3 h-3" />
-        {{ p.label }}
-      </Button>
+    <!-- Node palette: categorized + searchable -->
+    <div class="px-4 py-2 border-b bg-muted/30 shrink-0 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-muted-foreground shrink-0">Add node:</span>
+        <Input
+          v-model="paletteSearch"
+          placeholder="Search nodes…"
+          class="h-7 text-xs w-44"
+        />
+        <div class="flex gap-1 flex-wrap">
+          <Button
+            v-for="cat in paletteCategories"
+            :key="cat"
+            :variant="paletteCategory === cat ? 'default' : 'outline'"
+            size="sm"
+            class="h-7 text-xs"
+            @click="paletteCategory = cat"
+          >
+            {{ cat }}
+          </Button>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 content-start">
+        <Button
+          v-for="p in filteredPalette"
+          :key="p.type"
+          variant="outline"
+          size="sm"
+          class="h-7 text-xs gap-1.5"
+          @click="addNodeFromPalette(p.type)"
+        >
+          <div :class="['w-2 h-2 rounded-full', p.color]" />
+          <component :is="p.icon" class="w-3 h-3" />
+          {{ p.label }}
+        </Button>
+        <span v-if="filteredPalette.length === 0" class="text-xs text-muted-foreground">No nodes match</span>
+      </div>
     </div>
 
     <!-- Main: canvas + right panel -->
@@ -791,8 +918,8 @@ onMounted(async () => {
 
       <!-- Right panel -->
       <Card class="w-[420px] min-w-0 border-y-0 border-r-0 rounded-none shrink-0 flex flex-col">
-        <!-- Node properties when a node is selected -->
-        <div v-if="selectedChatNode && selectedChatNode.type !== 'start'" class="flex-1 overflow-y-auto">
+        <!-- Node properties when a node is selected (including Start builtins). -->
+        <div v-if="selectedChatNode" class="flex-1 overflow-y-auto">
           <ChatNodeProperties
             :node="selectedChatNode"
             :current-flow-id="flowId"

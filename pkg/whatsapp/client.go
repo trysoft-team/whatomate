@@ -410,6 +410,65 @@ func (c *Client) SendAudioMessage(ctx context.Context, account *Account, rcpt Re
 	})
 }
 
+// SendMediaByLink sends an image/video/audio/document message using a
+// publicly reachable HTTPS link (Meta fetches the file). Caption applies
+// to image/video/document; filename is used for documents only.
+func (c *Client) SendMediaByLink(ctx context.Context, account *Account, rcpt Recipient, mediaType, link, caption, filename string) (string, error) {
+	if link == "" {
+		return "", fmt.Errorf("media link is required")
+	}
+	fields := map[string]any{"link": link}
+	switch mediaType {
+	case "image", "video", "document":
+		if caption != "" {
+			fields["caption"] = caption
+		}
+		if mediaType == "document" && filename != "" {
+			fields["filename"] = filename
+		}
+	case "audio":
+		// audio has no caption
+	default:
+		return "", fmt.Errorf("unsupported media type for link send: %s", mediaType)
+	}
+	return c.sendMediaMessage(ctx, account, rcpt, mediaType, fields)
+}
+
+// SendLocationMessage sends a location pin with optional name/address.
+func (c *Client) SendLocationMessage(ctx context.Context, account *Account, rcpt Recipient, latitude, longitude float64, name, address string) (string, error) {
+	loc := map[string]any{
+		"latitude":  latitude,
+		"longitude": longitude,
+	}
+	if name != "" {
+		loc["name"] = name
+	}
+	if address != "" {
+		loc["address"] = address
+	}
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"type":              "location",
+		"location":          loc,
+	}
+	rcpt.SetOnPayload(payload)
+
+	url := c.buildMessagesURL(account)
+	c.Log.Debug("Sending location message", "phone", rcpt.Phone, "lat", latitude, "lng", longitude)
+
+	respBody, err := c.doRequest(ctx, "POST", url, payload, account.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("failed to send location message: %w", err)
+	}
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
+	}
+	c.Log.Info("Location message sent", "message_id", messageID, "phone", rcpt.Phone)
+	return messageID, nil
+}
+
 // MarkMessageRead sends a read receipt for a message
 func (c *Client) MarkMessageRead(ctx context.Context, account *Account, messageID string) error {
 	payload := map[string]any{

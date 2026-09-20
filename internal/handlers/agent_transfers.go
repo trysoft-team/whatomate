@@ -1257,6 +1257,53 @@ func (a *App) createTransferToQueue(account *models.WhatsAppAccount, contact *mo
 	a.Log.Info("Transfer created to agent queue", "transfer_id", transfer.ID, "contact_id", contact.ID, "source", source)
 }
 
+// createTransferToAgent assigns the contact to a specific user and opens a transfer.
+func (a *App) createTransferToAgent(account *models.WhatsAppAccount, contact *models.Contact, agentID uuid.UUID, notes string, source models.TransferSource) {
+	if a.hasActiveAgentTransfer(account.OrganizationID, contact.ID) {
+		a.Log.Debug("Contact already has active transfer, skipping", "contact_id", contact.ID, "source", source)
+		return
+	}
+
+	var agent models.User
+	if err := a.DB.Where("id = ? AND organization_id = ?", agentID, account.OrganizationID).First(&agent).Error; err != nil {
+		a.Log.Warn("transfer agent not found; falling back to queue", "agent_id", agentID, "error", err)
+		a.createTransferToQueue(account, contact, source)
+		return
+	}
+
+	settings, _ := a.getChatbotSettingsCached(account.OrganizationID, account.Name)
+	if settings != nil && settings.BusinessHours.Enabled && len(settings.BusinessHours.Hours) > 0 {
+		if !a.isWithinBusinessHours(settings.BusinessHours.Hours) {
+			a.Log.Info("Outside business hours, sending out-of-hours message instead of agent transfer", "contact_id", contact.ID)
+			if settings.BusinessHours.OutOfHoursMessage != "" {
+				_ = a.sendAndSaveTextMessage(account, contact, settings.BusinessHours.OutOfHoursMessage)
+			}
+			return
+		}
+	}
+
+	_ = a.DB.Model(contact).Update("assigned_user_id", agentID).Error
+	contact.AssignedUserID = &agentID
+
+	transfer := models.AgentTransfer{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  account.OrganizationID,
+		ContactID:       contact.ID,
+		WhatsAppAccount: account.Name,
+		PhoneNumber:     contact.PhoneNumber,
+		Status:          models.TransferStatusActive,
+		Source:          source,
+		AgentID:         &agentID,
+		Notes:           notes,
+		TransferredAt:   time.Now(),
+	}
+	if err := a.saveAndFinalizeTransfer(&transfer, account, contact, settings, false); err != nil {
+		a.Log.Error("Failed to create transfer to agent", "error", err, "contact_id", contact.ID, "agent_id", agentID)
+		return
+	}
+	a.Log.Info("Transfer created to specific agent", "transfer_id", transfer.ID, "agent_id", agentID, "contact_id", contact.ID)
+}
+
 // createTransferFromKeyword creates an agent transfer triggered by a keyword rule
 func (a *App) createTransferFromKeyword(account *models.WhatsAppAccount, contact *models.Contact) {
 	if a.hasActiveAgentTransfer(account.OrganizationID, contact.ID) {

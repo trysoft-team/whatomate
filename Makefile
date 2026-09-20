@@ -11,9 +11,12 @@ BINARY_PATH=./cmd/whatomate
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+# Local host runs use config.local.toml (localhost:5433 Postgres / localhost Redis).
+# Override: make run CONFIG=config.toml
+CONFIG?=config.local.toml
 
 # Docker parameters
-DOCKER_COMPOSE=docker compose -f docker/docker-compose.yml
+DOCKER_COMPOSE=docker compose
 
 all: build
 
@@ -37,11 +40,13 @@ embed-frontend:
 
 # Run the backend locally
 run:
-	$(GOCMD) run $(BINARY_PATH)/main.go server -config config.toml
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG)
 
 # Run with migrations
 run-migrate:
-	$(GOCMD) run $(BINARY_PATH)/main.go server -config config.toml -migrate
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG) -migrate
 
 # Run tests. Uses gotestsum when available for live progress + a clear
 # failure summary at the end. Falls back to the built-in `go test -v` so
@@ -98,7 +103,14 @@ docker-restart:
 
 # Database migrations
 migrate:
-	$(GOCMD) run $(BINARY_PATH)/main.go server -config config.toml -migrate
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG) -migrate
+
+# Infra only (Postgres + Redis). App runs on the host via make run-migrate / make frontend-dev.
+docker-infra:
+	$(DOCKER_COMPOSE) up -d db redis
+	@$(DOCKER_COMPOSE) stop app 2>/dev/null || true
+	@echo "db (localhost:5433) and redis (localhost:6379) are up; app container stopped."
 
 # Frontend commands
 frontend-install:
@@ -121,9 +133,10 @@ frontend-build:
 frontend-preview:
 	cd frontend && npm run preview
 
-# Development - run both backend and frontend
+# Development - run both backend and frontend (requires docker-infra first)
 dev:
-	@echo "Starting backend and frontend in development mode..."
+	@echo "Starting backend ($(CONFIG)) and frontend..."
+	@echo "API :8080  |  UI :3000 (proxies /api → :8080)"
 	@make run-migrate &
 	@make frontend-dev
 
@@ -146,24 +159,24 @@ help:
 	@echo "Production:"
 	@echo "  build-prod     - Build single binary with embedded frontend"
 	@echo ""
-	@echo "Development:"
-	@echo "  build          - Build the backend binary (without frontend)"
-	@echo "  run            - Run the backend locally"
+	@echo "Development (host app + Docker db/redis):"
+	@echo "  docker-infra   - Start Postgres+Redis only; stop app container"
+	@echo "  run            - Run the backend locally (CONFIG=$(CONFIG))"
 	@echo "  run-migrate    - Run the backend with database migrations"
-	@echo "  dev            - Run both backend and frontend in development mode"
+	@echo "  frontend-dev   - Run Vite UI on :3000"
+	@echo "  dev            - Run backend + frontend together"
 	@echo ""
 	@echo "Frontend:"
 	@echo "  frontend-install - Install frontend dependencies"
-	@echo "  frontend-dev   - Run frontend in development mode"
 	@echo "  frontend-build - Build frontend for production"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test           - Run tests"
 	@echo "  test-coverage  - Run tests with coverage report"
 	@echo ""
-	@echo "Docker:"
+	@echo "Docker (full stack):"
 	@echo "  docker-build   - Build Docker images"
-	@echo "  docker-up      - Start Docker containers"
+	@echo "  docker-up      - Start all Docker containers"
 	@echo "  docker-down    - Stop Docker containers"
 	@echo "  docker-logs    - View Docker logs"
 	@echo ""

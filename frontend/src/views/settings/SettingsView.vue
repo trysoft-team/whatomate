@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { PageHeader, AuditLogPanel } from '@/components/shared'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { toast } from 'vue-sonner'
-import { Settings, Bell, Loader2, Globe, Phone, Upload, Play, Pause, Music } from 'lucide-vue-next'
+import { Settings, Bell, Loader2, Globe, Phone, Upload, Play, Pause, Music, Mail } from 'lucide-vue-next'
 import { usersService, organizationService } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { getTimezoneGroups } from '@/lib/timezones'
@@ -80,6 +80,17 @@ const playingRingback = ref(false)
 const generalLogKey = ref(0)
 const notificationLogKey = ref(0)
 const callingLogKey = ref(0)
+const emailLogKey = ref(0)
+
+const smtpSettings = ref({
+  smtp_host: '',
+  smtp_port: 587,
+  smtp_username: '',
+  smtp_password: '',
+  smtp_from: '',
+  smtp_security: 'tls',
+  has_smtp_password: false,
+})
 
 function refreshActivityLog(key: typeof generalLogKey) {
   setTimeout(() => { key.value++ }, 500)
@@ -111,6 +122,15 @@ onMounted(async () => {
         transfer_timeout_secs: orgData.settings?.transfer_timeout_secs || 120,
         hold_music_file: orgData.settings?.hold_music_file || '',
         ringback_file: orgData.settings?.ringback_file || ''
+      }
+      smtpSettings.value = {
+        smtp_host: orgData.settings?.smtp_host || '',
+        smtp_port: orgData.settings?.smtp_port || 587,
+        smtp_username: orgData.settings?.smtp_username || '',
+        smtp_password: '',
+        smtp_from: orgData.settings?.smtp_from || '',
+        smtp_security: orgData.settings?.smtp_security || 'tls',
+        has_smtp_password: orgData.settings?.has_smtp_password || false,
       }
     }
 
@@ -198,6 +218,33 @@ async function saveCallingSettings() {
   }
 }
 
+async function saveSMTPSettings() {
+  isSubmitting.value = true
+  try {
+    const payload: Record<string, any> = {
+      smtp_host: smtpSettings.value.smtp_host,
+      smtp_port: smtpSettings.value.smtp_port,
+      smtp_username: smtpSettings.value.smtp_username,
+      smtp_from: smtpSettings.value.smtp_from,
+      smtp_security: smtpSettings.value.smtp_security,
+    }
+    if (smtpSettings.value.smtp_password) {
+      payload.smtp_password = smtpSettings.value.smtp_password
+    }
+    await organizationService.updateSettings(payload)
+    smtpSettings.value.smtp_password = ''
+    const orgResponse = await organizationService.getSettings()
+    const orgData = orgResponse.data.data || orgResponse.data
+    smtpSettings.value.has_smtp_password = orgData?.settings?.has_smtp_password || false
+    toast.success('SMTP settings saved')
+    refreshActivityLog(emailLogKey)
+  } catch (error) {
+    toast.error(t('common.failedSave', { resource: 'SMTP' }))
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
 async function uploadAudio(type: 'hold_music' | 'ringback', event: Event) {
   const input = event.target as HTMLInputElement
   const file = input?.files?.[0]
@@ -251,7 +298,7 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
     <ScrollArea class="flex-1">
       <div class="p-6 space-y-4 max-w-4xl mx-auto">
         <Tabs default-value="general" class="w-full">
-          <TabsList class="grid w-full grid-cols-3 mb-6 bg-white/[0.04] border border-white/[0.08] light:bg-gray-100 light:border-gray-200">
+          <TabsList class="grid w-full grid-cols-4 mb-6 bg-white/[0.04] border border-white/[0.08] light:bg-gray-100 light:border-gray-200">
             <TabsTrigger value="general" class="data-[state=active]:bg-white/[0.08] data-[state=active]:text-white text-white/50 light:data-[state=active]:bg-white light:data-[state=active]:text-gray-900 light:text-gray-500">
               <Settings class="h-4 w-4 mr-2" />
               {{ $t('settings.general') }}
@@ -263,6 +310,10 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
             <TabsTrigger value="calling" class="data-[state=active]:bg-white/[0.08] data-[state=active]:text-white text-white/50 light:data-[state=active]:bg-white light:data-[state=active]:text-gray-900 light:text-gray-500">
               <Phone class="h-4 w-4 mr-2" />
               {{ $t('settings.calling') }}
+            </TabsTrigger>
+            <TabsTrigger value="email" class="data-[state=active]:bg-white/[0.08] data-[state=active]:text-white text-white/50 light:data-[state=active]:bg-white light:data-[state=active]:text-gray-900 light:text-gray-500">
+              <Mail class="h-4 w-4 mr-2" />
+              Email
             </TabsTrigger>
           </TabsList>
 
@@ -569,6 +620,63 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
             </div>
             <div v-if="orgID" class="mt-4">
               <AuditLogPanel :key="callingLogKey" resource-type="settings.calling" :resource-id="orgID" />
+            </div>
+          </TabsContent>
+
+          <!-- Email / SMTP Tab -->
+          <TabsContent value="email">
+            <div class="rounded-xl border border-white/[0.08] bg-white/[0.02] light:bg-white light:border-gray-200">
+              <div class="p-6 pb-3">
+                <h3 class="text-lg font-semibold text-white light:text-gray-900">SMTP</h3>
+                <p class="text-sm text-white/40 light:text-gray-500">Org-level mail server for chatbot Email nodes. Passwords are encrypted at rest and never stored in flow graphs.</p>
+              </div>
+              <div class="p-6 pt-3 space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">Host</Label>
+                    <Input v-model="smtpSettings.smtp_host" placeholder="smtp.example.com" />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">Port</Label>
+                    <Input type="number" v-model.number="smtpSettings.smtp_port" />
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">Username</Label>
+                    <Input v-model="smtpSettings.smtp_username" />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">Password</Label>
+                    <Input type="password" v-model="smtpSettings.smtp_password" :placeholder="smtpSettings.has_smtp_password ? '•••••••• (leave blank to keep)' : ''" />
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">From address</Label>
+                    <Input v-model="smtpSettings.smtp_from" placeholder="noreply@example.com" />
+                  </div>
+                  <div class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">Security</Label>
+                    <Select v-model="smtpSettings.smtp_security">
+                      <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white/70 light:bg-white light:border-gray-200 light:text-gray-700">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="tls">STARTTLS</SelectItem>
+                        <SelectItem value="ssl">SSL</SelectItem>
+                        <SelectItem value="none">None</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div class="flex justify-end pt-4">
+                  <Button variant="outline" size="sm" class="bg-white/[0.04] border-white/[0.1] text-white/70 hover:bg-white/[0.08] hover:text-white light:bg-white light:border-gray-200 light:text-gray-700 light:hover:bg-gray-50" @click="saveSMTPSettings" :disabled="isSubmitting">
+                    <Loader2 v-if="isSubmitting" class="mr-2 h-4 w-4 animate-spin" />
+                    {{ $t('settings.save') }}
+                  </Button>
+                </div>
+              </div>
             </div>
           </TabsContent>
         </Tabs>

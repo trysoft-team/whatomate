@@ -1414,3 +1414,416 @@ func TestRunChatGraph_Prompt_NoRegexAcceptsAnything(t *testing.T) {
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 	assert.Equal(t, "literally anything", session.SessionData["email"])
 }
+
+// TestRunChatGraph_SeedsBuiltinAliases verifies whatsCRM-style aliases and
+// triple-brace interpolation against the seeded SessionData.
+func TestRunChatGraph_SeedsBuiltinAliases(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	contact.ProfileName = "Ada Lovelace"
+	require.NoError(t, app.DB.Save(contact).Error)
+
+	flow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "alias-seed",
+		IsEnabled:       true,
+		Graph: models.JSONB{
+			"version":    2,
+			"entry_node": "m1",
+			"nodes": []any{
+				map[string]any{
+					"id": "m1", "type": "message", "label": "greet",
+					"config": map[string]any{
+						"message": "Hi {{{senderName}}} ({{contact_name}}) {{{senderMobile}}}: {{senderMessage}}",
+					},
+				},
+				map[string]any{"id": "e1", "type": "end", "label": "done"},
+			},
+			"edges": []any{
+				map[string]any{"from": "m1", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Hello there", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+
+	assert.Equal(t, contact.ProfileName, session.SessionData["senderName"])
+	assert.Equal(t, contact.ProfileName, session.SessionData["contact_name"])
+	assert.Equal(t, session.PhoneNumber, session.SessionData["senderMobile"])
+	assert.Equal(t, session.PhoneNumber, session.SessionData["phone_number"])
+	assert.Equal(t, "Hello there", session.SessionData["senderMessage"])
+
+	var msgs []models.ChatbotSessionMessage
+	require.NoError(t, app.DB.Where("session_id = ? AND direction = ?", session.ID, models.DirectionOutgoing).Find(&msgs).Error)
+	require.NotEmpty(t, msgs)
+	want := "Hi Ada Lovelace (Ada Lovelace) " + session.PhoneNumber + ": Hello there"
+	assert.Equal(t, want, msgs[0].Message)
+}
+
+func TestSeedChatSessionBuiltins_KeepsPriorSenderMessageWhenNoInput(t *testing.T) {
+	session := &models.ChatbotSession{
+		PhoneNumber: "15550001111",
+		SessionData: models.JSONB{"senderMessage": "prior"},
+	}
+	contact := &models.Contact{ProfileName: "Bob", PhoneNumber: "15550001111"}
+	seedChatSessionBuiltins(session, contact, "")
+	assert.Equal(t, "prior", session.SessionData["senderMessage"])
+	assert.Equal(t, "Bob", session.SessionData["senderName"])
+	assert.Equal(t, "15550001111", session.SessionData["senderMobile"])
+}
+
+// TestRunChatGraph_MessageMediaByLink sends an image via public URL and continues.
+func TestRunChatGraph_MessageMediaByLink(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "media-link",
+		IsEnabled:       true,
+		Graph: models.JSONB{
+			"version":    2,
+			"entry_node": "m1",
+			"nodes": []any{
+				map[string]any{
+					"id": "m1", "type": "message", "label": "pic",
+					"config": map[string]any{
+						"media_type": "image",
+						"media_url":  "https://example.com/photo.jpg",
+						"caption":    "Look {{contact_name}}",
+					},
+				},
+				map[string]any{"id": "e1", "type": "end", "label": "done"},
+			},
+			"edges": []any{
+				map[string]any{"from": "m1", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+
+	var out []models.Message
+	require.NoError(t, app.DB.Where("contact_id = ? AND direction = ?", contact.ID, models.DirectionOutgoing).Find(&out).Error)
+	require.NotEmpty(t, out)
+	assert.Equal(t, models.MessageTypeImage, out[0].MessageType)
+	assert.Equal(t, "https://example.com/photo.jpg", out[0].MediaURL)
+	assert.Contains(t, out[0].Content, contact.ProfileName)
+}
+
+// TestRunChatGraph_MessageWaitForReply parks after send until the next inbound.
+func TestRunChatGraph_MessageWaitForReply(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "wait-reply",
+		IsEnabled:       true,
+		Graph: models.JSONB{
+			"version":    2,
+			"entry_node": "m1",
+			"nodes": []any{
+				map[string]any{
+					"id": "m1", "type": "message", "label": "ask",
+					"config": map[string]any{
+						"message":        "Say something",
+						"wait_for_reply": true,
+						"store_as":       "reply",
+					},
+				},
+				map[string]any{"id": "e1", "type": "end", "label": "done"},
+			},
+			"edges": []any{
+				map[string]any{"from": "m1", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "m1", session.CurrentStep)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "my answer", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, "my answer", session.SessionData["reply"])
+}
+
+// TestRunChatGraph_ListBranchesOnRowID sends a list and routes on row id.
+func TestRunChatGraph_ListBranchesOnRowID(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "list-branch",
+		IsEnabled:       true,
+		Graph: models.JSONB{
+			"version":    2,
+			"entry_node": "l1",
+			"nodes": []any{
+				map[string]any{
+					"id": "l1", "type": "list", "label": "menu",
+					"config": map[string]any{
+						"body":   "Pick a product",
+						"button": "Products",
+						"header": "Catalog",
+						"store_as": "choice",
+						"sections": []any{
+							map[string]any{
+								"title": "Main",
+								"rows": []any{
+									map[string]any{"id": "sku_a", "title": "Alpha", "description": "First"},
+									map[string]any{"id": "sku_b", "title": "Beta"},
+								},
+							},
+						},
+					},
+				},
+				map[string]any{"id": "e1", "type": "end", "label": "done", "config": map[string]any{"message": "Got {{choice}}"}},
+			},
+			"edges": []any{
+				map[string]any{"from": "l1", "to": "e1", "condition": "button:sku_a"},
+				map[string]any{"from": "l1", "to": "e1", "condition": "button:sku_b"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "l1", session.CurrentStep)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Alpha", "sku_a", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, "Alpha", session.SessionData["choice"])
+}
+
+func TestRunChatGraph_Condition_RulesNamedBranches(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "condition-rules",
+		IsEnabled:       true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "c1",
+			"nodes": []any{
+				map[string]any{
+					"id": "c1", "type": "condition",
+					"config": map[string]any{
+						"mode":     "rules",
+						"variable": "senderMessage",
+						"rules": []any{
+							map[string]any{"name": "Yes", "operator": "text_exact", "value": "yes", "handle": "yes"},
+							map[string]any{"name": "No", "operator": "text_exact", "value": "no", "handle": "no"},
+							map[string]any{"name": "Has hi", "operator": "text_contains", "value": "hi", "handle": "hi"},
+						},
+					},
+				},
+				map[string]any{"id": "y", "type": "end", "config": map[string]any{"message": "YES"}},
+				map[string]any{"id": "n", "type": "end", "config": map[string]any{"message": "NO"}},
+				map[string]any{"id": "h", "type": "end", "config": map[string]any{"message": "HI"}},
+				map[string]any{"id": "e", "type": "end", "config": map[string]any{"message": "ELSE"}},
+			},
+			"edges": []any{
+				map[string]any{"from": "c1", "to": "y", "condition": "yes"},
+				map[string]any{"from": "c1", "to": "n", "condition": "no"},
+				map[string]any{"from": "c1", "to": "h", "condition": "hi"},
+				map[string]any{"from": "c1", "to": "e", "condition": "else"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	session.SessionData = models.JSONB{"senderMessage": "YES"}
+	require.NoError(t, app.DB.Save(session).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	path := chatGraphPath(t, session)
+	assert.Equal(t, "yes", path[0]["outcome"])
+
+	session2 := &models.ChatbotSession{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, ContactID: contact.ID,
+		WhatsAppAccount: account.Name, PhoneNumber: contact.PhoneNumber, Status: models.SessionStatusActive,
+		SessionData: models.JSONB{"senderMessage": "something else"}, StartedAt: time.Now(), LastActivityAt: time.Now(),
+	}
+	require.NoError(t, app.DB.Create(session2).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session2, flow, "", "", nil))
+	require.NoError(t, app.DB.First(session2, session2.ID).Error)
+	assert.Equal(t, "else", chatGraphPath(t, session2)[0]["outcome"])
+}
+
+func TestRunChatGraph_Condition_RulesNumberBetween(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
+		Name: "num-between", IsEnabled: true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "c1",
+			"nodes": []any{
+				map[string]any{"id": "c1", "type": "condition", "config": map[string]any{
+					"mode": "rules", "variable": "score",
+					"rules": []any{map[string]any{"operator": "number_between", "value": "1", "value_to": "10", "handle": "mid"}},
+				}},
+				map[string]any{"id": "m", "type": "end"},
+				map[string]any{"id": "e", "type": "end"},
+			},
+			"edges": []any{
+				map[string]any{"from": "c1", "to": "m", "condition": "mid"},
+				map[string]any{"from": "c1", "to": "e", "condition": "else"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+	session.SessionData = models.JSONB{"score": "7"}
+	require.NoError(t, app.DB.Save(session).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "mid", chatGraphPath(t, session)[0]["outcome"])
+}
+
+func TestRunChatGraph_SetVariable_PathFromInbound(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
+		Name: "set-path", IsEnabled: true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "s1",
+			"nodes": []any{
+				map[string]any{"id": "s1", "type": "set_variable", "config": map[string]any{
+					"paths": []any{
+						map[string]any{"name": "body", "path": "msgContext.text.body"},
+						map[string]any{"name": "who", "path": "senderName"},
+					},
+					"set": map[string]any{"note": "saved {{body}}"},
+				}},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{map[string]any{"from": "s1", "to": "e1", "condition": "default"}},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hello world", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "hello world", session.SessionData["body"])
+	assert.Equal(t, contact.ProfileName, session.SessionData["who"])
+	assert.Equal(t, "saved hello world", session.SessionData["note"])
+}
+
+func TestMatchConditionRule_Operators(t *testing.T) {
+	assert.True(t, matchConditionRule(conditionRule{Operator: "text_starts_with", Value: "He"}, "Hello"))
+	assert.True(t, matchConditionRule(conditionRule{Operator: "text_ends_with", Value: "lo"}, "Hello"))
+	assert.True(t, matchConditionRule(conditionRule{Operator: "number_greater", Value: "5"}, "10"))
+	assert.True(t, matchConditionRule(conditionRule{Operator: "number_less", Value: "5"}, "2"))
+	assert.False(t, matchConditionRule(conditionRule{Operator: "text_exact", Value: "Yes", CaseSensitive: true}, "yes"))
+	assert.True(t, matchConditionRule(conditionRule{Operator: "text_exact", Value: "Yes"}, "yes"))
+}
+
+func TestRunChatGraph_DelayThenResume(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
+		Name: "delay", IsEnabled: true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "m1",
+			"nodes": []any{
+				map[string]any{"id": "m1", "type": "message", "config": map[string]any{"message": "A"}},
+				map[string]any{"id": "d1", "type": "delay", "config": map[string]any{"seconds": 30}},
+				map[string]any{"id": "m2", "type": "message", "config": map[string]any{"message": "B"}},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{
+				map[string]any{"from": "m1", "to": "d1", "condition": "default"},
+				map[string]any{"from": "d1", "to": "m2", "condition": "default"},
+				map[string]any{"from": "m2", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "d1", session.CurrentStep)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
+	assert.Equal(t, "d1", session.SessionData["__delay_pending"])
+
+	// Simulate elapsed delay.
+	session.SessionData["__delay_resume_at"] = float64(time.Now().Add(-time.Second).Unix())
+	require.NoError(t, app.DB.Save(session).Error)
+	require.NoError(t, app.resumeChatSessionAfterDelay(session.ID))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+}
+
+func TestRunChatGraph_ResetSessionClearsCustomVars(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	session.SessionData = models.JSONB{"custom": "keep-me-not", "tier": "gold"}
+	require.NoError(t, app.DB.Save(session).Error)
+	flow := &models.ChatbotFlow{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
+		Name: "reset", IsEnabled: true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "r1",
+			"nodes": []any{
+				map[string]any{"id": "r1", "type": "reset_session"},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{map[string]any{"from": "r1", "to": "e1", "condition": "default"}},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	_, hasCustom := session.SessionData["custom"]
+	assert.False(t, hasCustom)
+	assert.Equal(t, contact.ProfileName, session.SessionData["contact_name"])
+}
+
+func TestExecChatPhonebook_AddAndRemove(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	list := models.ContactList{
+		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, Name: "VIP",
+	}
+	require.NoError(t, app.DB.Create(&list).Error)
+
+	node := &ChatNode{ID: "pb1", Type: ChatNodePhonebook, Config: map[string]any{
+		"action": "add", "list_id": list.ID.String(),
+	}}
+	ctx := &chatNodeCtx{account: account, contact: contact, session: session}
+	out, err := app.execChatPhonebook(node, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "default", out.outcome)
+
+	var count int64
+	app.DB.Model(&models.ContactListMember{}).Where("list_id = ? AND phone_number = ?", list.ID, contact.PhoneNumber).Count(&count)
+	assert.Equal(t, int64(1), count)
+
+	node.Config["action"] = "remove"
+	out, err = app.execChatPhonebook(node, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "default", out.outcome)
+	app.DB.Model(&models.ContactListMember{}).Where("list_id = ?", list.ID).Count(&count)
+	assert.Equal(t, int64(0), count)
+}
+
+func TestExecChatSendEmail_NoSMTP(t *testing.T) {
+	app, _, account, contact, session := newGraphTestFixtures(t)
+	node := &ChatNode{ID: "em1", Type: ChatNodeSendEmail, Config: map[string]any{
+		"to": "a@b.com", "subject": "Hi {{contact_name}}", "html": "<p>x</p>",
+	}}
+	ctx := &chatNodeCtx{account: account, contact: contact, session: session}
+	out, err := app.execChatSendEmail(node, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "error", out.outcome)
+}

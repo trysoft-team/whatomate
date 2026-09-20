@@ -291,6 +291,12 @@ func runServer(args []string) {
 	go slaProcessor.Start(slaCtx)
 	lo.Info("SLA processor started")
 
+	// Resume chatbot Delay nodes without blocking webhooks
+	delayProcessor := handlers.NewChatDelayProcessor(app, time.Second)
+	delayCtx, delayCancel := context.WithCancel(context.Background())
+	go delayProcessor.Start(delayCtx)
+	lo.Info("Chat delay processor started")
+
 	// Start embedded workers
 	var workers []*worker.Worker
 	var workerCancel context.CancelFunc
@@ -335,6 +341,11 @@ func runServer(args []string) {
 	slaCancel()
 	slaProcessor.Stop()
 	lo.Info("SLA processor stopped")
+
+	lo.Info("Stopping chat delay processor...")
+	delayCancel()
+	delayProcessor.Stop()
+	lo.Info("Chat delay processor stopped")
 
 	// Stop workers first
 	if workerCancel != nil {
@@ -651,6 +662,15 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.POST("/api/tags", app.CreateTag)
 	g.PUT("/api/tags/{name}", app.UpdateTag)
 	g.DELETE("/api/tags/{name}", app.DeleteTag)
+
+	g.GET("/api/contact-lists", app.ListContactLists)
+	g.POST("/api/contact-lists", app.CreateContactList)
+	g.PUT("/api/contact-lists/{id}", app.UpdateContactList)
+	g.DELETE("/api/contact-lists/{id}", app.DeleteContactList)
+
+	g.GET("/api/google-credentials", app.ListGoogleCredentials)
+	g.POST("/api/google-credentials", app.CreateGoogleCredential)
+	g.DELETE("/api/google-credentials/{id}", app.DeleteGoogleCredential)
 
 	// Messages
 	g.GET("/api/contacts/{id}/messages", app.GetMessages)

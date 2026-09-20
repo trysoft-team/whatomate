@@ -17,6 +17,7 @@ const (
 	ChatNodeStart        ChatNodeType = "start"
 	ChatNodeMessage      ChatNodeType = "message"
 	ChatNodeButtons      ChatNodeType = "buttons"
+	ChatNodeList         ChatNodeType = "list"
 	ChatNodePrompt       ChatNodeType = "prompt"
 	ChatNodeAPICall      ChatNodeType = "api_call"
 	ChatNodeCondition    ChatNodeType = "condition"
@@ -27,7 +28,15 @@ const (
 	ChatNodeWebhook      ChatNodeType = "webhook"
 	ChatNodeGotoFlow     ChatNodeType = "goto_flow"
 	ChatNodeWhatsAppFlow ChatNodeType = "whatsapp_flow"
-	ChatNodeEnd          ChatNodeType = "end"
+	ChatNodeWATemplate   ChatNodeType = "wa_template"
+	ChatNodeDelay        ChatNodeType = "delay"
+	ChatNodeResetSession ChatNodeType = "reset_session"
+	ChatNodeSetLabels      ChatNodeType = "set_labels"
+	ChatNodeDisableBot     ChatNodeType = "disable_bot"
+	ChatNodeSendEmail      ChatNodeType = "send_email"
+	ChatNodePhonebook      ChatNodeType = "phonebook"
+	ChatNodeGoogleService  ChatNodeType = "google_service"
+	ChatNodeEnd            ChatNodeType = "end"
 )
 
 // ChatNode, ChatEdge and ChatGraph are the chatbot domain's views of the shared

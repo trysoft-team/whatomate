@@ -36,22 +36,33 @@ type OutgoingMessageRequest struct {
 	Type models.MessageType // text, image, video, audio, document, interactive, template
 
 	// Text messages
-	Content string
+	Content    string
+	PreviewURL bool // Enable Meta link previews in text messages
 
 	// Media messages (image, video, audio, document)
 	MediaID       string // WhatsApp media ID (if already uploaded)
+	MediaLink     string // Public HTTPS URL — Meta fetches the file (alternative to MediaID)
 	MediaData     []byte // Raw media data (if upload needed)
 	MediaURL      string // Local media URL (for storage)
 	MediaMimeType string
 	MediaFilename string
 	Caption       string
 
+	// Location messages
+	Latitude  float64
+	Longitude float64
+	LocationName    string
+	LocationAddress string
+
 	// Interactive messages
 	InteractiveType string            // "button", "list", "cta_url", "voice_call"
 	BodyText        string            // Body text for interactive messages
 	Buttons         []whatsapp.Button // For button/list messages
-	ButtonText      string            // For CTA URL button
+	ButtonText      string            // For CTA URL button / list menu CTA
 	URL             string            // For CTA URL button
+	ListHeader      string            // Optional list header text
+	ListFooter      string            // Optional list footer text
+	ListSections    []whatsapp.ListSection // Structured list sections (preferred over Buttons for list)
 
 	// voice_call interactive (WhatsApp Business Calling)
 	DisplayText      string // Button face label
@@ -69,6 +80,7 @@ type OutgoingMessageRequest struct {
 	// WhatsApp Flow messages
 	FlowID          string // Meta Flow ID
 	FlowHeader      string // Optional header text for flow
+	FlowFooter      string // Optional footer text for flow
 	FlowCTA         string // CTA button text (max 20 chars)
 	FlowToken       string // Unique token for flow response tracking
 	FlowFirstScreen string // First screen name to navigate to
@@ -167,10 +179,13 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 
 		switch req.Type {
 		case models.MessageTypeText:
-			return a.WhatsApp.SendTextMessage(sendCtx, waAccount, rcpt, req.Content, replyToMsgID)
+			return a.WhatsApp.SendTextMessageWithPreview(sendCtx, waAccount, rcpt, req.Content, req.PreviewURL, replyToMsgID)
 
 		case models.MessageTypeImage, models.MessageTypeVideo, models.MessageTypeAudio, models.MessageTypeDocument:
-			// Upload media if MediaData is provided and MediaID is not set
+			// Prefer public link (chatbot flows), else upload bytes, else media ID.
+			if req.MediaLink != "" {
+				return a.WhatsApp.SendMediaByLink(sendCtx, waAccount, rcpt, string(req.Type), req.MediaLink, req.Caption, req.MediaFilename)
+			}
 			mediaID := req.MediaID
 			if mediaID == "" && len(req.MediaData) > 0 {
 				var err error
@@ -179,7 +194,9 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 					return "", fmt.Errorf("failed to upload media: %w", err)
 				}
 			}
-			// Send the appropriate media type
+			if mediaID == "" {
+				return "", fmt.Errorf("media id or link is required for %s messages", req.Type)
+			}
 			switch req.Type {
 			case models.MessageTypeImage:
 				return a.WhatsApp.SendImageMessage(sendCtx, waAccount, rcpt, mediaID, req.Caption)
@@ -191,13 +208,21 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 				return a.WhatsApp.SendDocumentMessage(sendCtx, waAccount, rcpt, mediaID, req.MediaFilename, req.Caption)
 			}
 
+		case models.MessageTypeLocation:
+			return a.WhatsApp.SendLocationMessage(sendCtx, waAccount, rcpt, req.Latitude, req.Longitude, req.LocationName, req.LocationAddress)
+
 		case models.MessageTypeInteractive:
 			switch req.InteractiveType {
 			case "cta_url":
 				return a.WhatsApp.SendCTAURLButton(sendCtx, waAccount, rcpt, req.BodyText, req.ButtonText, req.URL)
 			case "voice_call":
 				return a.WhatsApp.SendVoiceCallButton(sendCtx, waAccount, rcpt, req.BodyText, req.DisplayText, req.TTLMinutes, req.VoiceCallPayload)
-			default: // "button" or "list"
+			case "list":
+				if len(req.ListSections) > 0 {
+					return a.WhatsApp.SendInteractiveList(sendCtx, waAccount, rcpt, req.BodyText, req.ButtonText, req.ListHeader, req.ListFooter, req.ListSections)
+				}
+				return a.WhatsApp.SendInteractiveButtons(sendCtx, waAccount, rcpt, req.BodyText, req.Buttons)
+			default: // "button"
 				return a.WhatsApp.SendInteractiveButtons(sendCtx, waAccount, rcpt, req.BodyText, req.Buttons)
 			}
 
@@ -226,7 +251,7 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 			if req.FlowID == "" {
 				return "", fmt.Errorf("flow ID is required for flow messages")
 			}
-			return a.WhatsApp.SendFlowMessage(sendCtx, waAccount, rcpt, req.FlowID, req.FlowHeader, req.BodyText, req.FlowCTA, req.FlowToken, req.FlowFirstScreen)
+			return a.WhatsApp.SendFlowMessage(sendCtx, waAccount, rcpt, req.FlowID, req.FlowHeader, req.BodyText, req.FlowCTA, req.FlowToken, req.FlowFirstScreen, req.FlowFooter)
 
 		default:
 			return "", fmt.Errorf("unsupported message type: %s", req.Type)
@@ -294,9 +319,26 @@ func (a *App) createOutgoingMessage(req OutgoingMessageRequest, opts MessageSend
 
 	case models.MessageTypeImage, models.MessageTypeVideo, models.MessageTypeAudio, models.MessageTypeDocument:
 		msg.Content = req.Caption
-		msg.MediaURL = req.MediaURL
+		if req.MediaLink != "" {
+			msg.MediaURL = req.MediaLink
+		} else {
+			msg.MediaURL = req.MediaURL
+		}
 		msg.MediaMimeType = req.MediaMimeType
 		msg.MediaFilename = req.MediaFilename
+
+	case models.MessageTypeLocation:
+		name := req.LocationName
+		if name == "" {
+			name = "Location"
+		}
+		msg.Content = name
+		msg.Metadata = models.JSONB{
+			"latitude":  req.Latitude,
+			"longitude": req.Longitude,
+			"name":      req.LocationName,
+			"address":   req.LocationAddress,
+		}
 
 	case models.MessageTypeInteractive:
 		msg.Content = req.BodyText
@@ -402,6 +444,31 @@ func (a *App) buildInteractiveData(req OutgoingMessageRequest) models.JSONB {
 		}
 		return out
 	case "list":
+		if len(req.ListSections) > 0 {
+			sections := make([]any, 0, len(req.ListSections))
+			for _, sec := range req.ListSections {
+				rows := make([]any, 0, len(sec.Rows))
+				for _, row := range sec.Rows {
+					rows = append(rows, map[string]string{
+						"id":          row.ID,
+						"title":       row.Title,
+						"description": row.Description,
+					})
+				}
+				sections = append(sections, map[string]any{
+					"title": sec.Title,
+					"rows":  rows,
+				})
+			}
+			return models.JSONB{
+				"type":     "list",
+				"body":     req.BodyText,
+				"button":   req.ButtonText,
+				"header":   req.ListHeader,
+				"footer":   req.ListFooter,
+				"sections": sections,
+			}
+		}
 		rows := make([]any, len(req.Buttons))
 		for i, btn := range req.Buttons {
 			rows[i] = map[string]string{"id": btn.ID, "title": btn.Title}
@@ -613,6 +680,11 @@ func (a *App) getMessagePreview(req OutgoingMessageRequest) string {
 			return "[Document: " + req.MediaFilename + "]"
 		}
 		return "[Document]"
+	case models.MessageTypeLocation:
+		if req.LocationName != "" {
+			return "[Location: " + req.LocationName + "]"
+		}
+		return "[Location]"
 	case models.MessageTypeInteractive:
 		return truncateString(req.BodyText, 100)
 	case models.MessageTypeFlow:

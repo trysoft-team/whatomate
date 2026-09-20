@@ -25,6 +25,33 @@ func TestProcessTemplate_VariablesOnly(t *testing.T) {
 	assert.Equal(t, "Hello Alice, age 30", result)
 }
 
+func TestProcessTemplate_TripleBraceVariables(t *testing.T) {
+	t.Parallel()
+	data := map[string]any{
+		"senderName":    "Ada",
+		"senderMobile":  "15551234567",
+		"senderMessage": "Hello",
+		"contact_name":  "Ada",
+	}
+	result := processTemplate(
+		"Hi {{{senderName}}} ({{contact_name}}) {{{senderMobile}}}: {{{senderMessage}}}",
+		data,
+	)
+	assert.Equal(t, "Hi Ada (Ada) 15551234567: Hello", result)
+}
+
+func TestProcessTemplate_TripleBraceMissingIsEmpty(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "Hi ", processTemplate("Hi {{{senderName}}}", nil))
+}
+
+func TestProcessTemplate_MixedBraceSameValue(t *testing.T) {
+	t.Parallel()
+	data := map[string]any{"phone_number": "99", "senderMobile": "99"}
+	result := processTemplate("{{phone_number}}/{{{senderMobile}}}", data)
+	assert.Equal(t, "99/99", result)
+}
+
 func TestProcessTemplate_LoopsOnly(t *testing.T) {
 	t.Parallel()
 	data := map[string]any{

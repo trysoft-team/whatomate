@@ -22,7 +22,9 @@ import {
   PhoneCall,
   PhoneForwarded,
   ScrollText,
-  Building2
+  Building2,
+  BookUser,
+  Sheet
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 
@@ -149,6 +151,8 @@ export const navigationSections: NavSection[] = [
           { name: 'nav.contacts', path: '/settings/contacts', icon: Contact, permission: 'contacts' },
           { name: 'nav.cannedResponses', path: '/settings/canned-responses', icon: MessageSquareText, permission: 'canned_responses' },
           { name: 'nav.tags', path: '/settings/tags', icon: Tags, permission: 'tags' },
+          { name: 'nav.contactLists', path: '/settings/contact-lists', icon: BookUser, permission: 'contacts' },
+          { name: 'nav.googleCredentials', path: '/settings/google-credentials', icon: Sheet, permission: 'settings.general' },
           { name: 'nav.teams', path: '/settings/teams', icon: Users, permission: 'teams' },
           { name: 'nav.users', path: '/settings/users', icon: Users, permission: 'users' },
           { name: 'nav.roles', path: '/settings/roles', icon: Shield, permission: 'roles' },

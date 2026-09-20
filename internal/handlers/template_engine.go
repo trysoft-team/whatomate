@@ -15,10 +15,17 @@ var (
 	// {{if condition}}...{{else}}...{{endif}} or {{if condition}}...{{endif}}
 	ifElsePattern = regexp.MustCompile(`\{\{if\s+([^}]+)\}\}([\s\S]*?)\{\{endif\}\}`)
 
+	// Path shared by {{var}} and {{{var}}} (whatsCRM-style triple-brace).
+	// Supports nested paths and array indexes: name, object.nested, items[0].field.
+	// Whitespace inside the braces is tolerated (`{{ name }}`).
+	templateVarPath = `[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[\d+\])*`
+
+	// {{{variable}}} — whatsCRM / Mustache unescaped form. Matched before
+	// double-brace so {{{name}}} is not left as a literal "{" + empty {{name}}.
+	tripleVariablePattern = regexp.MustCompile(`\{\{\{\s*(` + templateVarPath + `)\s*\}\}\}`)
+
 	// {{variable}} / {{ variable }} / {{object.nested.path}} / {{array[0].field}}.
-	// Whitespace inside the braces is tolerated to match the rest of the
-	// industry (`{{ name }}` is the common form authors expect).
-	variablePattern = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[\d+\])*)\s*\}\}`)
+	variablePattern = regexp.MustCompile(`\{\{\s*(` + templateVarPath + `)\s*\}\}`)
 
 	// Condition parsing: variable, variable == 'value', variable > 100, etc.
 	conditionPattern = regexp.MustCompile(`^(\w+(?:\.\w+)*)\s*(==|!=|>=|<=|>|<)?\s*(.*)$`)
@@ -151,14 +158,20 @@ func processConditionals(template string, data map[string]any) string {
 	return result
 }
 
-// processVariables replaces {{variable}} and {{object.path}} with values
+// processVariables replaces {{{variable}}} and {{variable}} (and nested
+// paths) with values from data. Triple-brace is applied first so whatsCRM
+// templates like {{{senderName}}} resolve correctly; {{x}} remains the
+// canonical Whatomate form. Unresolved names become an empty string.
 func processVariables(template string, data map[string]any) string {
-	return variablePattern.ReplaceAllStringFunc(template, func(match string) string {
-		// Remove {{ and }}
-		path := match[2 : len(match)-2]
-
-		value := getNestedValue(data, path)
-		return formatValue(value)
+	replace := func(match string, open, close int) string {
+		path := strings.TrimSpace(match[open : len(match)-close])
+		return formatValue(getNestedValue(data, path))
+	}
+	result := tripleVariablePattern.ReplaceAllStringFunc(template, func(match string) string {
+		return replace(match, 3, 3)
+	})
+	return variablePattern.ReplaceAllStringFunc(result, func(match string) string {
+		return replace(match, 2, 2)
 	})
 }
 

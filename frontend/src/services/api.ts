@@ -722,6 +722,12 @@ export const organizationService = {
     meta_app_id?: string
     meta_config_id?: string
     meta_app_secret?: string
+    smtp_host?: string
+    smtp_port?: number
+    smtp_username?: string
+    smtp_password?: string
+    smtp_from?: string
+    smtp_security?: string
   }) => api.put('/org/settings', data),
   uploadOrgAudio: (file: File, type: 'hold_music' | 'ringback') => {
     const formData = new FormData()
@@ -730,6 +736,33 @@ export const organizationService = {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
   }
+}
+
+export interface ContactList {
+  id: string
+  name: string
+  description?: string
+  member_count?: number
+}
+
+export const contactListsService = {
+  list: () => api.get('/contact-lists'),
+  create: (data: { name: string; description?: string }) => api.post('/contact-lists', data),
+  update: (id: string, data: { name?: string; description?: string }) => api.put(`/contact-lists/${id}`, data),
+  remove: (id: string) => api.delete(`/contact-lists/${id}`),
+}
+
+export interface GoogleCredential {
+  id: string
+  label: string
+  client_email?: string
+  has_json: boolean
+}
+
+export const googleCredentialsService = {
+  list: () => api.get('/google-credentials'),
+  create: (data: { label: string; service_json: string }) => api.post('/google-credentials', data),
+  remove: (id: string) => api.delete(`/google-credentials/${id}`),
 }
 
 // Organizations
@@ -1092,6 +1125,7 @@ export type ChatNodeType =
   | 'start'
   | 'message'
   | 'buttons'
+  | 'list'
   | 'end'
   | 'prompt'
   | 'api_call'
@@ -1103,6 +1137,16 @@ export type ChatNodeType =
   | 'webhook'
   | 'goto_flow'
   | 'whatsapp_flow'
+  | 'wa_template'
+  | 'set_variable'
+  | 'delay'
+  | 'reset_session'
+  | 'ai_response'
+  | 'set_labels'
+  | 'disable_bot'
+  | 'send_email'
+  | 'phonebook'
+  | 'google_service'
 
 export interface ChatNode {
   id: string

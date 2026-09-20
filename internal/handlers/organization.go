@@ -63,6 +63,13 @@ type OrganizationSettings struct {
 	MetaAppID           string `json:"meta_app_id"`
 	MetaConfigID        string `json:"meta_config_id"`
 	HasMetaAppSecret    bool   `json:"has_meta_app_secret"`
+	// SMTP (password never returned — only has_smtp_password)
+	SMTPHost          string `json:"smtp_host"`
+	SMTPPort          int    `json:"smtp_port"`
+	SMTPUsername      string `json:"smtp_username"`
+	SMTPFrom          string `json:"smtp_from"`
+	SMTPSecurity      string `json:"smtp_security"` // tls | ssl | none
+	HasSMTPPassword   bool   `json:"has_smtp_password"`
 }
 
 // GetOrganizationSettings returns the organization settings
@@ -123,6 +130,31 @@ func (a *App) GetOrganizationSettings(r *fastglue.Request) error {
 		if v, ok := org.Settings["meta_app_secret_encrypted"].(string); ok && v != "" {
 			settings.HasMetaAppSecret = true
 		}
+		if v, ok := org.Settings["smtp_host"].(string); ok {
+			settings.SMTPHost = v
+		}
+		if v, ok := org.Settings["smtp_port"].(float64); ok && v > 0 {
+			settings.SMTPPort = int(v)
+		}
+		if v, ok := org.Settings["smtp_username"].(string); ok {
+			settings.SMTPUsername = v
+		}
+		if v, ok := org.Settings["smtp_from"].(string); ok {
+			settings.SMTPFrom = v
+		}
+		if v, ok := org.Settings["smtp_security"].(string); ok && v != "" {
+			settings.SMTPSecurity = v
+		}
+		if v, ok := org.Settings["smtp_password_encrypted"].(string); ok && v != "" {
+			settings.HasSMTPPassword = true
+		}
+	}
+
+	if settings.SMTPPort == 0 {
+		settings.SMTPPort = 587
+	}
+	if settings.SMTPSecurity == "" {
+		settings.SMTPSecurity = "tls"
 	}
 
 	return r.SendEnvelope(map[string]any{
@@ -151,6 +183,12 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 		MetaAppID           *string `json:"meta_app_id"`
 		MetaConfigID        *string `json:"meta_config_id"`
 		MetaAppSecret       *string `json:"meta_app_secret"`
+		SMTPHost            *string `json:"smtp_host"`
+		SMTPPort            *int    `json:"smtp_port"`
+		SMTPUsername        *string `json:"smtp_username"`
+		SMTPPassword        *string `json:"smtp_password"`
+		SMTPFrom            *string `json:"smtp_from"`
+		SMTPSecurity        *string `json:"smtp_security"`
 	}
 
 	if err := json.Unmarshal(r.RequestCtx.PostBody(), &req); err != nil {
@@ -177,6 +215,8 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 	// Track which tabs received updates so we only audit the relevant ones.
 	generalTouched := req.MaskPhoneNumbers != nil || req.Timezone != nil || req.DateFormat != nil || (req.Name != nil && *req.Name != "") || metaAppCredsTouched
 	callingTouched := req.CallingEnabled != nil || req.MaxCallDuration != nil || req.TransferTimeoutSecs != nil || req.HoldMusicFile != nil || req.RingbackFile != nil
+	smtpTouched := req.SMTPHost != nil || req.SMTPPort != nil || req.SMTPUsername != nil || req.SMTPPassword != nil || req.SMTPFrom != nil || req.SMTPSecurity != nil
+	_ = smtpTouched // audited via general settings resource for now
 
 	// Update settings
 	if org.Settings == nil {
@@ -220,6 +260,33 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update settings", nil, "")
 		}
 		org.Settings["meta_app_secret_encrypted"] = encSecret
+	}
+	if req.SMTPHost != nil {
+		org.Settings["smtp_host"] = *req.SMTPHost
+	}
+	if req.SMTPPort != nil && *req.SMTPPort > 0 {
+		org.Settings["smtp_port"] = *req.SMTPPort
+	}
+	if req.SMTPUsername != nil {
+		org.Settings["smtp_username"] = *req.SMTPUsername
+	}
+	if req.SMTPFrom != nil {
+		org.Settings["smtp_from"] = *req.SMTPFrom
+	}
+	if req.SMTPSecurity != nil {
+		sec := strings.ToLower(strings.TrimSpace(*req.SMTPSecurity))
+		if sec == "" {
+			sec = "tls"
+		}
+		org.Settings["smtp_security"] = sec
+	}
+	if req.SMTPPassword != nil && *req.SMTPPassword != "" {
+		encPass, errEnc := crypto.Encrypt(*req.SMTPPassword, a.Config.App.EncryptionKey)
+		if errEnc != nil {
+			a.Log.Error("Failed to encrypt smtp password", "error", errEnc)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update settings", nil, "")
+		}
+		org.Settings["smtp_password_encrypted"] = encPass
 	}
 	if req.Name != nil && *req.Name != "" {
 		org.Name = *req.Name

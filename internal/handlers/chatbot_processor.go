@@ -18,6 +18,26 @@ import (
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 )
 
+// contactBotMutedUntil reads Metadata["bot_muted_until"] (RFC3339).
+func contactBotMutedUntil(contact *models.Contact) (time.Time, bool) {
+	if contact == nil || contact.Metadata == nil {
+		return time.Time{}, false
+	}
+	raw, ok := contact.Metadata["bot_muted_until"]
+	if !ok || raw == nil {
+		return time.Time{}, false
+	}
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
 func redactURLForLog(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -201,6 +221,13 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		a.Log.Info("Contact has active agent transfer, skipping chatbot processing",
 			"contact_id", contact.ID,
 			"phone_number", contact.PhoneNumber)
+		return
+	}
+
+	// Per-contact bot mute (disable_bot node)
+	if until, ok := contactBotMutedUntil(contact); ok && time.Now().Before(until) {
+		a.Log.Info("Contact bot muted, skipping chatbot processing",
+			"contact_id", contact.ID, "muted_until", until)
 		return
 	}
 
@@ -495,12 +522,63 @@ func (a *App) matchKeywordRules(orgID uuid.UUID, accountName, messageText string
 // sendAndSaveTextMessage sends a text message and saves it to the database
 // Uses the unified SendOutgoingMessage for consistent behavior
 func (a *App) sendAndSaveTextMessage(account *models.WhatsAppAccount, contact *models.Contact, message string) error {
+	return a.sendAndSaveTextMessageOpts(account, contact, message, false)
+}
+
+func (a *App) sendAndSaveTextMessageOpts(account *models.WhatsAppAccount, contact *models.Contact, message string, previewURL bool) error {
 	ctx := context.Background()
 	_, err := a.SendOutgoingMessage(ctx, OutgoingMessageRequest{
-		Account: account,
-		Contact: contact,
-		Type:    models.MessageTypeText,
-		Content: message,
+		Account:    account,
+		Contact:    contact,
+		Type:       models.MessageTypeText,
+		Content:    message,
+		PreviewURL: previewURL,
+	}, ChatbotSendOptions())
+	return err
+}
+
+// sendAndSaveMediaByLink sends an image/video/audio/document by public URL.
+func (a *App) sendAndSaveMediaByLink(account *models.WhatsAppAccount, contact *models.Contact, mediaType, link, caption, filename string) error {
+	ctx := context.Background()
+	_, err := a.SendOutgoingMessage(ctx, OutgoingMessageRequest{
+		Account:       account,
+		Contact:       contact,
+		Type:          models.MessageType(mediaType),
+		MediaLink:     link,
+		Caption:       caption,
+		MediaFilename: filename,
+	}, ChatbotSendOptions())
+	return err
+}
+
+// sendAndSaveLocationMessage sends a location pin and saves it.
+func (a *App) sendAndSaveLocationMessage(account *models.WhatsAppAccount, contact *models.Contact, lat, lng float64, name, address string) error {
+	ctx := context.Background()
+	_, err := a.SendOutgoingMessage(ctx, OutgoingMessageRequest{
+		Account:         account,
+		Contact:         contact,
+		Type:            models.MessageTypeLocation,
+		Latitude:        lat,
+		Longitude:       lng,
+		LocationName:    name,
+		LocationAddress: address,
+	}, ChatbotSendOptions())
+	return err
+}
+
+// sendAndSaveInteractiveList sends a structured list message and saves it.
+func (a *App) sendAndSaveInteractiveList(account *models.WhatsAppAccount, contact *models.Contact, body, button, header, footer string, sections []whatsapp.ListSection) error {
+	ctx := context.Background()
+	_, err := a.SendOutgoingMessage(ctx, OutgoingMessageRequest{
+		Account:         account,
+		Contact:         contact,
+		Type:            models.MessageTypeInteractive,
+		InteractiveType: "list",
+		BodyText:        body,
+		ButtonText:      button,
+		ListHeader:      header,
+		ListFooter:      footer,
+		ListSections:    sections,
 	}, ChatbotSendOptions())
 	return err
 }
@@ -623,7 +701,7 @@ func (a *App) sendAndSaveCTAURLButton(account *models.WhatsAppAccount, contact *
 
 // sendAndSaveFlowMessage sends a WhatsApp Flow message and saves it to the database
 // Uses the unified SendOutgoingMessage for consistent behavior
-func (a *App) sendAndSaveFlowMessage(account *models.WhatsAppAccount, contact *models.Contact, flowID, headerText, bodyText, ctaText, flowToken, firstScreen string) error {
+func (a *App) sendAndSaveFlowMessage(account *models.WhatsAppAccount, contact *models.Contact, flowID, headerText, bodyText, footerText, ctaText, flowToken, firstScreen string) error {
 	ctx := context.Background()
 	_, err := a.SendOutgoingMessage(ctx, OutgoingMessageRequest{
 		Account:         account,
@@ -631,6 +709,7 @@ func (a *App) sendAndSaveFlowMessage(account *models.WhatsAppAccount, contact *m
 		Type:            models.MessageTypeFlow,
 		FlowID:          flowID,
 		FlowHeader:      headerText,
+		FlowFooter:      footerText,
 		BodyText:        bodyText,
 		FlowCTA:         ctaText,
 		FlowToken:       flowToken,

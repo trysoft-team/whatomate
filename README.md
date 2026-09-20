@@ -122,11 +122,20 @@ See [configuration docs](https://shridarpatil.github.io/whatomate/getting-starte
 The backend is written in Go ([Fastglue](https://github.com/zerodha/fastglue)) and the frontend is Vue.js 3 with shadcn-vue.
 - If you are interested in contributing, please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
+Preferred local loop (host Go + Vite; Postgres/Redis in Docker):
+
 ```bash
-# Development setup
-make run-migrate    # Backend (port 8080)
-cd frontend && npm run dev   # Frontend (port 3000)
+# One-time: copy config and point DB/Redis at the host
+cp config.toml config.local.toml
+# In config.local.toml: database.host=localhost, database.port=5433, redis.host=localhost
+
+make docker-infra          # Postgres :5433 + Redis :6379; stops the app container
+make run-migrate           # API on :8080 (uses config.local.toml)
+cd frontend && npm run dev # UI on :3000 (proxies /api → :8080)
+# or: make dev
 ```
+
+Login: `admin@admin.com` / `admin` at http://localhost:3000
 
 ## License
 
