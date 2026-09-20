@@ -1,9 +1,16 @@
 <script setup lang="ts">
+import { markRaw } from 'vue'
 import { VueFlow, MarkerType } from '@vue-flow/core'
 import type { Node, Edge, NodeMouseEvent, Connection, EdgeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
+import DeletableEdge from './DeletableEdge.vue'
+
+const edgeTypes = {
+  default: markRaw(DeletableEdge),
+  smoothstep: markRaw(DeletableEdge),
+}
 
 withDefaults(
   defineProps<{
@@ -40,6 +47,7 @@ defineEmits<{
       :nodes="nodes"
       :edges="edges"
       :node-types="nodeTypes"
+      :edge-types="edgeTypes"
       :nodes-draggable="true"
       :nodes-connectable="true"
       :edges-updatable="true"

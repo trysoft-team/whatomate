@@ -53,11 +53,18 @@ func (m *Manager) InitiateOutgoingCall(
 		return uuid.Nil, "", fmt.Errorf("failed to create agent local track: %w", err)
 	}
 
+	var callerName string
+	var contact models.Contact
+	if err := m.db.Select("profile_name").Where("id = ?", contactID).First(&contact).Error; err == nil {
+		callerName = contact.ProfileName
+	}
+
 	// Create session early so OnTrack can reference it
 	session := &CallSession{
 		OrganizationID: orgID,
 		AccountName:    accountName,
 		CallerPhone:    contactPhone,
+		CallerName:     callerName,
 		ContactID:      contactID,
 		CallLogID:      callLog.ID,
 		Status:         models.CallStatusInitiating,

@@ -31,6 +31,9 @@ if (teamsStore.teams.length === 0) teamsStore.fetchTeams()
 
 const config = computed(() => props.node.config || {})
 
+const ttsPlaceholder = 'Hi {{caller_name}}, thanks for calling...'
+const httpBodyPlaceholder = '{"phone": "{{caller_phone}}", "name": "{{caller_name}}"}'
+
 function updateConfig(key: string, value: any) {
   emit('update:node', {
     ...props.node,
@@ -298,10 +301,15 @@ const greetingTab = computed(() =>
           <Textarea
             :model-value="config.greeting_text || ''"
             @update:model-value="(v: string) => updateConfigEntries(v ? { greeting_text: v, audio_file: undefined } : { greeting_text: v })"
-            placeholder="Enter text for TTS..."
+            :placeholder="ttsPlaceholder"
             class="min-h-[60px] text-xs resize-none"
             :maxlength="500"
           />
+          <p class="text-[10px] text-muted-foreground mt-1">
+            Variables:
+            <code v-pre class="bg-muted px-1 py-0.5 rounded">{{caller_name}}</code>
+            <code v-pre class="bg-muted px-1 py-0.5 rounded">{{caller_phone}}</code>
+          </p>
         </TabsContent>
       </Tabs>
     </div>
@@ -396,7 +404,13 @@ const greetingTab = computed(() =>
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs">Body Template</Label>
-        <Textarea :model-value="config.body_template || ''" @update:model-value="(v: string) => updateConfig('body_template', v)" placeholder='{"phone": "{{caller_phone}}"}' class="min-h-[60px] text-xs font-mono resize-none" />
+        <Textarea :model-value="config.body_template || ''" @update:model-value="(v: string) => updateConfig('body_template', v)" :placeholder="httpBodyPlaceholder" class="min-h-[60px] text-xs font-mono resize-none" />
+        <p class="text-[10px] text-muted-foreground">
+          Built-in:
+          <code class="bg-muted px-1 py-0.5 rounded">caller_phone</code>
+          <code class="bg-muted px-1 py-0.5 rounded">caller_name</code>
+          <code class="bg-muted px-1 py-0.5 rounded">call_id</code>
+        </p>
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs">Timeout (seconds)</Label>
@@ -479,7 +493,7 @@ const greetingTab = computed(() =>
         </button>
         <div v-if="config._vars_expanded" class="px-3 pb-2 border-t">
           <div class="flex flex-wrap gap-1 pt-2">
-            <code v-for="v in ['caller_phone', 'contact_id', 'call_log_id', 'transfer_id', 'team_id', 'whatsapp_account', 'status', 'transferred_at', 'ivr_path', 'agent_id *', 'agent_email *', 'agent_name *', 'hold_duration **', 'talk_duration **']" :key="v" class="bg-muted px-1.5 py-0.5 rounded text-[10px] cursor-pointer hover:bg-muted/80" :title="v.includes('*') ? 'Available on connect/complete only' : ''">{{ v.replace(' *', '').replace(' **', '') }}</code>
+            <code v-for="v in ['caller_phone', 'caller_name', 'contact_id', 'call_log_id', 'transfer_id', 'team_id', 'whatsapp_account', 'status', 'transferred_at', 'ivr_path', 'agent_id *', 'agent_email *', 'agent_name *', 'hold_duration **', 'talk_duration **']" :key="v" class="bg-muted px-1.5 py-0.5 rounded text-[10px] cursor-pointer hover:bg-muted/80" :title="v.includes('*') ? 'Available on connect/complete only' : ''">{{ v.replace(' *', '').replace(' **', '') }}</code>
           </div>
           <p class="text-[9px] text-muted-foreground mt-1.5">* on_connect/on_complete only &nbsp; ** on_complete only</p>
         </div>

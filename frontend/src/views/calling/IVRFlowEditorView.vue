@@ -189,6 +189,12 @@ function onEdgeClick({ edge }: EdgeMouseEvent) {
   selectedNodeId.value = null
 }
 
+function onEdgesChange(changes: { type: string }[]) {
+  if (changes.some((c) => c.type === 'remove')) {
+    spreadParallelLabels()
+  }
+}
+
 // Handle edge reconnection (drag endpoint to a different node)
 function onEdgeUpdate({ edge, connection }: { edge: Edge; connection: Connection }) {
   // Remove old edge, add new one
@@ -469,6 +475,7 @@ onMounted(() => {
           @pane-click="onPaneClick"
           @edge-update="onEdgeUpdate"
           @edge-click="onEdgeClick"
+          @edges-change="onEdgesChange"
         />
       </div>
 

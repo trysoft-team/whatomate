@@ -16,6 +16,7 @@ import (
 	"github.com/shridarpatil/whatomate/internal/flowgraph"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/shridarpatil/whatomate/internal/storage"
+	"github.com/shridarpatil/whatomate/internal/tts"
 	"github.com/shridarpatil/whatomate/internal/websocket"
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"github.com/zerodha/logf"
@@ -28,6 +29,7 @@ type CallSession struct {
 	OrganizationID uuid.UUID
 	AccountName    string
 	CallerPhone    string
+	CallerName     string
 	ContactID      uuid.UUID
 	CallLogID      uuid.UUID
 	Status         models.CallStatus
@@ -135,16 +137,17 @@ type IVRContext struct {
 
 // Manager manages active call sessions
 type Manager struct {
-	sessions map[string]*CallSession
-	mu       sync.RWMutex
-	log      logf.Logger
-	whatsapp *whatsapp.Client
-	db       *gorm.DB
-	wsHub    *websocket.Hub
-	config   *config.CallingConfig
+	sessions   map[string]*CallSession
+	mu         sync.RWMutex
+	log        logf.Logger
+	whatsapp   *whatsapp.Client
+	db         *gorm.DB
+	wsHub      *websocket.Hub
+	config     *config.CallingConfig
 	recordings storage.Uploader // nil when recording is disabled (S3 or local_path)
-	redis    *redis.Client
-	assigner *assignment.Assigner
+	redis      *redis.Client
+	assigner   *assignment.Assigner
+	tts        *tts.PiperTTS
 }
 
 // NewManager creates a new call session manager
@@ -168,16 +171,25 @@ func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm
 	}
 
 	return &Manager{
-		sessions: make(map[string]*CallSession),
-		log:      log,
-		whatsapp: waClient,
-		db:       db,
-		redis:    rd,
-		wsHub:    wsHub,
-		config:   cfg,
+		sessions:   make(map[string]*CallSession),
+		log:        log,
+		whatsapp:   waClient,
+		db:         db,
+		redis:      rd,
+		wsHub:      wsHub,
+		config:     cfg,
 		recordings: recordings,
-		assigner: assigner,
+		assigner:   assigner,
 	}
+}
+
+// SetTTS attaches Piper TTS so IVR prompts can interpolate {{caller_name}}
+// and other variables at call time.
+func (m *Manager) SetTTS(p *tts.PiperTTS) {
+	if m == nil {
+		return
+	}
+	m.tts = p
 }
 
 // HandleIncomingCall processes a new incoming call and starts WebRTC negotiation.
@@ -194,6 +206,7 @@ func (m *Manager) HandleIncomingCall(account *models.WhatsAppAccount, contact *m
 		OrganizationID: account.OrganizationID,
 		AccountName:    account.Name,
 		CallerPhone:    contact.PhoneNumber,
+		CallerName:     contact.ProfileName,
 		ContactID:      contact.ID,
 		CallLogID:      callLog.ID,
 		Status:         models.CallStatusRinging,

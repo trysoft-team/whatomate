@@ -330,6 +330,13 @@ function onEdgeClick({ edge }: EdgeMouseEvent) {
   selectedNodeId.value = null
 }
 
+function onEdgesChange(changes: { type: string }[]) {
+  if (isLoading.value) return
+  if (!changes.some((c) => c.type === 'remove')) return
+  spreadParallelLabels()
+  hasUnsavedChanges.value = true
+}
+
 function onEdgeUpdate({ edge, connection }: { edge: Edge; connection: Connection }) {
   removeEdges([edge])
   addEdges([
@@ -777,6 +784,7 @@ onMounted(async () => {
           @pane-click="onPaneClick"
           @edge-click="onEdgeClick"
           @edge-update="onEdgeUpdate"
+          @edges-change="onEdgesChange"
           @node-drag-stop="onNodeDragStop"
         />
       </div>

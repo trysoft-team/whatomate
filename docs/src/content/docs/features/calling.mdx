@@ -137,9 +137,12 @@ Makes an HTTP request to an external API during the call flow. Useful for lookin
 
 **Built-in variables** available for interpolation:
 - `{{caller_phone}}` — the caller's phone number
+- `{{caller_name}}` — the caller's WhatsApp profile name
 - `{{call_id}}` — the WhatsApp call ID
 - `{{last_menu_digit}}` and `{{menu_<node id>}}` — the last Menu selection
 - Any variable set by a previous Gather node
+
+These also work in Greeting / Menu / Gather / Hangup TTS text.
 
 **Output handles:** `http:2xx` and `http:non2xx`. Network/transport errors also follow
 `http:non2xx`. Wire up a `default` edge as a catch-all if you don't want to branch.

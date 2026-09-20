@@ -247,6 +247,7 @@ func runServer(args []string) {
 			AudioDir:      cfg.Calling.AudioDir,
 		}
 		lo.Info("TTS initialized", "piper", cfg.TTS.PiperBinary, "model", cfg.TTS.PiperModel)
+		app.CallManager.SetTTS(app.TTS)
 	}
 
 	// Start campaign stats subscriber for real-time WebSocket updates from worker

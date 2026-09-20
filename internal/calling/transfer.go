@@ -86,7 +86,7 @@ func (m *Manager) initiateTransfer(session *CallSession, waAccount string, teamT
 	cb := session.TransferCallbacks
 	session.mu.Unlock()
 	if cb != nil {
-		m.fireTransferCallback(session, cb.OnWaiting, buildTransferVars(&transfer))
+		m.fireTransferCallback(session, cb.OnWaiting, withCallerName(buildTransferVars(&transfer), session))
 	}
 
 	// Update session state
@@ -678,7 +678,7 @@ func (m *Manager) completeTransferConnection(session *CallSession, transferID, a
 		if cbConnect != nil && cbConnect.OnConnect != nil {
 			var updatedTransfer models.CallTransfer
 			if m.db.First(&updatedTransfer, transferID).Error == nil {
-				vars := buildTransferVars(&updatedTransfer)
+				vars := withCallerName(buildTransferVars(&updatedTransfer), session)
 				m.addAgentVars(vars, agentID)
 				m.fireTransferCallback(session, cbConnect.OnConnect, vars)
 			}
@@ -1230,6 +1230,18 @@ func (m *Manager) fireTransferCallback(session *CallSession, hook *TransferHTTPC
 			m.log.Info("Transfer callback completed", "call_id", session.ID, "hook_url", url, "status", result.StatusCode)
 		}
 	}()
+}
+
+// withCallerName copies the session's WhatsApp profile name onto transfer
+// callback vars as {{caller_name}}.
+func withCallerName(vars map[string]string, session *CallSession) map[string]string {
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	if session != nil {
+		vars["caller_name"] = session.CallerName
+	}
+	return vars
 }
 
 // buildTransferVars builds the template variable map for transfer callbacks.
