@@ -39,9 +39,9 @@ Whatomate supports WhatsApp voice calling with WebRTC-based audio bridging. Inco
 6. An available agent accepts the transfer in the browser and speaks with the caller
 </Steps>
 
-## IVR Flow Builder
+## Call Flow Builder
 
-IVR flows are configured from **Settings > IVR Flows** in the admin UI. The editor uses a visual canvas where you drag and drop nodes, then connect them with edges to define the call flow.
+Call flows are configured from **Calling > Call Flows** in the admin UI. The editor uses a visual canvas where you drag and drop nodes, then connect them with edges to define the call path.
 
 ### Creating a Flow
 
@@ -57,7 +57,21 @@ Each flow has:
 
 ### Node Types
 
-The flow editor provides 8 node types. Drag them from the palette onto the canvas, configure their properties in the side panel, and connect them with edges.
+The flow editor provides node types on a visual canvas. Drag them from the palette, configure properties in the side panel, and connect them with edges.
+
+#### Start
+
+Fixed entry point for the call flow (same pattern as chatbot Start). Always present; not deletable.
+
+| Property | Description |
+|----------|-------------|
+| **Default variables** | Optional `assignments` — `{ name, value }` rows seeded when the call starts (after builtins). Values support `{{variable}}` interpolation. Cannot overwrite `caller_phone`, `caller_name`, or `call_id`. |
+| **Available variables** | Click-to-copy chips for builtins plus any names you added as defaults |
+
+Built-ins available from the first node onward:
+- `{{caller_phone}}` — caller WhatsApp number
+- `{{caller_name}}` — WhatsApp profile name
+- `{{call_id}}` — WhatsApp call ID
 
 #### Greeting
 
