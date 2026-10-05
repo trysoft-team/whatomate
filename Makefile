@@ -1,4 +1,4 @@
-.PHONY: all build build-prod run test clean docker-build docker-up docker-down migrate frontend-dev frontend-build
+.PHONY: all build build-prod run test clean docker-build docker-up docker-down migrate frontend-dev frontend-build release-check release-snapshot
 
 # Go parameters
 GOCMD=go
@@ -87,7 +87,18 @@ deps-update:
 
 # Docker commands
 docker-build:
-	$(DOCKER_COMPOSE) build
+	$(DOCKER_COMPOSE) build --build-arg VERSION=$(VERSION) --build-arg BUILD_TIME=$(BUILD_TIME)
+
+# Release (GoReleaser). Uses an installed `goreleaser`, or runs it via `go run`.
+GORELEASER?=$(shell command -v goreleaser 2>/dev/null || echo "$(GOCMD) run github.com/goreleaser/goreleaser/v2@latest")
+
+# Validate .goreleaser.yml
+release-check:
+	$(GORELEASER) check
+
+# Build every release archive locally into dist/ (no publishing, signing or Docker images)
+release-snapshot:
+	$(GORELEASER) release --snapshot --clean --skip=docker,notarize
 
 docker-up:
 	$(DOCKER_COMPOSE) up -d
@@ -158,6 +169,8 @@ help:
 	@echo ""
 	@echo "Production:"
 	@echo "  build-prod     - Build single binary with embedded frontend"
+	@echo "  release-check  - Validate the GoReleaser config"
+	@echo "  release-snapshot - Build all release archives locally into dist/"
 	@echo ""
 	@echo "Development (host app + Docker db/redis):"
 	@echo "  docker-infra   - Start Postgres+Redis only; stop app container"

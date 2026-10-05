@@ -15,8 +15,33 @@ builds:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
       - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: freebsd
+        goarch: arm
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+
+  # macOS is built separately so it can be merged into one universal binary
+  # and signed/notarized on its own.
+  - id: whatomate-darwin
+    main: ./cmd/whatomate
+    binary: whatomate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
     goarch:
       - amd64
       - arm64
@@ -25,15 +50,51 @@ builds:
       - -X main.Version={{.Version}}
       - -X main.BuildTime={{.Date}}
 
+universal_binaries:
+  - id: whatomate-darwin-universal
+    ids:
+      - whatomate-darwin
+    name_template: whatomate
+    replace: true
+
+# Signs and notarizes the macOS binary so Gatekeeper doesn't block it. Runs on
+# the Linux release runner (no Mac needed) and is skipped unless the Apple
+# credentials are configured as repository secrets:
+#   MACOS_SIGN_P12          base64 of the "Developer ID Application" .p12
+#   MACOS_SIGN_PASSWORD     password of that .p12
+#   MACOS_NOTARY_ISSUER_ID  App Store Connect API issuer ID
+#   MACOS_NOTARY_KEY_ID     App Store Connect API key ID
+#   MACOS_NOTARY_KEY        base64 of the AuthKey_XXXX.p8 file
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - whatomate-darwin-universal
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
 archives:
   - id: whatomate
-    builds:
+    ids:
       - whatomate
-    format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+      - whatomate-darwin-universal
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
@@ -57,7 +118,7 @@ dockers:
       - "{{ .Env.DOCKER_ORG }}/whatomate:latest-amd64"
       - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-amd64"
       - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:latest-amd64"
-    dockerfile: docker/Dockerfile.goreleaser
+    dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
@@ -73,7 +134,7 @@ dockers:
       - "{{ .Env.DOCKER_ORG }}/whatomate:latest-arm64"
       - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-arm64"
       - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:latest-arm64"
-    dockerfile: docker/Dockerfile.goreleaser
+    dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"

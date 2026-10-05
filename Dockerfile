@@ -17,6 +17,9 @@ FROM --platform=$BUILDPLATFORM golang:1.25.3-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
+# Shown by `whatomate version`; pass with --build-arg (make docker-build does).
+ARG VERSION=dev
+ARG BUILD_TIME=unknown
 
 WORKDIR /app
 
@@ -34,7 +37,9 @@ COPY . .
 COPY --from=frontend-builder /app/frontend/dist/ ./internal/frontend/dist/
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -installsuffix cgo -o whatomate ./cmd/whatomate
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -installsuffix cgo \
+    -ldflags "-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
+    -o whatomate ./cmd/whatomate
 
 # Piper TTS download stage — runs on BUILDPLATFORM (just wget+tar, no native exec),
 # selects the tarball matching TARGETARCH so the final image gets a binary that runs.
