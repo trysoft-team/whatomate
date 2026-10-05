@@ -1441,6 +1441,7 @@ func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome
 	// Apply "paths" before "set" so templates can reference extracted vars.
 	if paths, ok := node.Config["paths"].([]any); ok {
 		inbound, _ := ctx.session.SessionData["__inbound__"].(map[string]any)
+		inboundMsg := inboundMessageObject(inbound)
 		for _, item := range paths {
 			m, ok := item.(map[string]any)
 			if !ok {
@@ -1451,7 +1452,9 @@ func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome
 			if name == "" || path == "" {
 				continue
 			}
-			if v, ok := lookupDottedPath(inbound, path); ok {
+			if v, ok := lookupDottedPath(inboundMsg, path); ok {
+				ctx.session.SessionData[name] = v
+			} else if v, ok := lookupDottedPath(inbound, path); ok {
 				ctx.session.SessionData[name] = v
 			} else if v, ok := lookupDottedPath(map[string]any(ctx.session.SessionData), path); ok {
 				// Allow paths against session itself (e.g. senderName).
@@ -1474,6 +1477,33 @@ func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome
 	}
 
 	return nodeOutcome{outcome: "default"}, nil
+}
+
+// inboundMessageObject returns the message inside a Meta webhook envelope
+// (entry[0].changes[0].value.messages[0]) so paths like "msgContext.text.body"
+// resolve against the message. Returns inbound unchanged when it isn't an
+// envelope.
+func inboundMessageObject(inbound map[string]any) map[string]any {
+	first := func(v any) map[string]any {
+		if list, ok := v.([]any); ok && len(list) > 0 {
+			m, _ := list[0].(map[string]any)
+			return m
+		}
+		return nil
+	}
+	entry := first(inbound["entry"])
+	if entry == nil {
+		return inbound
+	}
+	change := first(entry["changes"])
+	if change == nil {
+		return inbound
+	}
+	value, _ := change["value"].(map[string]any)
+	if msg := first(value["messages"]); msg != nil {
+		return msg
+	}
+	return inbound
 }
 
 // lookupDottedPath walks a nested map using a.b.c notation. Also accepts

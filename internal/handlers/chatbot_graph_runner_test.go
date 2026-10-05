@@ -1726,6 +1726,25 @@ func TestRunChatGraph_SetVariable_PathFromInbound(t *testing.T) {
 	assert.Equal(t, "saved hello world", session.SessionData["note"])
 }
 
+func TestInboundMessageObject(t *testing.T) {
+	msg := map[string]any{"type": "text", "text": map[string]any{"body": "hi"}}
+	envelope := map[string]any{"entry": []any{map[string]any{"changes": []any{
+		map[string]any{"value": map[string]any{"messages": []any{msg}}},
+	}}}}
+	assert.Equal(t, msg, inboundMessageObject(envelope))
+
+	v, ok := lookupDottedPath(inboundMessageObject(envelope), "msgContext.text.body")
+	assert.True(t, ok)
+	assert.Equal(t, "hi", v)
+
+	assert.Equal(t, msg, inboundMessageObject(msg), "already a message")
+	statuses := map[string]any{"entry": []any{map[string]any{"changes": []any{
+		map[string]any{"value": map[string]any{"statuses": []any{}}},
+	}}}}
+	assert.Equal(t, statuses, inboundMessageObject(statuses), "no messages")
+	assert.Nil(t, inboundMessageObject(nil))
+}
+
 func TestMatchConditionRule_Operators(t *testing.T) {
 	assert.True(t, matchConditionRule(conditionRule{Operator: "text_starts_with", Value: "He"}, "Hello"))
 	assert.True(t, matchConditionRule(conditionRule{Operator: "text_ends_with", Value: "lo"}, "Hello"))

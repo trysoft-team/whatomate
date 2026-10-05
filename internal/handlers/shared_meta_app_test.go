@@ -33,10 +33,20 @@ func TestSharedMetaApp_AppliesToOrg(t *testing.T) {
 	assert.False(t, selected.AppliesToOrg(orgB))
 }
 
-func TestResolveMetaAppCreds_Order(t *testing.T) {
-	t.Parallel()
+// resetSharedMetaApp empties the singleton shared_meta_app_credentials table.
+// Tests that write it must not use t.Parallel: the resolver reads the oldest row.
+func resetSharedMetaApp(t *testing.T, app *handlers.App) {
+	t.Helper()
+	wipe := func() {
+		require.NoError(t, app.DB.Exec("DELETE FROM shared_meta_app_credentials").Error)
+	}
+	wipe()
+	t.Cleanup(wipe)
+}
 
+func TestResolveMetaAppCreds_Order(t *testing.T) {
 	app := newTestApp(t)
+	resetSharedMetaApp(t, app)
 	app.Config.WhatsApp.AppID = "toml-app"
 	app.Config.WhatsApp.AppSecret = "toml-secret"
 	app.Config.WhatsApp.ConfigID = "toml-config"
@@ -122,9 +132,8 @@ func TestGetSharedMetaApp_RequiresSuperAdmin(t *testing.T) {
 }
 
 func TestUpdateSharedMetaApp_SuperAdmin(t *testing.T) {
-	t.Parallel()
-
 	app := newTestApp(t)
+	resetSharedMetaApp(t, app)
 	org := testutil.CreateTestOrganization(t, app.DB)
 	orgB := testutil.CreateTestOrganization(t, app.DB)
 	admin := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -164,9 +173,8 @@ func TestUpdateSharedMetaApp_SuperAdmin(t *testing.T) {
 }
 
 func TestGetOrganizationSettings_MetaSource(t *testing.T) {
-	t.Parallel()
-
 	app := newTestApp(t)
+	resetSharedMetaApp(t, app)
 	app.Config.WhatsApp.AppID = "toml-app"
 	org := testutil.CreateTestOrganization(t, app.DB)
 	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("meta-source")))

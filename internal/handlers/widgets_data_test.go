@@ -91,6 +91,18 @@ func TestGetWidgetData_MessagesCountAndQueue(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(msg).Error)
 
+	waiting := &models.AgentTransfer{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		ContactID:       contact.ID,
+		WhatsAppAccount: "test",
+		PhoneNumber:     contact.PhoneNumber,
+		Status:          models.TransferStatusActive,
+		Source:          models.TransferSourceManual,
+		TransferredAt:   time.Now().Add(-5 * time.Minute),
+	}
+	require.NoError(t, app.DB.Create(waiting).Error)
+
 	numberWidget := &models.Widget{
 		BaseModel:      models.BaseModel{ID: uuid.New()},
 		OrganizationID: org.ID,
@@ -152,7 +164,10 @@ func TestGetWidgetData_MessagesCountAndQueue(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req2), &qResp))
 	assert.True(t, qResp.Data.Live)
-	assert.NotNil(t, qResp.Data.QueueItems)
+	require.Len(t, qResp.Data.QueueItems, 1)
+	assert.Equal(t, waiting.ID.String(), qResp.Data.QueueItems[0].ID)
+	assert.InDelta(t, 5, qResp.Data.QueueItems[0].WaitMins, 1)
+	assert.Equal(t, float64(1), qResp.Data.Value)
 }
 
 func TestWidgetLiveUpdateTypeConstant(t *testing.T) {
