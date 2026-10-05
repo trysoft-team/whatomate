@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -35,6 +35,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { widgetsService, type DashboardWidget, type WidgetData, type LayoutItem } from '@/services/api'
+import { wsService } from '@/services/websocket'
+import WidgetRichContent from '@/components/dashboard/widgets/WidgetRichContent.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
   MessageSquare,
@@ -65,7 +67,9 @@ import {
   Zap,
   Shield,
   LineChart,
-  Tags
+  Tags,
+  Sparkles,
+  Loader2
 } from 'lucide-vue-next'
 // Centralized Chart.js setup (registered once)
 import { Line, Bar, Pie } from '@/lib/charts'
@@ -155,7 +159,14 @@ const colorOptions = computed(() => [
   { value: 'purple', label: t('dashboard.colorPurple'), bg: 'bg-purple-500/20', text: 'text-purple-400' },
   { value: 'orange', label: t('dashboard.colorOrange'), bg: 'bg-orange-500/20', text: 'text-orange-400' },
   { value: 'red', label: t('dashboard.colorRed'), bg: 'bg-red-500/20', text: 'text-red-400' },
-  { value: 'cyan', label: t('dashboard.colorCyan'), bg: 'bg-cyan-500/20', text: 'text-cyan-400' }
+  { value: 'cyan', label: t('dashboard.colorCyan'), bg: 'bg-cyan-500/20', text: 'text-cyan-400' },
+  { value: 'amber', label: t('dashboard.colorAmber', 'Amber'), bg: 'bg-amber-500/20', text: 'text-amber-400' },
+  { value: 'pink', label: t('dashboard.colorPink', 'Pink'), bg: 'bg-pink-500/20', text: 'text-pink-400' },
+  { value: 'slate', label: t('dashboard.colorSlate', 'Slate'), bg: 'bg-slate-500/20', text: 'text-slate-400' },
+  { value: 'teal', label: t('dashboard.colorTeal', 'Teal'), bg: 'bg-teal-500/20', text: 'text-teal-400' },
+  { value: 'indigo', label: t('dashboard.colorIndigo', 'Indigo'), bg: 'bg-indigo-500/20', text: 'text-indigo-400' },
+  { value: 'lime', label: t('dashboard.colorLime', 'Lime'), bg: 'bg-lime-500/20', text: 'text-lime-400' },
+  { value: 'rose', label: t('dashboard.colorRose', 'Rose'), bg: 'bg-rose-500/20', text: 'text-rose-400' },
 ])
 
 // Chart type options
@@ -325,7 +336,17 @@ const getWidgetColor = (color: string) => {
     purple: 'bg-gradient-to-r from-violet-500/60 to-violet-500/0',
     orange: 'bg-gradient-to-r from-amber-500/60 to-amber-500/0',
     red: 'bg-gradient-to-r from-rose-500/60 to-rose-500/0',
-    cyan: 'bg-gradient-to-r from-cyan-500/60 to-cyan-500/0'
+    cyan: 'bg-gradient-to-r from-cyan-500/60 to-cyan-500/0',
+    amber: 'bg-gradient-to-r from-amber-500/60 to-amber-500/0',
+    pink: 'bg-gradient-to-r from-pink-500/60 to-pink-500/0',
+    slate: 'bg-gradient-to-r from-slate-500/60 to-slate-500/0',
+    teal: 'bg-gradient-to-r from-teal-500/60 to-teal-500/0',
+    indigo: 'bg-gradient-to-r from-indigo-500/60 to-indigo-500/0',
+    lime: 'bg-gradient-to-r from-lime-500/60 to-lime-500/0',
+    rose: 'bg-gradient-to-r from-rose-500/60 to-rose-500/0',
+  }
+  if (color?.startsWith('#')) {
+    return { value: color, label: color, bg: 'bg-white/10', text: 'text-white', gradient: 'bg-blue-500/60' }
   }
   const colorConfig = colorOptions.value.find(c => c.value === color) || colorOptions.value[0]
   return { ...colorConfig, gradient: gradientMap[colorConfig.value] || gradientMap.blue }
@@ -334,19 +355,45 @@ const getWidgetColor = (color: string) => {
 const getWidgetIcon = (dataSource: string) => {
   switch (dataSource) {
     case 'messages':
+    case 'media':
       return MessageSquare
     case 'contacts':
+    case 'opt_outs':
+    case 'agents':
       return Users
     case 'sessions':
+    case 'flows':
+    case 'ai':
       return Bot
     case 'campaigns':
       return Send
     case 'transfers':
-      return Users
+    case 'sla':
+      return UserX
+    case 'calls':
+      return Clock
+    case 'templates':
+      return FileText
+    case 'tags':
+      return Tags
+    case 'webhooks':
+      return Webhook
     default:
       return BarChart3
   }
 }
+
+const RICH_DISPLAY_TYPES = [
+  'sparkline', 'gauge', 'leaderboard', 'heatmap', 'funnel',
+  'kpi_strip', 'alert_list', 'queue', 'agent_status', 'iframe',
+]
+
+const isChartWidget = (widget: DashboardWidget) => widget.display_type === 'chart'
+const isTableWidget = (widget: DashboardWidget) => widget.display_type === 'table'
+const isShortcutsWidget = (widget: DashboardWidget) => widget.display_type === 'shortcuts'
+const isRichWidget = (widget: DashboardWidget) => RICH_DISPLAY_TYPES.includes(widget.display_type)
+const isNumberWidget = (widget: DashboardWidget) =>
+  !isChartWidget(widget) && !isTableWidget(widget) && !isShortcutsWidget(widget) && !isRichWidget(widget)
 
 // Grid layout state
 const GRID_COLS = 12
@@ -355,11 +402,6 @@ const GRID_MARGIN: [number, number] = [16, 16]
 
 const isDragMode = ref(false)
 const gridLayout = ref<Array<{ i: string; x: number; y: number; w: number; h: number }>>([])
-
-const isChartWidget = (widget: DashboardWidget) => widget.display_type === 'chart'
-const isTableWidget = (widget: DashboardWidget) => widget.display_type === 'table'
-const isShortcutsWidget = (widget: DashboardWidget) => widget.display_type === 'shortcuts'
-const isNumberWidget = (widget: DashboardWidget) => !isChartWidget(widget) && !isTableWidget(widget) && !isShortcutsWidget(widget)
 
 const getWidgetById = (id: string): DashboardWidget | undefined => {
   return widgets.value.find(w => w.id === id)
@@ -389,8 +431,8 @@ const computeGridLayout = (widgetList: DashboardWidget[]) => {
     let curY = nextY
 
     // Number widgets first, then chart/table/shortcuts widgets
-    const legacyNumber = legacy.filter(w => !['chart', 'table', 'shortcuts'].includes(w.display_type))
-    const legacyLarge = legacy.filter(w => ['chart', 'table', 'shortcuts'].includes(w.display_type))
+    const legacyNumber = legacy.filter(w => !['chart', 'table', 'shortcuts', ...RICH_DISPLAY_TYPES].includes(w.display_type))
+    const legacyLarge = legacy.filter(w => ['chart', 'table', 'shortcuts', ...RICH_DISPLAY_TYPES].includes(w.display_type))
 
     for (const w of legacyNumber) {
       const itemW = 3
@@ -586,6 +628,61 @@ const openEditWidgetDialog = (widget: DashboardWidget) => {
   isWidgetDialogOpen.value = true
 }
 
+const generateAIDialogOpen = ref(false)
+const generateAIPrompt = ref('')
+const isGeneratingAI = ref(false)
+
+const generateAISuggestions = computed(() => [
+  t('dashboard.generateWithAISuggestion1'),
+  t('dashboard.generateWithAISuggestion2'),
+  t('dashboard.generateWithAISuggestion3'),
+])
+
+const openGenerateAI = () => {
+  generateAIPrompt.value = ''
+  generateAIDialogOpen.value = true
+}
+
+const confirmGenerateAI = async () => {
+  const prompt = generateAIPrompt.value.trim()
+  if (!prompt) {
+    showError(t('dashboard.validationError'), t('dashboard.generateWithAIPromptRequired'))
+    return
+  }
+  isGeneratingAI.value = true
+  try {
+    const response = await widgetsService.generate({ prompt })
+    const draft = (response.data as any)?.data || response.data
+    if (!draft?.data_source) throw new Error('Invalid widget returned')
+    isEditMode.value = false
+    editingWidgetId.value = null
+    widgetForm.value = {
+      name: draft.name || '',
+      description: draft.description || '',
+      data_source: draft.data_source,
+      metric: draft.metric || 'count',
+      field: draft.field || '',
+      filters: Array.isArray(draft.filters) ? draft.filters.map((f: any) => ({ ...f })) : [],
+      display_type: draft.display_type || 'number',
+      chart_type: draft.chart_type || '',
+      group_by_field: draft.group_by_field || '',
+      show_change: draft.show_change ?? true,
+      color: draft.color || 'blue',
+      size: draft.size || 'small',
+      config: draft.config || {},
+      is_shared: false
+    }
+    selectedShortcuts.value = []
+    generateAIDialogOpen.value = false
+    isWidgetDialogOpen.value = true
+    success(t('dashboard.generateWithAI'), t('dashboard.generateWithAIReady'))
+  } catch (error: any) {
+    showError(t('common.error'), error.response?.data?.message || t('dashboard.generateWithAIFailed'))
+  } finally {
+    isGeneratingAI.value = false
+  }
+}
+
 const addFilter = () => {
   widgetForm.value.filters.push({ field: '', operator: 'equals', value: '' })
 }
@@ -690,14 +787,40 @@ watch(() => widgetForm.value.display_type, (newVal) => {
   if (newVal !== 'chart' && newVal !== 'table') {
     widgetForm.value.group_by_field = ''
   }
-  if (newVal === 'shortcuts') {
-    widgetForm.value.data_source = ''
+  if (newVal === 'shortcuts' || newVal === 'iframe') {
+    widgetForm.value.data_source = newVal
     widgetForm.value.metric = 'count'
   }
 })
 
+let unsubscribeWidgetLive: (() => void) | null = null
+
+const refetchLiveWidgets = async (sources: string[]) => {
+  if (!sources.length) return
+  const liveIds = widgets.value
+    .filter(w => (w.config?.live || ['queue', 'agent_status', 'alert_list'].includes(w.display_type))
+      && (sources.includes(w.data_source) || ['queue', 'agent_status', 'alert_list'].includes(w.display_type)))
+    .map(w => w.id)
+  if (!liveIds.length) return
+  try {
+    const { from, to } = dateRange.value
+    const response = await widgetsService.getAllData({ from, to })
+    const data = response.data.data || response.data
+    for (const id of liveIds) {
+      if (data[id]) widgetData.value[id] = data[id]
+    }
+  } catch {
+    // ignore live refresh errors
+  }
+}
+
 onMounted(() => {
   fetchDashboardData()
+  unsubscribeWidgetLive = wsService.onWidgetLiveUpdate(refetchLiveWidgets)
+})
+
+onUnmounted(() => {
+  unsubscribeWidgetLive?.()
 })
 </script>
 
@@ -716,6 +839,18 @@ onMounted(() => {
 
         <!-- Time Range Filter -->
         <div class="flex items-center gap-2">
+          <button
+            v-if="canCreateWidget"
+            type="button"
+            class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            @click="openGenerateAI"
+          >
+            <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+              <Sparkles class="h-3.5 w-3.5 shrink-0" />
+              {{ $t('dashboard.generateWithAI') }}
+            </span>
+          </button>
+
           <Button v-if="canCreateWidget" variant="outline" size="sm" @click="openAddWidgetDialog" class="bg-white/[0.04] border-white/[0.1] text-white/70 hover:bg-white/[0.08] hover:text-white light:bg-white light:border-gray-200 light:text-gray-700">
             <Plus class="h-4 w-4 mr-2" />
             {{ $t('dashboard.addWidget') }}
@@ -863,6 +998,35 @@ onMounted(() => {
                   </span>
                   <span class="ml-1">{{ comparisonPeriodLabel }}</span>
                 </div>
+              </div>
+            </div>
+
+            <!-- Rich widget card (sparkline, gauge, leaderboard, etc.) -->
+            <div
+              v-else-if="getWidgetById(item.i) && isRichWidget(getWidgetById(item.i)!)"
+              class="group relative h-full flex flex-col card-depth rounded-xl border border-white/[0.08] bg-white/[0.04] p-4 light:bg-white light:border-gray-200 overflow-hidden"
+            >
+              <div v-if="isDragMode" class="widget-drag-handle absolute top-2 left-2 text-white/20 light:text-gray-300 cursor-grab active:cursor-grabbing z-10">
+                <GripVertical class="h-4 w-4" />
+              </div>
+              <div class="flex items-center justify-between pb-2">
+                <span class="text-sm font-medium text-white/50 light:text-gray-500">{{ getWidgetById(item.i)!.name }}</span>
+                <div v-if="!isDragMode && (canEditWidget || canDeleteWidget)" class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button v-if="canEditWidget" variant="ghost" size="icon" class="h-6 w-6" @click.stop="openEditWidgetDialog(getWidgetById(item.i)!)">
+                    <Pencil class="h-3 w-3" />
+                  </Button>
+                  <Button v-if="canDeleteWidget" variant="ghost" size="icon" class="h-6 w-6" @click.stop="openDeleteDialog(getWidgetById(item.i)!)">
+                    <Trash2 class="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+              <div class="flex-1 min-h-0">
+                <WidgetRichContent
+                  :display-type="getWidgetById(item.i)!.display_type"
+                  :data="widgetData[item.i]"
+                  :config="getWidgetById(item.i)!.config"
+                  :format-number="formatNumber"
+                />
               </div>
             </div>
 
@@ -1116,8 +1280,8 @@ onMounted(() => {
             />
           </div>
 
-          <!-- Data Source (hidden for shortcuts) -->
-          <div v-if="widgetForm.display_type !== 'shortcuts'" class="space-y-2">
+          <!-- Data Source (hidden for shortcuts / iframe) -->
+          <div v-if="widgetForm.display_type !== 'shortcuts' && widgetForm.display_type !== 'iframe'" class="space-y-2">
             <Label class="text-white/70 light:text-gray-700">{{ $t('dashboard.dataSource') }} *</Label>
             <Select :model-value="widgetForm.data_source" @update:model-value="(val) => widgetForm.data_source = String(val)">
               <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white light:bg-white light:border-gray-300 light:text-gray-900">
@@ -1136,17 +1300,22 @@ onMounted(() => {
             </Select>
           </div>
 
-          <!-- Metric (hidden for shortcuts and table) -->
-          <div v-if="widgetForm.display_type !== 'shortcuts' && widgetForm.display_type !== 'table'" class="space-y-2">
+          <!-- Metric (hidden for shortcuts, table, iframe, live list types) -->
+          <div v-if="!['shortcuts','table','iframe','queue','agent_status','alert_list'].includes(widgetForm.display_type)" class="space-y-2">
             <Label class="text-white/70 light:text-gray-700">{{ $t('dashboard.metric') }}</Label>
             <Select :model-value="widgetForm.metric" @update:model-value="(val) => widgetForm.metric = String(val)">
               <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white light:bg-white light:border-gray-300 light:text-gray-900">
                 <SelectValue :placeholder="$t('dashboard.selectMetric')" />
               </SelectTrigger>
               <SelectContent class="bg-[#1a1a1a] border-white/[0.08] light:bg-white light:border-gray-200">
-                <SelectItem value="count" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.metricCount') }}</SelectItem>
-                <SelectItem value="sum" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.metricSum') }}</SelectItem>
-                <SelectItem value="avg" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.metricAverage') }}</SelectItem>
+                <SelectItem
+                  v-for="m in (metrics.length ? metrics : ['count','sum','avg'])"
+                  :key="m"
+                  :value="m"
+                  class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100"
+                >
+                  {{ m }}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1158,13 +1327,37 @@ onMounted(() => {
               <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white light:bg-white light:border-gray-300 light:text-gray-900">
                 <SelectValue :placeholder="$t('dashboard.selectDisplayType')" />
               </SelectTrigger>
-              <SelectContent class="bg-[#1a1a1a] border-white/[0.08] light:bg-white light:border-gray-200">
-                <SelectItem value="number" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.displayNumber') }}</SelectItem>
-                <SelectItem value="chart" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.displayChart') }}</SelectItem>
-                <SelectItem value="table" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.displayTable') }}</SelectItem>
-                <SelectItem value="shortcuts" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('dashboard.displayShortcuts') }}</SelectItem>
+              <SelectContent class="bg-[#1a1a1a] border-white/[0.08] light:bg-white light:border-gray-200 max-h-72">
+                <SelectItem
+                  v-for="dt in (displayTypes.length ? displayTypes : ['number','chart','table','shortcuts'])"
+                  :key="dt"
+                  :value="dt"
+                  class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100"
+                >
+                  {{ dt }}
+                </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div v-if="widgetForm.display_type === 'iframe'" class="space-y-2">
+            <Label class="text-white/70 light:text-gray-700">{{ $t('dashboard.iframeUrl', 'HTTPS URL') }}</Label>
+            <Input
+              :model-value="widgetForm.config.url || ''"
+              @update:model-value="(v) => widgetForm.config = { ...widgetForm.config, url: String(v) }"
+              placeholder="https://example.com/embed"
+              class="bg-white/[0.04] border-white/[0.1] text-white"
+            />
+          </div>
+
+          <div v-if="widgetForm.display_type === 'gauge'" class="space-y-2">
+            <Label class="text-white/70 light:text-gray-700">{{ $t('dashboard.gaugeTarget', 'Target') }}</Label>
+            <Input
+              type="number"
+              :model-value="widgetForm.config.target ?? 100"
+              @update:model-value="(v) => widgetForm.config = { ...widgetForm.config, target: Number(v) }"
+              class="bg-white/[0.04] border-white/[0.1] text-white"
+            />
           </div>
 
           <!-- Chart Type (visible when display type is chart) -->
@@ -1338,6 +1531,59 @@ onMounted(() => {
           </Button>
           <Button @click="saveWidget" :disabled="isSavingWidget">
             {{ isSavingWidget ? $t('common.saving') + '...' : (isEditMode ? $t('common.update') : $t('common.create')) }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="generateAIDialogOpen">
+      <DialogContent class="sm:max-w-lg bg-[#141414] border-white/[0.08] text-white light:bg-white light:border-gray-200 light:text-gray-900">
+        <DialogHeader>
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-500/15 light:bg-violet-100">
+              <Sparkles class="h-5 w-5 text-violet-300 light:text-violet-600" />
+            </div>
+            <div class="min-w-0 space-y-1">
+              <DialogTitle>{{ $t('dashboard.generateWithAI') }}</DialogTitle>
+              <DialogDescription class="text-white/50 light:text-gray-500">{{ $t('dashboard.generateWithAISubtitle') }}</DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div class="space-y-3">
+          <Textarea
+            v-model="generateAIPrompt"
+            :rows="4"
+            class="min-h-[100px] resize-y bg-white/[0.04] border-white/[0.1] text-white placeholder:text-white/30 light:bg-white light:border-gray-300 light:text-gray-900"
+            :placeholder="$t('dashboard.generateWithAIPlaceholder')"
+          />
+
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="(suggestion, index) in generateAISuggestions"
+              :key="index"
+              type="button"
+              class="rounded-full border border-white/[0.1] px-3 py-2 text-left text-xs text-white/60 transition-colors hover:border-violet-400/40 hover:bg-white/[0.04] hover:text-white light:border-gray-200 light:text-gray-600 light:hover:bg-gray-50 light:hover:text-gray-900"
+              @click="generateAIPrompt = suggestion"
+            >
+              {{ suggestion }}
+            </button>
+          </div>
+
+          <p class="flex items-start gap-1.5 text-[11px] leading-relaxed text-white/50 light:text-gray-500">
+            <Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-violet-400/70" />
+            <span>{{ $t('dashboard.generateWithAIHint') }}</span>
+          </p>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" :disabled="isGeneratingAI" @click="generateAIDialogOpen = false" class="border-white/20 text-white hover:bg-white/10 light:border-gray-300 light:text-gray-700">
+            {{ $t('common.cancel') }}
+          </Button>
+          <Button :disabled="isGeneratingAI || !generateAIPrompt.trim()" @click="confirmGenerateAI">
+            <Loader2 v-if="isGeneratingAI" class="h-4 w-4 mr-2 animate-spin" />
+            <Sparkles v-else class="h-4 w-4 mr-2" />
+            {{ isGeneratingAI ? $t('dashboard.generateWithAIGenerating') : $t('dashboard.generateWithAI') }}
           </Button>
         </DialogFooter>
       </DialogContent>

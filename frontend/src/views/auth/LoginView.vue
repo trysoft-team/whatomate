@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -9,7 +9,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'vue-sonner'
-import { MessageSquare, Loader2 } from 'lucide-vue-next'
+import { MessageSquare, Loader2, Fingerprint, Pencil } from 'lucide-vue-next'
+import { isPasskeyAutofillAvailable, isPasskeyCancelled, isPasskeySupported } from '@/lib/passkeys'
 
 const { t } = useI18n()
 
@@ -25,6 +26,32 @@ const authStore = useAuthStore()
 const email = ref('')
 const password = ref('')
 const isLoading = ref(false)
+const step = ref<'email' | 'password'>('email')
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const isEmailValid = computed(() => EMAIL_PATTERN.test(email.value.trim()))
+
+async function continueToPassword() {
+  if (!isEmailValid.value) return
+  email.value = email.value.trim()
+  stopPasskeyAutofill()
+  step.value = 'password'
+  await nextTick()
+  document.getElementById('password')?.focus()
+}
+
+async function changeEmail() {
+  password.value = ''
+  step.value = 'email'
+  await nextTick()
+  document.getElementById('email')?.focus()
+  startPasskeyAutofill()
+}
+
+function handleSubmit() {
+  if (step.value === 'email') continueToPassword()
+  else handleLogin()
+}
 const ssoProviders = ref<SSOProvider[]>([])
 
 // SSO provider icons (using simple SVG paths)
@@ -85,6 +112,78 @@ const handleLogin = async () => {
   }
 }
 
+const passkeySupported = isPasskeySupported()
+const isPasskeyLoading = ref(false)
+
+// Passkey autofill: a pending conditional WebAuthn request makes the browser
+// list saved passkeys when the email field is focused. Only one WebAuthn
+// request may be pending, so it is aborted before the modal prompt and
+// restarted before the server-side challenge (5 min) expires.
+const AUTOFILL_REFRESH_MS = 4 * 60 * 1000
+let autofillController: AbortController | null = null
+let autofillTimer: ReturnType<typeof setTimeout> | null = null
+let unmounted = false
+
+function finishPasskeyLogin() {
+  toast.success(t('auth.loginSuccess'))
+  const redirect = route.query.redirect as string
+  router.push(redirect || '/')
+}
+
+function stopPasskeyAutofill() {
+  if (autofillTimer) clearTimeout(autofillTimer)
+  autofillTimer = null
+  autofillController?.abort()
+  autofillController = null
+}
+
+async function startPasskeyAutofill() {
+  stopPasskeyAutofill()
+  if (!(await isPasskeyAutofillAvailable())) return
+  if (unmounted || isPasskeyLoading.value) return
+  stopPasskeyAutofill()
+  const controller = new AbortController()
+  autofillController = controller
+  autofillTimer = setTimeout(startPasskeyAutofill, AUTOFILL_REFRESH_MS)
+  try {
+    await authStore.loginWithPasskey({ conditional: true, signal: controller.signal })
+    stopPasskeyAutofill()
+    finishPasskeyLogin()
+  } catch (error: any) {
+    if (controller.signal.aborted || isPasskeyCancelled(error)) return
+    const beginFailed = String(error?.config?.url ?? '').endsWith('/passkey/begin')
+    if (!beginFailed) toast.error(error.response?.data?.message || t('auth.passkeyFailed'))
+    if (autofillTimer) clearTimeout(autofillTimer)
+    autofillTimer = setTimeout(startPasskeyAutofill, beginFailed ? 60_000 : 1_000)
+  }
+}
+
+const handlePasskeyLogin = async () => {
+  stopPasskeyAutofill()
+  isPasskeyLoading.value = true
+  try {
+    await authStore.loginWithPasskey()
+    finishPasskeyLogin()
+  } catch (error: any) {
+    if (!isPasskeyCancelled(error)) {
+      toast.error(error.response?.data?.message || t('auth.passkeyFailed'))
+    }
+    startPasskeyAutofill()
+  } finally {
+    isPasskeyLoading.value = false
+  }
+}
+
+onMounted(() => {
+  document.getElementById('email')?.focus()
+  startPasskeyAutofill()
+})
+
+onBeforeUnmount(() => {
+  unmounted = true
+  stopPasskeyAutofill()
+})
+
 const initiateSSO = (provider: string) => {
   const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
   window.location.href = `${basePath}/api/auth/sso/${provider}/init`
@@ -106,34 +205,84 @@ const initiateSSO = (provider: string) => {
         </p>
       </div>
 
-      <form @submit.prevent="handleLogin">
+      <form novalidate @submit.prevent="handleSubmit">
         <div class="px-8 pb-4 space-y-4">
-          <div class="space-y-2">
-            <Label for="email" class="text-white/70 light:text-gray-700">{{ $t('common.email') }}</Label>
-            <Input
-              id="email"
-              v-model="email"
-              type="email"
-              :placeholder="$t('auth.emailPlaceholder')"
-              :disabled="isLoading"
-              autocomplete="email"
-            />
-          </div>
-          <div class="space-y-2">
-            <Label for="password" class="text-white/70 light:text-gray-700">{{ $t('auth.password') }}</Label>
-            <Input
-              id="password"
-              v-model="password"
-              type="password"
-              :placeholder="$t('auth.passwordPlaceholder')"
-              :disabled="isLoading"
-              autocomplete="current-password"
-            />
-          </div>
-          <Button type="submit" class="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-lg shadow-emerald-500/20" :disabled="isLoading">
-            <Loader2 v-if="isLoading" class="mr-2 h-4 w-4 animate-spin" />
-            {{ $t('auth.signIn') }}
-          </Button>
+          <template v-if="step === 'email'">
+            <div class="space-y-2">
+              <Label for="email" class="text-white/70 light:text-gray-700">{{ $t('common.email') }}</Label>
+              <Input
+                id="email"
+                v-model="email"
+                type="email"
+                :placeholder="$t('auth.emailPlaceholder')"
+                :disabled="isPasskeyLoading"
+                autocomplete="username webauthn"
+                data-testid="login-email"
+              />
+            </div>
+            <div class="grid gap-3" :class="passkeySupported ? 'grid-cols-2' : 'grid-cols-1'">
+              <Button
+                type="submit"
+                class="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-lg shadow-emerald-500/20 disabled:from-emerald-500/40 disabled:to-green-600/40 disabled:shadow-none"
+                :disabled="!isEmailValid || isPasskeyLoading"
+                data-testid="login-continue"
+              >
+                {{ $t('auth.continue') }}
+              </Button>
+              <Button
+                v-if="passkeySupported"
+                type="button"
+                variant="ghost"
+                class="w-full gap-2 bg-white text-gray-900 hover:bg-white/90 hover:text-gray-900 light:bg-gray-900 light:text-white light:hover:bg-gray-800 light:hover:text-white"
+                :disabled="isPasskeyLoading"
+                data-testid="passkey-login"
+                @click="handlePasskeyLogin"
+              >
+                <Loader2 v-if="isPasskeyLoading" class="h-4 w-4 animate-spin" />
+                <Fingerprint v-else class="h-4 w-4" />
+                {{ $t('auth.signInWithPasskey') }}
+              </Button>
+            </div>
+          </template>
+
+          <template v-else>
+            <!-- Keeps the email in the form so password managers pair it with the password. -->
+            <input type="text" :value="email" autocomplete="username" class="hidden" tabindex="-1" aria-hidden="true" readonly />
+            <div class="flex items-center justify-between gap-3 rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-2 light:border-gray-200 light:bg-gray-50">
+              <span class="truncate text-sm text-white light:text-gray-900" data-testid="login-email-display">{{ email }}</span>
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center gap-1 text-xs text-emerald-400 hover:underline light:text-emerald-600"
+                :disabled="isLoading"
+                data-testid="login-change-email"
+                @click="changeEmail"
+              >
+                <Pencil class="h-3 w-3" />
+                {{ $t('auth.changeEmail') }}
+              </button>
+            </div>
+            <div class="space-y-2">
+              <Label for="password" class="text-white/70 light:text-gray-700">{{ $t('auth.password') }}</Label>
+              <Input
+                id="password"
+                v-model="password"
+                type="password"
+                :placeholder="$t('auth.passwordPlaceholder')"
+                :disabled="isLoading"
+                autocomplete="current-password"
+                data-testid="login-password"
+              />
+            </div>
+            <Button
+              type="submit"
+              class="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-lg shadow-emerald-500/20"
+              :disabled="isLoading || !password"
+              data-testid="login-submit"
+            >
+              <Loader2 v-if="isLoading" class="mr-2 h-4 w-4 animate-spin" />
+              {{ $t('auth.signIn') }}
+            </Button>
+          </template>
         </div>
       </form>
 

@@ -29,11 +29,18 @@ Click the **Sync from Meta** button to fetch the latest templates from your What
 
 ![Template Editor](/whatomate/images/12-template-editor.png)
 
-View and manage template details:
-- **Header** - Optional header with text, image, video, or document
-- **Body** - Main message content with variable placeholders
-- **Footer** - Optional footer text
-- **Buttons** - Call-to-action or quick reply buttons
+The editor is a step form with a live WhatsApp preview on the right:
+1. **Details** - WhatsApp account, name, display name, language and category
+2. **Content** - Optional header (text, image, video, or document), the message body with variable placeholders, sample values and an optional footer. Authentication templates set the code delivery method, security line and expiry here instead.
+3. **Buttons** - Up to 3 call-to-action or quick reply buttons (not shown for Authentication templates)
+
+**Next** checks the current step before moving on. You can also click any step to jump to it. **Create** (or **Save**) checks every step and opens the first one with a problem. The preview updates as you type and fills variables with your sample values. New templates open on Details; existing templates open on Content.
+
+### Generate with AI
+
+Click **Generate with AI** on the Templates page and describe the message, for example *"Tell a customer their order has shipped, with the order number, delivery date and a tracking link button"*. AI picks the name, language and category, then writes the header, body (with `{{1}}`-style variables and sample values), footer and buttons within Meta's limits. The draft opens in the template editor with a note about anything you should check, such as placeholder links. Nothing is saved until you click **Create**, and nothing reaches Meta until you click **Publish**.
+
+If you have more than one WhatsApp account, pick one in the account filter first so the draft uses it. Otherwise choose the account in the editor. Image, video and document headers still need a sample file uploaded before publishing.
 
 ## Media Headers (Image, Video, Document)
 

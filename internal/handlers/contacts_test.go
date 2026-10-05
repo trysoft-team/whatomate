@@ -1740,3 +1740,115 @@ func TestApp_AssignContact_AssignUserFromDifferentOrg(t *testing.T) {
 	// User from a different org should not be found
 	assert.Equal(t, fasthttp.StatusBadRequest, testutil.GetResponseStatusCode(req))
 }
+
+func TestApp_SendContactTyping(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success with inbound wamid", func(t *testing.T) {
+		t.Parallel()
+		mockServer := newMockWhatsAppServer()
+		defer mockServer.close()
+
+		app := newMsgTestApp(t, mockServer)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		adminRole := testutil.CreateAdminRole(t, app.DB, org.ID)
+		user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithRoleID(&adminRole.ID))
+		account := createTestAccount(t, app, org.ID)
+		contact := testutil.CreateTestContactWith(t, app.DB, org.ID, testutil.WithContactAccount(account.Name))
+
+		msg := &models.Message{
+			BaseModel:         models.BaseModel{ID: uuid.New()},
+			OrganizationID:    org.ID,
+			WhatsAppAccount:   account.Name,
+			ContactID:         contact.ID,
+			WhatsAppMessageID: "wamid.agent-typing-1",
+			Direction:         models.DirectionIncoming,
+			MessageType:       models.MessageTypeText,
+			Content:           "hi",
+			Status:            models.MessageStatusDelivered,
+		}
+		require.NoError(t, app.DB.Create(msg).Error)
+
+		req := testutil.NewJSONRequest(t, map[string]any{})
+		testutil.SetAuthContext(req, org.ID, user.ID)
+		testutil.SetPathParam(req, "id", contact.ID.String())
+
+		err := app.SendContactTyping(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+		var resp struct {
+			Data struct {
+				OK bool `json:"ok"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+		assert.True(t, resp.Data.OK)
+		require.Len(t, mockServer.sentMessages, 1)
+		assert.Equal(t, "read", mockServer.sentMessages[0]["status"])
+		assert.Equal(t, "wamid.agent-typing-1", mockServer.sentMessages[0]["message_id"])
+		ti, ok := mockServer.sentMessages[0]["typing_indicator"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "text", ti["type"])
+	})
+
+	t.Run("no inbound is no-op", func(t *testing.T) {
+		t.Parallel()
+		mockServer := newMockWhatsAppServer()
+		defer mockServer.close()
+
+		app := newMsgTestApp(t, mockServer)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		adminRole := testutil.CreateAdminRole(t, app.DB, org.ID)
+		user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithRoleID(&adminRole.ID))
+		account := createTestAccount(t, app, org.ID)
+		contact := testutil.CreateTestContactWith(t, app.DB, org.ID, testutil.WithContactAccount(account.Name))
+
+		req := testutil.NewJSONRequest(t, map[string]any{})
+		testutil.SetAuthContext(req, org.ID, user.ID)
+		testutil.SetPathParam(req, "id", contact.ID.String())
+
+		err := app.SendContactTyping(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+		var resp struct {
+			Data struct {
+				OK     bool   `json:"ok"`
+				Reason string `json:"reason"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+		assert.False(t, resp.Data.OK)
+		assert.Equal(t, "no_inbound", resp.Data.Reason)
+		assert.Empty(t, mockServer.sentMessages)
+	})
+
+	t.Run("unauthorized", func(t *testing.T) {
+		t.Parallel()
+		app := newTestApp(t)
+
+		req := testutil.NewJSONRequest(t, map[string]any{})
+		testutil.SetPathParam(req, "id", uuid.New().String())
+
+		err := app.SendContactTyping(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusUnauthorized, testutil.GetResponseStatusCode(req))
+	})
+
+	t.Run("contact not found", func(t *testing.T) {
+		t.Parallel()
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		adminRole := testutil.CreateAdminRole(t, app.DB, org.ID)
+		user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithRoleID(&adminRole.ID))
+
+		req := testutil.NewJSONRequest(t, map[string]any{})
+		testutil.SetAuthContext(req, org.ID, user.ID)
+		testutil.SetPathParam(req, "id", uuid.New().String())
+
+		err := app.SendContactTyping(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusNotFound, testutil.GetResponseStatusCode(req))
+	})
+}

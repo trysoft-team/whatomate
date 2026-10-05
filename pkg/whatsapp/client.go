@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"time"
 
 	"github.com/zerodha/logf"
@@ -469,23 +470,36 @@ func (c *Client) SendLocationMessage(ctx context.Context, account *Account, rcpt
 	return messageID, nil
 }
 
-// MarkMessageRead sends a read receipt for a message
+// MarkMessageRead sends a read receipt for a message.
 func (c *Client) MarkMessageRead(ctx context.Context, account *Account, messageID string) error {
+	return c.markMessageRead(ctx, account, messageID, false)
+}
+
+// MarkMessageReadWithTyping marks the inbound message as read and shows the
+// WhatsApp typing indicator (Cloud API typing_indicator.type=text).
+func (c *Client) MarkMessageReadWithTyping(ctx context.Context, account *Account, messageID string) error {
+	return c.markMessageRead(ctx, account, messageID, true)
+}
+
+func (c *Client) markMessageRead(ctx context.Context, account *Account, messageID string, typing bool) error {
 	payload := map[string]any{
 		"messaging_product": "whatsapp",
 		"status":            "read",
 		"message_id":        messageID,
 	}
+	if typing {
+		payload["typing_indicator"] = map[string]any{"type": "text"}
+	}
 
 	url := c.buildMessagesURL(account)
-	c.Log.Debug("Sending read receipt", "message_id", messageID)
+	c.Log.Debug("Sending read receipt", "message_id", messageID, "typing", typing)
 
 	_, err := c.doRequest(ctx, "POST", url, payload, account.AccessToken)
 	if err != nil {
 		return fmt.Errorf("failed to send read receipt: %w", err)
 	}
 
-	c.Log.Debug("Read receipt sent", "message_id", messageID)
+	c.Log.Debug("Read receipt sent", "message_id", messageID, "typing", typing)
 	return nil
 }
 
@@ -602,6 +616,57 @@ func (c *Client) GetBusinessProfile(ctx context.Context, account *Account) (*Bus
 	return &response.Data[0], nil
 }
 
+// DisplayNameStatus is a phone number's live display name and any pending change.
+type DisplayNameStatus struct {
+	VerifiedName   string `json:"verified_name"`
+	NameStatus     string `json:"name_status"`
+	NewDisplayName string `json:"new_display_name"`
+	NewNameStatus  string `json:"new_name_status"`
+}
+
+// GetDisplayNameStatus returns the live display name and the review state of
+// any requested change.
+func (c *Client) GetDisplayNameStatus(ctx context.Context, account *Account) (*DisplayNameStatus, error) {
+	url := fmt.Sprintf("%s/%s/%s?fields=verified_name,name_status,new_display_name,new_name_status",
+		c.getBaseURL(), account.APIVersion, account.PhoneID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil, account.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get display name: %w", err)
+	}
+
+	var status DisplayNameStatus
+	if err := json.Unmarshal(respBody, &status); err != nil {
+		return nil, fmt.Errorf("failed to parse display name response: %w", err)
+	}
+	return &status, nil
+}
+
+// RequestDisplayNameChange submits a new display name for Meta's review. Once
+// approved, the number must be re-registered within 14 days for it to apply.
+// Calls POST /{api_version}/{phone_id}?new_display_name=...
+func (c *Client) RequestDisplayNameChange(ctx context.Context, account *Account, name string) error {
+	endpoint := fmt.Sprintf("%s/%s/%s?new_display_name=%s",
+		c.getBaseURL(), account.APIVersion, account.PhoneID, neturl.QueryEscape(name))
+
+	respBody, err := c.doRequest(ctx, http.MethodPost, endpoint, nil, account.AccessToken)
+	if err != nil {
+		return fmt.Errorf("failed to request display name change: %w", err)
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return fmt.Errorf("failed to parse display name response: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("display name change was not accepted")
+	}
+	c.Log.Info("Requested display name change", "phone_id", account.PhoneID)
+	return nil
+}
+
 // UpdateBusinessProfile updates the business profile settings
 func (c *Client) UpdateBusinessProfile(ctx context.Context, account *Account, input BusinessProfileInput) error {
 	url := fmt.Sprintf("%s/%s/%s/whatsapp_business_profile", c.getBaseURL(), account.APIVersion, account.PhoneID)
@@ -644,6 +709,36 @@ func (c *Client) SubscribeApp(ctx context.Context, account *Account) error {
 
 	c.Log.Info("App subscribed to webhooks", "business_id", account.BusinessID)
 	return nil
+}
+
+// SMB App Data sync types for numbers onboarded in coexistence mode.
+const (
+	SMBSyncContacts = "smb_app_state_sync"
+	SMBSyncHistory  = "history"
+)
+
+// RequestSMBAppDataSync asks Meta to replay a coexistence number's WhatsApp
+// Business app contacts (SMBSyncContacts) or chat history (SMBSyncHistory) as
+// webhooks. Meta accepts each sync type once, within 24 hours of onboarding.
+// Calls POST /{api_version}/{phone_id}/smb_app_data and returns Meta's request_id.
+func (c *Client) RequestSMBAppDataSync(ctx context.Context, account *Account, syncType string) (string, error) {
+	url := fmt.Sprintf("%s/%s/%s/smb_app_data", c.getBaseURL(), account.APIVersion, account.PhoneID)
+	body := map[string]string{"messaging_product": "whatsapp", "sync_type": syncType}
+
+	respBody, err := c.doRequest(ctx, http.MethodPost, url, body, account.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("failed to request %s sync: %w", syncType, err)
+	}
+
+	var resp struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("failed to parse %s sync response: %w", syncType, err)
+	}
+
+	c.Log.Info("Requested SMB app data sync", "phone_id", account.PhoneID, "sync_type", syncType, "request_id", resp.RequestID)
+	return resp.RequestID, nil
 }
 
 // TokenExchangeResponse represents the response from OAuth token exchange

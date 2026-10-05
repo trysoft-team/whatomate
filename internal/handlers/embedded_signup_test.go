@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -653,4 +654,75 @@ func TestApp_RegisterPhoneNumber_CrossOrgIsolation(t *testing.T) {
 	err := app.RegisterPhoneNumber(req)
 	require.NoError(t, err)
 	assert.Equal(t, fasthttp.StatusNotFound, testutil.GetResponseStatusCode(req))
+}
+
+func TestApp_ExchangeToken_Coexistence_RequestsAppDataSync(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	user := createAdminUser(t, app, org.ID)
+
+	phoneID := fmt.Sprintf("323456789%d", time.Now().UnixNano()%1000000)
+	wabaID := fmt.Sprintf("787654321%d", time.Now().UnixNano()%1000000)
+
+	var mu sync.Mutex
+	var syncTypes []string
+	registerCalled := false
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/oauth/access_token"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "coexist_token"})
+		case strings.HasSuffix(path, phoneID+"/smb_app_data"):
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			syncTypes = append(syncTypes, body["sync_type"])
+			mu.Unlock()
+			assert.Equal(t, "whatsapp", body["messaging_product"])
+			_ = json.NewEncoder(w).Encode(map[string]string{"messaging_product": "whatsapp", "request_id": "req-1"})
+		case strings.HasSuffix(path, phoneID+"/register"):
+			registerCalled = true
+			_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		case strings.Contains(path, phoneID):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verified_name":        fmt.Sprintf("Coexist Business %d", time.Now().UnixNano()),
+				"display_phone_number": "+15550783881",
+				"is_on_biz_app":        true,
+				"platform_type":        "CLOUD_API",
+			})
+		case strings.Contains(path, wabaID):
+			_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer metaServer.Close()
+	app.WhatsApp = whatsapp.NewWithBaseURL(app.Log, metaServer.URL)
+
+	req := testutil.NewJSONRequest(t, map[string]interface{}{
+		"code":     "coexist_code",
+		"phone_id": phoneID,
+		"waba_id":  wabaID,
+	})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+
+	require.NoError(t, app.ExchangeToken(req))
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var resp struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+	accountMap := resp.Data["account"].(map[string]interface{})
+	assert.Equal(t, "active", accountMap["status"])
+	assert.Equal(t, true, accountMap["is_smb"])
+	assert.Equal(t, true, resp.Data["coexistence_sync_started"])
+	assert.Nil(t, resp.Data["warning"])
+
+	assert.False(t, registerCalled, "coexistence numbers are already registered")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"smb_app_state_sync", "history"}, syncTypes)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/contactutil"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/internal/websocket"
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 )
 
@@ -36,6 +37,96 @@ func contactBotMutedUntil(contact *models.Contact) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+func contactBotMutedUntilPtr(contact *models.Contact) *time.Time {
+	until, ok := contactBotMutedUntil(contact)
+	if !ok || !time.Now().Before(until) {
+		return nil
+	}
+	return &until
+}
+
+// pauseChatbotForAgentReply mutes chatbot automation after an agent sends a
+// message to the contact. Duration comes from Agents settings
+// (agent_session_timeout_minutes, default 5). Each agent reply resets the timer.
+func (a *App) pauseChatbotForAgentReply(contact *models.Contact, account *models.WhatsAppAccount) time.Time {
+	if contact == nil || account == nil {
+		return time.Time{}
+	}
+	mins := 5
+	if settings, err := a.getChatbotSettingsCached(account.OrganizationID, account.Name); err == nil && settings != nil {
+		mins = agentSessionTimeoutMinutes(settings)
+	}
+	until := time.Now().UTC().Add(time.Duration(mins) * time.Minute)
+	meta := contact.Metadata
+	if meta == nil {
+		meta = models.JSONB{}
+	}
+	meta["bot_muted_until"] = until.Format(time.RFC3339)
+	meta["bot_muted_reason"] = "agent_reply"
+	if err := a.DB.Model(contact).Update("metadata", meta).Error; err != nil {
+		a.Log.Error("failed to mute bot after agent reply", "contact_id", contact.ID, "error", err)
+		return time.Time{}
+	}
+	contact.Metadata = meta
+	a.cancelChatDelaysForContact(contact.ID)
+	a.scheduleAgentSessionTimeout(contact.ID, until)
+	if a.WSHub != nil {
+		a.WSHub.BroadcastToOrg(account.OrganizationID, websocket.WSMessage{
+			Type: websocket.TypeContactUpdate,
+			Payload: map[string]any{
+				"contact_id":      contact.ID.String(),
+				"bot_muted_until": until.Format(time.RFC3339),
+				"bot_muted_reason": "agent_reply",
+			},
+		})
+	}
+	a.Log.Info("Chatbot paused after agent reply",
+		"contact_id", contact.ID,
+		"muted_until", until,
+		"timeout_minutes", mins)
+	return until
+}
+
+// clearChatbotAgentSessionMute clears bot_muted_until from contact metadata so
+// automation can run again (agent closed the session-timeout pause early).
+func (a *App) clearChatbotAgentSessionMute(contact *models.Contact, orgID uuid.UUID) error {
+	return a.clearChatbotAgentSessionMuteWithReason(contact, orgID, "")
+}
+
+// clearChatbotAgentSessionMuteWithReason is clearChatbotAgentSessionMute that
+// tells the UI why the session ended (empty when an agent closed it).
+func (a *App) clearChatbotAgentSessionMuteWithReason(contact *models.Contact, orgID uuid.UUID, reason string) error {
+	if contact == nil {
+		return nil
+	}
+	meta := contact.Metadata
+	if meta == nil {
+		meta = models.JSONB{}
+	}
+	delete(meta, "bot_muted_until")
+	delete(meta, "bot_muted_reason")
+	if err := a.DB.Model(contact).Update("metadata", meta).Error; err != nil {
+		return err
+	}
+	contact.Metadata = meta
+	a.cancelAgentSessionTimeout(contact.ID)
+	if a.WSHub != nil {
+		payload := map[string]any{
+			"contact_id":        contact.ID.String(),
+			"bot_muted_until":   nil,
+			"bot_muted_cleared": true,
+		}
+		if reason != "" {
+			payload["reason"] = reason
+		}
+		a.WSHub.BroadcastToOrg(orgID, websocket.WSMessage{
+			Type:    websocket.TypeContactUpdate,
+			Payload: payload,
+		})
+	}
+	return nil
 }
 
 func redactURLForLog(raw string) string {
@@ -153,8 +244,9 @@ type IncomingTextMessage struct {
 	} `json:"contacts,omitempty"`
 }
 
-// processIncomingMessageFull processes incoming WhatsApp messages with chatbot logic
-func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextMessage, profileName string) {
+// processIncomingMessageFull processes incoming WhatsApp messages with chatbot logic.
+// rawInbound is the Meta webhook envelope for {{{inbound}}} (may be nil in tests).
+func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextMessage, profileName string, rawInbound map[string]any) {
 	a.Log.Info("Processing incoming message",
 		"phone_number_id", phoneNumberID,
 		"from", msg.From,
@@ -243,7 +335,10 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		a.createTransferToQueue(account, contact, models.TransferSourceChatbotDisabled)
 		return
 	}
-	a.Log.Info("Chatbot settings loaded", "settings_id", settings.ID, "is_enabled", settings.IsEnabled, "ai_enabled", settings.AI.Enabled, "ai_provider", settings.AI.Provider, "default_response", settings.DefaultResponse)
+	a.Log.Info("Chatbot settings loaded", "settings_id", settings.ID, "is_enabled", settings.IsEnabled, "ai_enabled", settings.AI.Enabled, "ai_provider", settings.AI.Provider, "ai_responses_enabled", account.AIResponsesEnabled, "default_response", settings.DefaultResponse)
+
+	// Typing indicator (Meta) before chatbot replies for this inbound message.
+	a.maybeSendTypingIndicator(account, msg.ID)
 
 	// Check business hours if enabled
 	if settings.BusinessHours.Enabled && len(settings.BusinessHours.Hours) > 0 {
@@ -263,19 +358,49 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		}
 	}
 
-	// Only process text and interactive messages for chatbot
-	if messageText == "" {
+	// Get or create active session early so we can accept media/location
+	// even when caption/text is empty (while an active flow is in progress,
+	// or when starting the account default flow).
+	session, isNewSession := a.getOrCreateSession(account.OrganizationID, contact.ID, account.Name, msg.From, settings.SessionTimeoutMins)
+
+	hasMediaOrLocation := messageType == "image" || messageType == "document" ||
+		messageType == "video" || messageType == "audio" || messageType == "sticker" ||
+		messageType == "location" || messageType == "contacts"
+	if messageText == "" && !hasMediaOrLocation {
 		a.Log.Debug("Skipping message with no text content for chatbot", "type", msg.Type)
 		return
 	}
+	// Cold start with media only: allow through when account has a default flow
+	// or an active session already binds a flow.
+	if messageText == "" && hasMediaOrLocation && session.CurrentFlowID == nil {
+		if a.defaultChatbotFlowForAccount(account) == nil {
+			a.Log.Debug("Skipping media inbound with no active/default flow", "type", msg.Type)
+			return
+		}
+	}
 
-	a.Log.Info("Processing message", "text", messageText, "buttonID", buttonID, "from", msg.From)
-
-	// Get or create active session for this contact
-	session, isNewSession := a.getOrCreateSession(account.OrganizationID, contact.ID, account.Name, msg.From, settings.SessionTimeoutMins)
+	a.Log.Info("Processing message", "text", messageText, "buttonID", buttonID, "type", messageType, "from", msg.From)
 
 	// Log incoming message to session
-	a.logSessionMessage(session.ID, models.DirectionIncoming, messageText, "keyword_check")
+	logText := messageText
+	if logText == "" {
+		logText = "[" + messageType + "]"
+	}
+	a.logSessionMessage(session.ID, models.DirectionIncoming, logText, "keyword_check")
+
+	runOpts := a.chatRunOptsFromExtracted(extracted)
+	runOpts.WhatsAppMessageID = msg.ID
+	runOpts.Timestamp = msg.Timestamp
+	runOpts.From = msg.From
+	if len(rawInbound) > 0 {
+		runOpts.RawInbound = rawInbound
+	}
+	if buttonID != "" {
+		runOpts.ButtonID = buttonID
+	}
+	if flowResponseData != nil {
+		runOpts.FlowResponseData = flowResponseData
+	}
 
 	// Check for transfer keyword BEFORE sending greeting (transfer takes priority)
 	keywordResponse, keywordMatched := a.matchKeywordRules(account.OrganizationID, account.Name, messageText)
@@ -318,16 +443,27 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 			a.exitFlow(session)
 			return
 		}
-		if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData); err != nil {
+		if g, err := parseChatGraph(flow.Graph); err == nil && g != nil &&
+			matchesEscapeKeyword(messageText, startNodeEscapeKeywords(g)) {
+			runOpts.ForceEntry = true
+		}
+		if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData, runOpts); err != nil {
 			a.Log.Error("Chat graph runner failed", "error", err, "session", session.ID, "flow", flow.ID)
 		}
 		return
 	}
 
 	// Keyword-triggered flows win; otherwise start this account's default flow.
+	// Media/location with empty text skips keyword match and uses account default.
 	if flow := a.resolveInboundChatbotFlow(account, messageText); flow != nil {
-		a.startChatbotFlow(account, contact, session, flow, messageText, buttonID, flowResponseData)
+		a.startChatbotFlow(account, contact, session, flow, messageText, buttonID, flowResponseData, runOpts)
 		return
+	}
+	if messageText == "" && hasMediaOrLocation {
+		if flow := a.defaultChatbotFlowForAccount(account); flow != nil {
+			a.startChatbotFlow(account, contact, session, flow, messageText, buttonID, flowResponseData, runOpts)
+			return
+		}
 	}
 
 	// Send greeting message for new sessions (only if no flow was triggered)
@@ -377,8 +513,9 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		return
 	}
 
-	// If no keyword matched, try AI response if enabled
-	if settings.AI.Enabled && settings.AI.Provider != "" && settings.AI.APIKey != "" {
+	// If no keyword matched, try AI response when this account opted in
+	// and org AI provider credentials are configured.
+	if account.AIResponsesEnabled && settings.AI.Enabled && settings.AI.Provider != "" && settings.AI.APIKey != "" {
 		a.Log.Info("Attempting AI response", "provider", settings.AI.Provider, "model", settings.AI.Model)
 		aiResponse, err := a.generateAIResponse(settings, session, messageText)
 		if err != nil {
@@ -395,7 +532,11 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 			a.Log.Warn("AI returned empty response")
 		}
 	} else {
-		a.Log.Info("AI not configured", "ai_enabled", settings.AI.Enabled, "has_provider", settings.AI.Provider != "", "has_api_key", settings.AI.APIKey != "")
+		a.Log.Info("AI fallback skipped",
+			"account_ai_responses", account.AIResponsesEnabled,
+			"ai_enabled", settings.AI.Enabled,
+			"has_provider", settings.AI.Provider != "",
+			"has_api_key", settings.AI.APIKey != "")
 	}
 
 	// If no AI response or AI not enabled, send fallback message (for existing sessions)
@@ -517,6 +658,19 @@ func (a *App) matchKeywordRules(orgID uuid.UUID, accountName, messageText string
 	}
 
 	return nil, false
+}
+
+// maybeSendTypingIndicator shows WhatsApp typing (and marks the inbound
+// message read) when the account has typing_indicator_enabled.
+func (a *App) maybeSendTypingIndicator(account *models.WhatsAppAccount, messageID string) {
+	if a.WhatsApp == nil || account == nil || !account.TypingIndicatorEnabled || strings.TrimSpace(messageID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.WhatsApp.MarkMessageReadWithTyping(ctx, account.ToWAAccount(), messageID); err != nil {
+		a.Log.Debug("Typing indicator failed", "error", err, "message_id", messageID, "account", account.Name)
+	}
 }
 
 // sendAndSaveTextMessage sends a text message and saves it to the database
@@ -718,22 +872,29 @@ func (a *App) sendAndSaveFlowMessage(account *models.WhatsAppAccount, contact *m
 	return err
 }
 
-// getOrCreateSession finds an active session or creates a new one
-// Returns the session and a boolean indicating if it's a new session
+// getOrCreateSession finds an active session that is still within the idle
+// timeout, or creates a new one. Stale active sessions (past Session Timeout)
+// are marked status=timeout so the Sessions UI reflects expiry.
 func (a *App) getOrCreateSession(orgID, contactID uuid.UUID, accountName, phoneNumber string, timeoutMins int) (*models.ChatbotSession, bool) {
 	now := time.Now()
+	if timeoutMins <= 0 {
+		timeoutMins = 30
+	}
 
 	// Look for an active session that hasn't timed out
 	var session models.ChatbotSession
-	timeout := now.Add(-time.Duration(timeoutMins) * time.Minute)
+	cutoff := now.Add(-time.Duration(timeoutMins) * time.Minute)
 	result := a.DB.Where("organization_id = ? AND contact_id = ? AND whats_app_account = ? AND status = ? AND last_activity_at > ?",
-		orgID, contactID, accountName, models.SessionStatusActive, timeout).First(&session)
+		orgID, contactID, accountName, models.SessionStatusActive, cutoff).First(&session)
 
 	if result.Error == nil {
 		// Update last activity
 		a.DB.Model(&session).Update("last_activity_at", now)
 		return &session, false // existing session
 	}
+
+	// Expire idle active sessions for this contact/account before opening a new one.
+	a.expireIdleChatbotSessionsForContact(orgID, contactID, accountName, cutoff, now)
 
 	// Create new session
 	session = models.ChatbotSession{
@@ -751,6 +912,41 @@ func (a *App) getOrCreateSession(orgID, contactID uuid.UUID, accountName, phoneN
 		a.Log.Error("Failed to create session", "error", err)
 	}
 	return &session, true // new session
+}
+
+// expireIdleChatbotSessionsForContact marks active sessions whose last activity
+// is at or before cutoff as timed out.
+func (a *App) expireIdleChatbotSessionsForContact(orgID, contactID uuid.UUID, accountName string, cutoff, now time.Time) {
+	var stale []models.ChatbotSession
+	if err := a.DB.Where(
+		"organization_id = ? AND contact_id = ? AND whats_app_account = ? AND status = ? AND last_activity_at <= ?",
+		orgID, contactID, accountName, models.SessionStatusActive, cutoff,
+	).Find(&stale).Error; err != nil {
+		a.Log.Warn("Failed to load idle chatbot sessions", "error", err, "contact_id", contactID)
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(stale))
+	for _, s := range stale {
+		ids = append(ids, s.ID)
+	}
+	completedAt := now
+	if err := a.DB.Model(&models.ChatbotSession{}).
+		Where("id IN ?", ids).
+		Updates(map[string]any{
+			"status":          models.SessionStatusTimeout,
+			"completed_at":    completedAt,
+			"current_step":    "",
+			"current_flow_id": nil,
+		}).Error; err != nil {
+		a.Log.Warn("Failed to expire idle chatbot sessions", "error", err, "contact_id", contactID)
+		return
+	}
+	a.ClearContactChatbotTracking(contactID)
+	a.Log.Info("Expired idle chatbot sessions",
+		"contact_id", contactID, "account", accountName, "count", len(ids))
 }
 
 // logSessionMessage logs a message to the chatbot session
@@ -773,7 +969,7 @@ func (a *App) resolveInboundChatbotFlow(account *models.WhatsAppAccount, message
 	if account == nil {
 		return nil
 	}
-	if flow := a.matchFlowTrigger(account.OrganizationID, messageText); flow != nil {
+	if flow := a.matchFlowTrigger(account.OrganizationID, account.Name, messageText); flow != nil {
 		return flow
 	}
 	return a.defaultChatbotFlowForAccount(account)
@@ -796,26 +992,58 @@ func (a *App) defaultChatbotFlowForAccount(account *models.WhatsAppAccount) *mod
 	return flow
 }
 
+// chatRunOptsFromExtracted builds graph-run inbound metadata from an extracted webhook message.
+func (a *App) chatRunOptsFromExtracted(extracted ExtractedMessage) *chatRunOpts {
+	opts := &chatRunOpts{
+		MessageType:      extracted.Type,
+		MetaType:         extracted.MetaType,
+		ButtonID:         extracted.ButtonID,
+		InteractiveType:  extracted.InteractiveType,
+		FlowResponseData: extracted.FlowResponseData,
+		Media:            extracted.Media,
+	}
+	if extracted.MetaType == "" {
+		opts.MetaType = extracted.Type
+	}
+	if extracted.Location != nil {
+		opts.Latitude = extracted.Location.Latitude
+		opts.Longitude = extracted.Location.Longitude
+		opts.LocationName = extracted.Location.Name
+		opts.LocationAddress = extracted.Location.Address
+	}
+	return opts
+}
+
 // startChatbotFlow begins a v2 chatbot graph for the contact's session.
-func (a *App) startChatbotFlow(account *models.WhatsAppAccount, contact *models.Contact, session *models.ChatbotSession, flow *models.ChatbotFlow, messageText, buttonID string, flowResponseData map[string]any) {
+func (a *App) startChatbotFlow(account *models.WhatsAppAccount, contact *models.Contact, session *models.ChatbotSession, flow *models.ChatbotFlow, messageText, buttonID string, flowResponseData map[string]any, opts *chatRunOpts) {
 	if flow.Graph == nil {
 		a.Log.Error("Triggered chatbot flow has no v2 graph; ignoring", "flow", flow.ID)
 		return
 	}
+	sameFlow := session.CurrentFlowID != nil && *session.CurrentFlowID == flow.ID
+	preserveVars := flow.KeepSessionActive && sameFlow && session.SessionData != nil
+
 	session.CurrentFlowID = &flow.ID
 	session.CurrentStep = ""
 	session.StepRetries = 0
-	session.SessionData = models.JSONB{
-		"_flow_id":   flow.ID.String(),
-		"_flow_name": flow.Name,
+	session.Status = models.SessionStatusActive
+	session.CompletedAt = nil
+	if !preserveVars {
+		session.SessionData = models.JSONB{
+			"_flow_id":   flow.ID.String(),
+			"_flow_name": flow.Name,
+		}
+	} else {
+		session.SessionData["_flow_id"] = flow.ID.String()
+		session.SessionData["_flow_name"] = flow.Name
 	}
-	if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData); err != nil {
+	if err := a.runChatGraph(account, contact, session, flow, messageText, buttonID, flowResponseData, opts); err != nil {
 		a.Log.Error("Chat graph runner failed at flow start", "error", err, "session", session.ID, "flow", flow.ID)
 	}
 }
 
-// matchFlowTrigger checks if the message triggers any flow
-func (a *App) matchFlowTrigger(orgID uuid.UUID, messageText string) *models.ChatbotFlow {
+// matchFlowTrigger checks if the message triggers any flow for the given account.
+func (a *App) matchFlowTrigger(orgID uuid.UUID, accountName, messageText string) *models.ChatbotFlow {
 	// Use cached flows (includes steps)
 	flows, err := a.getChatbotFlowsCached(orgID)
 	if err != nil {
@@ -826,6 +1054,9 @@ func (a *App) matchFlowTrigger(orgID uuid.UUID, messageText string) *models.Chat
 	messageLower := strings.ToLower(messageText)
 
 	for _, flow := range flows {
+		if flow.WhatsAppAccount != "" && flow.WhatsAppAccount != accountName {
+			continue
+		}
 		for _, keyword := range flow.TriggerKeywords {
 			if strings.Contains(messageLower, strings.ToLower(keyword)) {
 				return &flow
@@ -942,7 +1173,7 @@ func (a *App) generateAIResponse(settings *models.ChatbotSettings, session *mode
 	contextData := a.buildAIContext(settings.OrganizationID, session, userMessage)
 
 	switch settings.AI.Provider {
-	case models.AIProviderOpenAI:
+	case models.AIProviderOpenAI, models.AIProviderOpenRouter:
 		return a.generateOpenAIResponse(settings, session, userMessage, contextData)
 	case models.AIProviderAnthropic:
 		return a.generateAnthropicResponse(settings, session, userMessage, contextData)
@@ -1048,7 +1279,7 @@ func (a *App) fetchAPIContext(apiConfig models.JSONB, session *models.ChatbotSes
 
 // generateOpenAIResponse generates a response using OpenAI API
 func (a *App) generateOpenAIResponse(settings *models.ChatbotSettings, session *models.ChatbotSession, userMessage string, contextData string) (string, error) {
-	url := "https://api.openai.com/v1/chat/completions"
+	url, errLabel := openAICompatibleEndpoint(settings.AI.Provider)
 
 	// Build messages array
 	messages := []map[string]string{}
@@ -1093,10 +1324,10 @@ func (a *App) generateOpenAIResponse(settings *models.ChatbotSettings, session *
 	})
 
 	payload := map[string]any{
-		"model":      settings.AI.Model,
-		"messages":   messages,
-		"max_tokens": settings.AI.MaxTokens,
+		"model":    settings.AI.Model,
+		"messages": messages,
 	}
+	setOpenAICompatibleMaxTokens(payload, settings.AI.Provider, settings.AI.MaxTokens)
 
 	if settings.AI.Temperature > 0 {
 		payload["temperature"] = settings.AI.Temperature
@@ -1112,8 +1343,7 @@ func (a *App) generateOpenAIResponse(settings *models.ChatbotSettings, session *
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+settings.AI.APIKey)
+	setOpenAICompatibleHeaders(req, settings)
 
 	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
@@ -1130,7 +1360,7 @@ func (a *App) generateOpenAIResponse(settings *models.ChatbotSettings, session *
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(body, &errResp)
-		return "", fmt.Errorf("OpenAI API error: %s", errResp.Error.Message)
+		return "", aiProviderError(errLabel, resp.StatusCode, errResp.Error.Message)
 	}
 
 	var result struct {
@@ -1145,10 +1375,16 @@ func (a *App) generateOpenAIResponse(settings *models.ChatbotSettings, session *
 	}
 
 	if len(result.Choices) > 0 {
+		p, c, t := parseOpenAIUsage(body)
+		a.recordAIUsage(aiUsageContext{
+			Settings: settings,
+			Session:  session,
+			Purpose:  models.AIUsagePurposeChatbotReply,
+		}, string(settings.AI.Provider), settings.AI.Model, p, c, t)
 		return strings.TrimSpace(result.Choices[0].Message.Content), nil
 	}
 
-	return "", fmt.Errorf("no response from OpenAI")
+	return "", fmt.Errorf("no response from %s", settings.AI.Provider)
 }
 
 // generateAnthropicResponse generates a response using Anthropic API
@@ -1248,6 +1484,12 @@ func (a *App) generateAnthropicResponse(settings *models.ChatbotSettings, sessio
 
 	for _, content := range result.Content {
 		if content.Type == "text" {
+			p, c, t := parseAnthropicUsage(body)
+			a.recordAIUsage(aiUsageContext{
+				Settings: settings,
+				Session:  session,
+				Purpose:  models.AIUsagePurposeChatbotReply,
+			}, string(models.AIProviderAnthropic), settings.AI.Model, p, c, t)
 			return strings.TrimSpace(content.Text), nil
 		}
 	}
@@ -1362,6 +1604,12 @@ func (a *App) generateGoogleResponse(settings *models.ChatbotSettings, session *
 	}
 
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
+		p, c, t := parseGoogleUsage(body)
+		a.recordAIUsage(aiUsageContext{
+			Settings: settings,
+			Session:  session,
+			Purpose:  models.AIUsagePurposeChatbotReply,
+		}, string(models.AIProviderGoogle), settings.AI.Model, p, c, t)
 		return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
 	}
 
@@ -1498,16 +1746,28 @@ func getStringFromMap(m map[string]any, key string) string {
 type ExtractedMessage struct {
 	Text             string
 	Type             string // may differ from msg.Type, e.g. "button_reply"
+	MetaType         string // original WhatsApp type (text, interactive, image, …)
+	InteractiveType  string // button_reply, list_reply, nfm_reply
 	Media            *MediaInfo
+	Location         *ExtractedLocation
 	ButtonID         string         // used by chatbot routing only
 	FlowResponseData map[string]any // used by chatbot routing only
+}
+
+// ExtractedLocation holds coordinates from an inbound location message.
+type ExtractedLocation struct {
+	Latitude  float64
+	Longitude float64
+	Name      string
+	Address   string
 }
 
 // extractMessageContent walks an IncomingTextMessage and returns the derived
 // fields. Used by both the inbound and echo paths.
 func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage, account *models.WhatsAppAccount) ExtractedMessage {
 	extracted := ExtractedMessage{
-		Type: msg.Type,
+		Type:     msg.Type,
+		MetaType: msg.Type,
 	}
 
 	if msg.Type == "text" && msg.Text != nil {
@@ -1517,29 +1777,34 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 		extracted.Text = msg.Button.Text
 		extracted.ButtonID = msg.Button.Payload
 		extracted.Type = "button_reply"
+		extracted.InteractiveType = "button_reply"
 	} else if msg.Type == "interactive" && msg.Interactive != nil {
 		// Handle button reply
 		if msg.Interactive.ButtonReply != nil {
 			extracted.Text = msg.Interactive.ButtonReply.Title
 			extracted.ButtonID = msg.Interactive.ButtonReply.ID
 			extracted.Type = "button_reply"
+			extracted.InteractiveType = "button_reply"
 		}
 		// Handle list reply
 		if msg.Interactive.ListReply != nil {
 			extracted.Text = msg.Interactive.ListReply.Title
 			extracted.ButtonID = msg.Interactive.ListReply.ID
 			extracted.Type = "button_reply"
+			extracted.InteractiveType = "list_reply"
 		}
 		// Handle WhatsApp Flow reply (nfm_reply)
 		if msg.Interactive.NFMReply != nil {
 			extracted.Text = msg.Interactive.NFMReply.Body
 			extracted.Type = "nfm_reply"
+			extracted.InteractiveType = "nfm_reply"
 			// Parse the response JSON to extract form data
 			if msg.Interactive.NFMReply.ResponseJSON != "" {
 				var responseData map[string]any
 				if err := json.Unmarshal([]byte(msg.Interactive.NFMReply.ResponseJSON), &responseData); err != nil {
 					a.Log.Error("Failed to parse flow response JSON", "error", err, "response_json", msg.Interactive.NFMReply.ResponseJSON)
 				} else {
+					a.materializeFlowMedia(ctx, account.OrganizationID, responseData, nil)
 					extracted.FlowResponseData = responseData
 					a.Log.Info("Parsed WhatsApp Flow response", "data", extracted.FlowResponseData)
 				}
@@ -1549,6 +1814,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 		// Handle image message
 		extracted.Text = msg.Image.Caption
 		extracted.Media = &MediaInfo{
+			MediaID:       msg.Image.ID,
 			MediaMimeType: msg.Image.MimeType,
 		}
 		// Download and save media locally
@@ -1562,6 +1828,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 		// Handle document message
 		extracted.Text = msg.Document.Caption
 		extracted.Media = &MediaInfo{
+			MediaID:       msg.Document.ID,
 			MediaMimeType: msg.Document.MimeType,
 			MediaFilename: msg.Document.Filename,
 		}
@@ -1576,6 +1843,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 		// Handle video message
 		extracted.Text = msg.Video.Caption
 		extracted.Media = &MediaInfo{
+			MediaID:       msg.Video.ID,
 			MediaMimeType: msg.Video.MimeType,
 		}
 		// Download and save media locally
@@ -1588,6 +1856,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 	} else if msg.Type == "audio" && msg.Audio != nil {
 		// Handle audio message
 		extracted.Media = &MediaInfo{
+			MediaID:       msg.Audio.ID,
 			MediaMimeType: msg.Audio.MimeType,
 		}
 		// Download and save media locally
@@ -1600,6 +1869,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 	} else if msg.Type == "sticker" && msg.Sticker != nil {
 		// Handle sticker message (treat like image)
 		extracted.Media = &MediaInfo{
+			MediaID:       msg.Sticker.ID,
 			MediaMimeType: msg.Sticker.MimeType,
 		}
 		// Download and save media locally
@@ -1610,7 +1880,12 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 			extracted.Media.MediaURL = localPath
 		}
 	} else if msg.Type == "location" && msg.Location != nil {
-		// Handle location message - store as JSON in content
+		extracted.Location = &ExtractedLocation{
+			Latitude:  msg.Location.Latitude,
+			Longitude: msg.Location.Longitude,
+			Name:      msg.Location.Name,
+			Address:   msg.Location.Address,
+		}
 		locationData := map[string]any{
 			"latitude":  msg.Location.Latitude,
 			"longitude": msg.Location.Longitude,
@@ -1648,9 +1923,77 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 	return extracted
 }
 
+// metaInboundMessageMap returns the Meta messages[] item exactly as posted
+// (omit-empty JSON round-trip of IncomingTextMessage).
+func metaInboundMessageMap(msg IncomingTextMessage) map[string]any {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// buildMetaWebhookInboundEnvelope builds the full Meta Cloud API webhook body
+// scoped to a single message, matching what Meta POSTs to /webhook. Used for
+// {{{inbound}}} so authors can forward the request body as-is.
+func buildMetaWebhookInboundEnvelope(
+	object, entryID, messagingProduct, displayPhone, phoneNumberID string,
+	contacts any,
+	msg IncomingTextMessage,
+) map[string]any {
+	if object == "" {
+		object = "whatsapp_business_account"
+	}
+	if messagingProduct == "" {
+		messagingProduct = "whatsapp"
+	}
+	msgMap := metaInboundMessageMap(msg)
+	if msgMap == nil {
+		msgMap = map[string]any{}
+	}
+
+	var contactsOut any = []any{}
+	if contacts != nil {
+		if b, err := json.Marshal(contacts); err == nil {
+			var c []any
+			if err := json.Unmarshal(b, &c); err == nil {
+				contactsOut = c
+			}
+		}
+	}
+
+	return map[string]any{
+		"object": object,
+		"entry": []any{
+			map[string]any{
+				"id": entryID,
+				"changes": []any{
+					map[string]any{
+						"value": map[string]any{
+							"messaging_product": messagingProduct,
+							"metadata": map[string]any{
+								"display_phone_number": displayPhone,
+								"phone_number_id":      phoneNumberID,
+							},
+							"contacts": contactsOut,
+							"messages": []any{msgMap},
+						},
+						"field": "messages",
+					},
+				},
+			},
+		},
+	}
+}
+
 // MediaInfo holds media-related information for an incoming message
 type MediaInfo struct {
-	MediaURL      string
+	MediaID       string // Meta media id from the inbound webhook
+	MediaURL      string // local/downloaded URL for sending/storage
 	MediaMimeType string
 	MediaFilename string
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, computed } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,11 +8,14 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { PageHeader, SearchInput, DataTable, IconButton, DeleteConfirmDialog, ErrorState, type Column } from '@/components/shared'
 import { api, templatesService } from '@/services/api'
 import { useOrganizationsStore } from '@/stores/organizations'
+import { storeAITemplateDraft } from '@/lib/templateDraft'
 import { toast } from 'vue-sonner'
-import { Plus, RefreshCw, FileText, Pencil, Trash2, Loader2, MessageSquare, Image, FileIcon, Video } from 'lucide-vue-next'
+import { Plus, RefreshCw, FileText, Pencil, Trash2, Loader2, MessageSquare, Image, FileIcon, Video, Sparkles } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
 import { useSearchPagination } from '@/composables/useSearchPagination'
 import { getQualityBadgeClass, getQualityRatingLabel } from '@/lib/utils'
@@ -280,6 +283,39 @@ function getCategoryBadgeClass(category: string) {
   }
 }
 
+const router = useRouter()
+const isGenerateDialogOpen = ref(false)
+const generatePrompt = ref('')
+const isGenerating = ref(false)
+const generateSuggestions = computed(() => [
+  t('templates.generateWithAISuggestion1'),
+  t('templates.generateWithAISuggestion2'),
+  t('templates.generateWithAISuggestion3'),
+])
+
+function openGenerateDialog() {
+  generatePrompt.value = ''
+  isGenerateDialogOpen.value = true
+}
+
+async function generateTemplate() {
+  const prompt = generatePrompt.value.trim()
+  if (!prompt) { toast.error(t('templates.generateWithAIPromptRequired')); return }
+  isGenerating.value = true
+  try {
+    const account = selectedAccount.value !== 'all' ? selectedAccount.value : (accounts.value.length === 1 ? accounts.value[0].name : '')
+    const response = await templatesService.generate(prompt, account)
+    storeAITemplateDraft((response.data as any).data || response.data)
+    isGenerateDialogOpen.value = false
+    toast.success(t('templates.generateWithAIReady'))
+    router.push('/templates/new')
+  } catch (err) {
+    toast.error(getErrorMessage(err, t('templates.generateWithAIFailed')))
+  } finally {
+    isGenerating.value = false
+  }
+}
+
 function getHeaderIcon(type: string) {
   switch (type) {
     case 'IMAGE':
@@ -298,17 +334,30 @@ function getHeaderIcon(type: string) {
   <div class="flex flex-col h-full bg-[#0a0a0b] light:bg-gray-50">
     <PageHeader :title="$t('templates.title')" :subtitle="$t('templates.subtitle')" :icon="FileText" icon-gradient="bg-gradient-to-br from-blue-500 to-cyan-600 shadow-blue-500/20">
       <template #actions>
-        <Button variant="outline" size="sm" @click="syncTemplates" :disabled="isSyncing || !selectedAccount || selectedAccount === 'all'">
-          <Loader2 v-if="isSyncing" class="h-4 w-4 mr-2 animate-spin" />
-          <RefreshCw v-else class="h-4 w-4 mr-2" />
-          {{ $t('templates.syncFromMeta') }}
-        </Button>
-        <RouterLink to="/templates/new">
-          <Button variant="outline" size="sm">
-            <Plus class="h-4 w-4 mr-2" />
-            {{ $t('templates.createTemplate') }}
+        <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" @click="syncTemplates" :disabled="isSyncing || !selectedAccount || selectedAccount === 'all'">
+            <Loader2 v-if="isSyncing" class="h-4 w-4 mr-2 animate-spin" />
+            <RefreshCw v-else class="h-4 w-4 mr-2" />
+            {{ $t('templates.syncFromMeta') }}
           </Button>
-        </RouterLink>
+          <button
+            type="button"
+            data-testid="generate-template-ai"
+            class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            @click="openGenerateDialog"
+          >
+            <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+              <Sparkles class="h-3.5 w-3.5 shrink-0" />
+              {{ $t('templates.generateWithAI') }}
+            </span>
+          </button>
+          <RouterLink to="/templates/new">
+            <Button variant="outline" size="sm">
+              <Plus class="h-4 w-4 mr-2" />
+              {{ $t('templates.createTemplate') }}
+            </Button>
+          </RouterLink>
+        </div>
       </template>
     </PageHeader>
 
@@ -419,6 +468,16 @@ function getHeaderIcon(type: string) {
                       <RefreshCw class="h-4 w-4 mr-2" />
                       {{ $t('templates.syncFromMeta') }}
                     </Button>
+                    <button
+                      type="button"
+                      class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      @click="openGenerateDialog"
+                    >
+                      <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+                        <Sparkles class="h-3.5 w-3.5 shrink-0" />
+                        {{ $t('templates.generateWithAI') }}
+                      </span>
+                    </button>
                     <RouterLink to="/templates/new">
                       <Button variant="outline" size="sm">
                         <Plus class="h-4 w-4 mr-2" />
@@ -433,6 +492,51 @@ function getHeaderIcon(type: string) {
         </div>
       </div>
     </ScrollArea>
+
+    <Dialog v-model:open="isGenerateDialogOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 light:bg-violet-100">
+              <Sparkles class="h-5 w-5 text-primary light:text-violet-600" />
+            </div>
+            <div class="min-w-0 space-y-1">
+              <DialogTitle>{{ $t('templates.generateWithAI') }}</DialogTitle>
+              <DialogDescription>{{ $t('templates.generateWithAISubtitle') }}</DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+        <div class="space-y-3 py-2">
+          <Textarea
+            v-model="generatePrompt"
+            data-testid="generate-template-prompt"
+            :placeholder="$t('templates.generateWithAIPlaceholder')"
+            class="min-h-[110px]"
+            :disabled="isGenerating"
+            @keydown.meta.enter="generateTemplate"
+            @keydown.ctrl.enter="generateTemplate"
+          />
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="s in generateSuggestions"
+              :key="s"
+              type="button"
+              class="rounded-full border border-border bg-background px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 hover:text-foreground"
+              :disabled="isGenerating"
+              @click="generatePrompt = s"
+            >{{ s }}</button>
+          </div>
+          <p class="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground"><Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />{{ $t('templates.generateWithAIHint') }}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="isGenerating" @click="isGenerateDialogOpen = false">{{ $t('common.cancel') }}</Button>
+          <Button :disabled="isGenerating || !generatePrompt.trim()" data-testid="generate-template-submit" @click="generateTemplate">
+            <Loader2 v-if="isGenerating" class="h-4 w-4 mr-2 animate-spin" /><Sparkles v-else class="h-4 w-4 mr-2" />
+            {{ isGenerating ? $t('templates.generateWithAIGenerating') : $t('templates.generateWithAI') }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <!-- Delete Confirmation Dialog -->
     <DeleteConfirmDialog

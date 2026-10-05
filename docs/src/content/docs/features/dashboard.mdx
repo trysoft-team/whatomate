@@ -36,14 +36,16 @@ Build your own analytics widgets to track the metrics that matter most. Click **
 
 Each widget is configured with:
 - **Name** — a label displayed on the dashboard
-- **Data Source** — choose from messages, contacts, campaigns, transfers, or sessions
-- **Metric** — count, sum, or average
-- **Display Type** — one of `number` (single value card), `percentage` (value shown as a percentage), `chart`, `table` (tabular breakdown), or `shortcuts` (a static quick-actions tile that needs no data source)
+- **Data Source** — messages, contacts, campaigns, transfers, sessions, agents, calls, templates, flows, tags, opt_outs, sla, media, ai (stub), webhooks (stub)
+- **Metric** — count, sum, avg, unique, rate, ratio, sum_duration, avg_duration, delta, p50, p95
+- **Display Type** — number, percentage, chart, table, shortcuts, sparkline, gauge, leaderboard, heatmap, funnel, kpi_strip, alert_list, queue, agent_status, iframe
 - **Chart Type** — line, bar, or pie (when display type is chart)
 - **Group By** — break down chart data by a field value (when display type is chart)
-- **Filters** — narrow results by field conditions (e.g., status equals "failed")
-- **Color** — visual accent for the widget
+- **Filters** — narrow results by field conditions (equals, in, between, is_null, starts_with, …)
+- **Color** — named accents (incl. amber/teal/indigo/…) or `#RRGGBB`
 - **Share with team** — make the widget visible to other users in your organization
+
+Live widgets (`queue`, `agent_status`, `alert_list`) refresh automatically over WebSocket when transfers, calls, availability, failed messages, or SLA events change.
 
 Widgets can be edited or deleted by their owner using the icons that appear on hover.
 

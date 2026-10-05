@@ -415,6 +415,59 @@ func TestGetOrCreateSession_ExpiredSession(t *testing.T) {
 	assert.True(t, isNew)
 	require.NotNil(t, session)
 	assert.NotEqual(t, expired.ID, session.ID, "should create a new session, not return expired one")
+
+	var timedOut models.ChatbotSession
+	require.NoError(t, app.DB.First(&timedOut, expired.ID).Error)
+	assert.Equal(t, models.SessionStatusTimeout, timedOut.Status)
+	assert.NotNil(t, timedOut.CompletedAt)
+}
+
+func TestExpireIdleChatbotSessions_MarksTimeout(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	contact := testutil.CreateTestContact(t, app.DB, org.ID)
+
+	settings := models.ChatbotSettings{
+		BaseModel:          models.BaseModel{ID: uuid.New()},
+		OrganizationID:     org.ID,
+		WhatsAppAccount:    account.Name,
+		SessionTimeoutMins: 5,
+	}
+	require.NoError(t, app.DB.Create(&settings).Error)
+
+	stale := models.ChatbotSession{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		ContactID:       contact.ID,
+		WhatsAppAccount: account.Name,
+		PhoneNumber:     contact.PhoneNumber,
+		Status:          models.SessionStatusActive,
+		SessionData:     models.JSONB{},
+		StartedAt:       time.Now().Add(-20 * time.Minute),
+		LastActivityAt:  time.Now().Add(-10 * time.Minute),
+	}
+	require.NoError(t, app.DB.Create(&stale).Error)
+
+	fresh := models.ChatbotSession{
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		ContactID:       contact.ID,
+		WhatsAppAccount: account.Name,
+		PhoneNumber:     contact.PhoneNumber,
+		Status:          models.SessionStatusActive,
+		SessionData:     models.JSONB{},
+		StartedAt:       time.Now().Add(-2 * time.Minute),
+		LastActivityAt:  time.Now().Add(-1 * time.Minute),
+	}
+	require.NoError(t, app.DB.Create(&fresh).Error)
+
+	app.expireIdleChatbotSessions(org.ID)
+
+	var gotStale, gotFresh models.ChatbotSession
+	require.NoError(t, app.DB.First(&gotStale, stale.ID).Error)
+	require.NoError(t, app.DB.First(&gotFresh, fresh.ID).Error)
+	assert.Equal(t, models.SessionStatusTimeout, gotStale.Status)
+	assert.Equal(t, models.SessionStatusActive, gotFresh.Status)
 }
 
 // =============================================================================
@@ -731,12 +784,12 @@ func TestMatchFlowTrigger_Match(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	result := app.matchFlowTrigger(org.ID, "I want to order")
+	result := app.matchFlowTrigger(org.ID, account.Name, "I want to order")
 	require.NotNil(t, result)
 	assert.Equal(t, flow.ID, result.ID)
 
 	// No match
-	noMatch := app.matchFlowTrigger(org.ID, "hello there")
+	noMatch := app.matchFlowTrigger(org.ID, account.Name, "hello there")
 	assert.Nil(t, noMatch)
 }
 

@@ -10,9 +10,9 @@ test.describe('Login', () => {
     await loginPage.goto()
   })
 
-  test('should display login form', async ({ page }) => {
+  test('should display the email step first', async ({ page }) => {
     await expect(loginPage.emailInput).toBeVisible()
-    await expect(loginPage.passwordInput).toBeVisible()
+    await expect(loginPage.passwordInput).toHaveCount(0)
     await expect(loginPage.submitButton).toBeVisible()
   })
 
@@ -26,18 +26,26 @@ test.describe('Login', () => {
     await loginPage.expectLoginError()
   })
 
-  test('should show validation error for empty email', async ({ page }) => {
-    await loginPage.passwordInput.fill('password')
-    await loginPage.submitButton.click()
-    // Should stay on login page
-    await expect(page).toHaveURL(/\/login/)
+  test('should keep Continue disabled until the email is valid', async ({ page }) => {
+    await expect(loginPage.submitButton).toBeDisabled()
+    await loginPage.emailInput.fill('not-an-email')
+    await expect(loginPage.submitButton).toBeDisabled()
+    await loginPage.emailInput.fill('test@test.com')
+    await expect(loginPage.submitButton).toBeEnabled()
   })
 
-  test('should show validation error for empty password', async ({ page }) => {
+  test('should ask for the password after Continue', async ({ page }) => {
     await loginPage.emailInput.fill('test@test.com')
     await loginPage.submitButton.click()
-    // Should stay on login page
+    await expect(loginPage.passwordInput).toBeVisible()
+    await expect(page.getByTestId('login-email-display')).toHaveText('test@test.com')
+    // Sign in stays disabled until a password is typed
+    await expect(loginPage.submitButton).toBeDisabled()
     await expect(page).toHaveURL(/\/login/)
+
+    await page.getByTestId('login-change-email').click()
+    await expect(loginPage.emailInput).toHaveValue('test@test.com')
+    await expect(loginPage.passwordInput).toHaveCount(0)
   })
 
   test('should navigate to register page', async ({ page }) => {

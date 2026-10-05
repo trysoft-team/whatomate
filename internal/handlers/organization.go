@@ -31,6 +31,7 @@ func generalSettingsSnapshot(name string, settings models.JSONB) map[string]any 
 		"name":                name,
 		"timezone":            settings["timezone"],
 		"date_format":         settings["date_format"],
+		"time_format":         settings["time_format"],
 		"mask_phone_numbers":  settings["mask_phone_numbers"],
 		"meta_app_id":         settings["meta_app_id"],
 		"meta_config_id":      settings["meta_config_id"],
@@ -55,6 +56,7 @@ type OrganizationSettings struct {
 	MaskPhoneNumbers    bool   `json:"mask_phone_numbers"`
 	Timezone            string `json:"timezone"`
 	DateFormat          string `json:"date_format"`
+	TimeFormat          string `json:"time_format"` // 12h | 24h
 	CallingEnabled      bool   `json:"calling_enabled"`
 	MaxCallDuration     int    `json:"max_call_duration"`
 	TransferTimeoutSecs int    `json:"transfer_timeout_secs"`
@@ -63,6 +65,7 @@ type OrganizationSettings struct {
 	MetaAppID           string `json:"meta_app_id"`
 	MetaConfigID        string `json:"meta_config_id"`
 	HasMetaAppSecret    bool   `json:"has_meta_app_secret"`
+	MetaSource          string `json:"meta_source"` // org | shared | config — where resolveMetaAppCreds would draw from
 	// SMTP (password never returned — only has_smtp_password)
 	SMTPHost          string `json:"smtp_host"`
 	SMTPPort          int    `json:"smtp_port"`
@@ -70,6 +73,18 @@ type OrganizationSettings struct {
 	SMTPFrom          string `json:"smtp_from"`
 	SMTPSecurity      string `json:"smtp_security"` // tls | ssl | none
 	HasSMTPPassword   bool   `json:"has_smtp_password"`
+}
+
+// normalizeTimeFormat accepts 12h/24h (and common aliases). Empty if invalid.
+func normalizeTimeFormat(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "24h", "24", "24-hour", "24hour":
+		return "24h"
+	case "12h", "12", "12-hour", "12hour":
+		return "12h"
+	default:
+		return ""
+	}
 }
 
 // GetOrganizationSettings returns the organization settings
@@ -89,6 +104,7 @@ func (a *App) GetOrganizationSettings(r *fastglue.Request) error {
 		MaskPhoneNumbers:    false,
 		Timezone:            "UTC",
 		DateFormat:          "YYYY-MM-DD",
+		TimeFormat:          "12h",
 		CallingEnabled:      false,
 		MaxCallDuration:     callingConfigDefault(a.Config.Calling.MaxCallDuration, 3600),
 		TransferTimeoutSecs: callingConfigDefault(a.Config.Calling.TransferTimeoutSecs, 60),
@@ -105,6 +121,11 @@ func (a *App) GetOrganizationSettings(r *fastglue.Request) error {
 		}
 		if v, ok := org.Settings["date_format"].(string); ok && v != "" {
 			settings.DateFormat = v
+		}
+		if v, ok := org.Settings["time_format"].(string); ok {
+			if n := normalizeTimeFormat(v); n != "" {
+				settings.TimeFormat = n
+			}
 		}
 		if v, ok := org.Settings["calling_enabled"].(bool); ok {
 			settings.CallingEnabled = v
@@ -157,6 +178,8 @@ func (a *App) GetOrganizationSettings(r *fastglue.Request) error {
 		settings.SMTPSecurity = "tls"
 	}
 
+	settings.MetaSource = a.metaSourceForOrg(orgID, org.Settings)
+
 	return r.SendEnvelope(map[string]any{
 		"settings": settings,
 		"name":     org.Name,
@@ -174,6 +197,7 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 		MaskPhoneNumbers    *bool   `json:"mask_phone_numbers"`
 		Timezone            *string `json:"timezone"`
 		DateFormat          *string `json:"date_format"`
+		TimeFormat          *string `json:"time_format"`
 		Name                *string `json:"name"`
 		CallingEnabled      *bool   `json:"calling_enabled"`
 		MaxCallDuration     *int    `json:"max_call_duration"`
@@ -213,7 +237,7 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 	oldCalling := callingSettingsSnapshot(org.Settings)
 
 	// Track which tabs received updates so we only audit the relevant ones.
-	generalTouched := req.MaskPhoneNumbers != nil || req.Timezone != nil || req.DateFormat != nil || (req.Name != nil && *req.Name != "") || metaAppCredsTouched
+	generalTouched := req.MaskPhoneNumbers != nil || req.Timezone != nil || req.DateFormat != nil || req.TimeFormat != nil || (req.Name != nil && *req.Name != "") || metaAppCredsTouched
 	callingTouched := req.CallingEnabled != nil || req.MaxCallDuration != nil || req.TransferTimeoutSecs != nil || req.HoldMusicFile != nil || req.RingbackFile != nil
 	smtpTouched := req.SMTPHost != nil || req.SMTPPort != nil || req.SMTPUsername != nil || req.SMTPPassword != nil || req.SMTPFrom != nil || req.SMTPSecurity != nil
 	_ = smtpTouched // audited via general settings resource for now
@@ -231,6 +255,13 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 	}
 	if req.DateFormat != nil {
 		org.Settings["date_format"] = *req.DateFormat
+	}
+	if req.TimeFormat != nil {
+		if n := normalizeTimeFormat(*req.TimeFormat); n != "" {
+			org.Settings["time_format"] = n
+		} else {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "time_format must be 12h or 24h", nil, "")
+		}
 	}
 	if req.CallingEnabled != nil {
 		org.Settings["calling_enabled"] = *req.CallingEnabled

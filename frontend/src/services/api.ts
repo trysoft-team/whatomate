@@ -184,8 +184,20 @@ export const apiKeysService = {
   delete: (id: string) => api.delete(`/api-keys/${id}`)
 }
 
+export interface FlowEncryptionStatus {
+  configured: boolean
+  public_key?: string
+  meta_status?: string
+  meta_key_matches: boolean
+  meta_status_error?: string
+}
+
 export const accountsService = {
-  list: () => api.get('/accounts')
+  list: () => api.get('/accounts'),
+  getFlowEncryption: (id: string) =>
+    api.get<{ data: FlowEncryptionStatus }>(`/accounts/${id}/flow-encryption`),
+  setupFlowEncryption: (id: string, rotate = false) =>
+    api.post<{ data: FlowEncryptionStatus }>(`/accounts/${id}/flow-encryption`, { rotate }),
 }
 
 export const contactsService = {
@@ -200,7 +212,11 @@ export const contactsService = {
   updateTags: (id: string, tags: string[]) =>
     api.put(`/contacts/${id}/tags`, { tags }),
   getSessionData: (id: string) => api.get(`/contacts/${id}/session-data`),
-  markRead: (id: string) => api.post(`/contacts/${encodeURIComponent(id)}/mark-read`)
+  markRead: (id: string) => api.post(`/contacts/${encodeURIComponent(id)}/mark-read`),
+  sendTyping: (id: string, account?: string | null) =>
+    api.post(`/contacts/${encodeURIComponent(id)}/typing`, account ? { whatsapp_account: account } : undefined),
+  closeAgentSession: (id: string) =>
+    api.post(`/contacts/${encodeURIComponent(id)}/close-agent-session`),
 }
 
 // Generic Import/Export Service
@@ -317,6 +333,82 @@ export const messagesService = {
     api.post(`/contacts/${contactId}/messages/${messageId}/reaction`, { emoji })
 }
 
+export type ChatAIMode =
+  | 'suggest_reply'
+  | 'rewrite'
+  | 'summarize'
+  | 'translate'
+  | 'quick_replies'
+  | 'suggest_tags_fields'
+  | 'suggest_template'
+
+export type ChatAIRewriteTone = 'friendly' | 'professional' | 'shorter' | 'grammar' | 'whatsapp'
+
+export interface ChatAIAssistRequest {
+  mode: ChatAIMode
+  draft?: string
+  tone?: ChatAIRewriteTone
+  text?: string
+  target_language?: string
+  message_id?: string
+}
+
+export interface ChatAITextResult {
+  text: string
+  target_language?: string
+}
+
+export interface ChatAISummary {
+  summary: string
+  key_points: string[]
+  open_questions: string[]
+  sentiment: 'positive' | 'neutral' | 'frustrated' | 'angry'
+}
+
+export interface ChatAIFieldSuggestion {
+  key: string
+  current: string
+  value: string
+}
+
+export interface ChatAITagsFieldsResult {
+  tags: string[]
+  fields: ChatAIFieldSuggestion[]
+}
+
+export interface ChatAITemplateSuggestion {
+  template_id: string
+  template_name: string
+  display_name: string
+  params: Record<string, string>
+  reason: string
+}
+
+export interface OpenRouterModel {
+  id: string
+  name: string
+  context_length: number
+  supports_json: boolean
+  recommended: boolean
+}
+
+export const aiProvidersService = {
+  openRouterFreeModels: () =>
+    api.get<{ data: { models: OpenRouterModel[] } }>('/ai/openrouter/free-models'),
+}
+
+const chatAITimeout = 120000
+
+export const chatAIService = {
+  assist: <T = any>(contactId: string, body: ChatAIAssistRequest) =>
+    api.post<{ data: T }>(`/contacts/${encodeURIComponent(contactId)}/ai-assist`, body, { timeout: chatAITimeout }),
+  transcribe: (messageId: string, force = false) =>
+    api.post<{ data: { text: string } }>(`/messages/${encodeURIComponent(messageId)}/transcribe`, undefined, {
+      timeout: chatAITimeout,
+      params: force ? { force: true } : undefined,
+    }),
+}
+
 export const templatesService = {
   list: (params?: { status?: string; category?: string; account?: string; search?: string; page?: number; limit?: number }) =>
     api.get<{ templates: any[]; total?: number }>('/templates', { params }),
@@ -328,19 +420,42 @@ export const templatesService = {
     return api.post('/templates/upload-media', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-  }
+  },
+  generate: (prompt: string, whatsappAccount?: string) =>
+    api.post<{ data: TemplateDraft }>('/templates/generate', { prompt, whatsapp_account: whatsappAccount || '' }, { timeout: 120000 })
+}
+
+export interface TemplateDraft {
+  whatsapp_account: string
+  name: string
+  display_name: string
+  language: string
+  category: string
+  header_type: string
+  header_content: string
+  body_content: string
+  footer_content: string
+  buttons: any[]
+  sample_values: { component: string; index: number; value: string }[]
+  add_security_recommendation: boolean
+  code_expiration_minutes: number
+  notes?: string
 }
 
 export const flowsService = {
   list: (params?: { account?: string; search?: string; page?: number; limit?: number }) =>
     api.get<{ flows: any[]; total?: number }>('/flows', { params }),
+  get: (id: string) => api.get<{ flow: any }>(`/flows/${id}`),
   create: (data: any) => api.post('/flows', data),
   update: (id: string, data: any) => api.put(`/flows/${id}`, data),
   delete: (id: string) => api.delete(`/flows/${id}`),
   saveToMeta: (id: string) => api.post(`/flows/${id}/save-to-meta`),
   publish: (id: string) => api.post(`/flows/${id}/publish`),
   duplicate: (id: string) => api.post(`/flows/${id}/duplicate`),
-  sync: (whatsappAccount: string) => api.post('/flows/sync', { whatsapp_account: whatsappAccount })
+  sync: (whatsappAccount?: string) =>
+    api.post('/flows/sync', whatsappAccount ? { whatsapp_account: whatsappAccount } : {}, { timeout: 120000 }),
+  generate: (data: { prompt: string; whatsapp_account?: string }) =>
+    api.post<{ name: string; category: string; screens: any[] }>('/flows/generate', data, { timeout: 120000 }),
 }
 
 export const campaignsService = {
@@ -386,12 +501,35 @@ export const chatbotService = {
   deleteKeyword: (id: string) => api.delete(`/chatbot/keywords/${id}`),
 
   // Flows
-  listFlows: (params?: { search?: string; page?: number; limit?: number }) =>
+  listFlows: (params?: { search?: string; page?: number; limit?: number; whatsapp_account?: string }) =>
     api.get<{ flows: any[]; total?: number }>('/chatbot/flows', { params }),
   getFlow: (id: string) => api.get(`/chatbot/flows/${id}`),
   createFlow: (data: any) => api.post('/chatbot/flows', data),
+  generateFlow: (data: { prompt: string; whatsapp_account?: string }) =>
+    api.post<{
+      name?: string
+      description?: string
+      trigger_keywords?: string[]
+      graph: ChatFlowGraph
+    }>('/chatbot/flows/generate', data),
   updateFlow: (id: string, data: any) => api.put(`/chatbot/flows/${id}`, data),
+  publishFlow: (id: string) => api.post(`/chatbot/flows/${id}/publish`),
+  getFlowAnalytics: (id: string) => api.get(`/chatbot/flows/${id}/analytics`),
   deleteFlow: (id: string) => api.delete(`/chatbot/flows/${id}`),
+  uploadMedia: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/chatbot/media', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  // Sessions
+  listSessions: (params?: { status?: string; whatsapp_account?: string; flow_id?: string }) =>
+    api.get<{ sessions: any[] }>('/chatbot/sessions', { params }),
+  countSessions: (params?: { status?: string; whatsapp_account?: string }) =>
+    api.get<{ count: number }>('/chatbot/sessions/count', { params }),
+  getSession: (id: string) => api.get(`/chatbot/sessions/${id}`),
 
   // AI Contexts
   listAIContexts: (params?: { search?: string; page?: number; limit?: number }) =>
@@ -465,7 +603,18 @@ export const cannedResponsesService = {
   update: (id: string, data: CannedResponseUpsertPayload) =>
     api.put(`/canned-responses/${id}`, data),
   delete: (id: string) => api.delete(`/canned-responses/${id}`),
-  use: (id: string) => api.post(`/canned-responses/${id}/use`)
+  use: (id: string) => api.post(`/canned-responses/${id}/use`),
+  generate: (prompt: string) =>
+    api.post<{ data: CannedResponseDraft }>('/canned-responses/generate', { prompt }, { timeout: 120000 })
+}
+
+export interface CannedResponseDraft {
+  name: string
+  shortcut: string
+  category: string
+  content: string
+  buttons: CannedResponse['buttons']
+  notes?: string
 }
 
 export const agentAnalyticsService = {
@@ -644,6 +793,15 @@ export interface WidgetData {
     direction?: string
     created_at: string
   }>
+  leaderboard?: Array<{ rank: number; label: string; value: number }>
+  heatmap?: { x_labels: string[]; y_labels: string[]; cells: number[][] }
+  funnel?: Array<{ stage: string; value: number }>
+  kpis?: Array<{ label: string; value: number; change?: number; unit?: string }>
+  alerts?: Array<{ severity: string; title: string; subtitle: string; at: string; href?: string }>
+  queue_items?: Array<{ id: string; contact_id: string; label: string; source: string; wait_mins: number; transferred_at: string }>
+  agents?: Array<{ id: string; name: string; is_available: boolean; active_transfers: number }>
+  stub?: boolean
+  live?: boolean
 }
 
 interface DataSourceInfo {
@@ -704,7 +862,23 @@ export const widgetsService = {
     operators: Array<{ value: string; label: string }>
   }>('/widgets/data-sources'),
   saveLayout: (layout: LayoutItem[]) =>
-    api.post('/widgets/layout', { layout })
+    api.post('/widgets/layout', { layout }),
+  generate: (data: { prompt: string }) =>
+    api.post<{
+      name: string
+      description: string
+      data_source: string
+      metric: string
+      field: string
+      filters: Array<{ field: string; operator: string; value: string }>
+      display_type: string
+      chart_type: string
+      group_by_field: string
+      show_change: boolean
+      color: string
+      size: string
+      config: Record<string, any>
+    }>('/widgets/generate', data, { timeout: 120000 })
 }
 
 export const organizationService = {
@@ -713,6 +887,7 @@ export const organizationService = {
     mask_phone_numbers?: boolean
     timezone?: string
     date_format?: string
+    time_format?: '12h' | '24h'
     name?: string
     calling_enabled?: boolean
     max_call_duration?: number
@@ -738,6 +913,28 @@ export const organizationService = {
   }
 }
 
+export type MetaAppShareMode = 'off' | 'global' | 'selected'
+
+export interface SharedMetaAppSettings {
+  app_id: string
+  config_id: string
+  share_mode: MetaAppShareMode
+  shared_org_ids: string[]
+  has_app_secret: boolean
+  updated_by_id?: string
+}
+
+export const sharedMetaAppService = {
+  get: () => api.get<{ data?: SharedMetaAppSettings } & SharedMetaAppSettings>('/admin/meta-app'),
+  update: (data: {
+    app_id?: string
+    config_id?: string
+    app_secret?: string
+    share_mode?: MetaAppShareMode
+    shared_org_ids?: string[]
+  }) => api.put('/admin/meta-app', data),
+}
+
 export interface ContactList {
   id: string
   name: string
@@ -757,12 +954,40 @@ export interface GoogleCredential {
   label: string
   client_email?: string
   has_json: boolean
+  auth_type: 'service_account' | 'oauth'
+  scopes?: string[]
+}
+
+export interface Passkey {
+  id: string
+  name: string
+  credential_id: string
+  rp_id: string
+  created_at: string
+  last_used_at?: string
+  current_site: boolean
+}
+
+export const passkeysService = {
+  list: () => api.get('/me/passkeys'),
+  beginRegistration: () => api.post('/me/passkeys/register/begin', {}),
+  finishRegistration: (name: string, credential: Record<string, unknown>) =>
+    api.post('/me/passkeys/register/finish', { name, credential }),
+  remove: (id: string) => api.delete(`/me/passkeys/${id}`),
+}
+
+export interface GoogleOAuthStatus {
+  enabled: boolean
+  source: '' | 'config' | 'sso'
+  redirect_uri: string
 }
 
 export const googleCredentialsService = {
   list: () => api.get('/google-credentials'),
   create: (data: { label: string; service_json: string }) => api.post('/google-credentials', data),
   remove: (id: string) => api.delete(`/google-credentials/${id}`),
+  oauthStatus: () => api.get('/google-credentials/oauth'),
+  startOAuth: (label: string) => api.post('/google-credentials/oauth/start', { label }),
 }
 
 // Organizations
@@ -974,7 +1199,17 @@ export const customActionsService = {
   }) => api.put<CustomAction>(`/custom-actions/${id}`, data),
   delete: (id: string) => api.delete(`/custom-actions/${id}`),
   execute: (id: string, contactId: string) =>
-    api.post<ActionResult>(`/custom-actions/${id}/execute`, { contact_id: contactId })
+    api.post<ActionResult>(`/custom-actions/${id}/execute`, { contact_id: contactId }),
+  generate: (prompt: string) =>
+    api.post<{ data: CustomActionDraft }>('/custom-actions/generate', { prompt }, { timeout: 120000 })
+}
+
+export interface CustomActionDraft {
+  name: string
+  icon: string
+  action_type: 'webhook' | 'url' | 'javascript'
+  config: Record<string, any>
+  notes?: string
 }
 
 // Roles and Permissions
@@ -1054,6 +1289,15 @@ export const notesService = {
 }
 
 // Calling - Call Logs & IVR Flows
+export interface CallLogAICallArtifacts {
+  transcript?: Array<{ role: string; text: string }>
+  recordings?: {
+    user?: string
+    assistant?: string
+    stereo?: string
+  }
+}
+
 export interface CallLog {
   id: string
   organization_id: string
@@ -1074,6 +1318,7 @@ export interface CallLog {
   error_message?: string
   recording_s3_key?: string
   recording_duration?: number
+  ai_call_artifacts?: CallLogAICallArtifacts
   contact?: {
     id: string
     phone_number: string
@@ -1090,7 +1335,7 @@ export interface CallLog {
 }
 
 // v2 Node-based IVR Flow types
-export type IVRNodeType = 'greeting' | 'menu' | 'gather' | 'http_callback' | 'transfer' | 'goto_flow' | 'timing' | 'hangup'
+export type IVRNodeType = 'start' | 'greeting' | 'menu' | 'gather' | 'http_callback' | 'transfer' | 'goto_flow' | 'timing' | 'hangup' | 'condition' | 'set_variable' | 'confirm' | 'delay' | 'set_labels' | 'send_message' | 'webhook' | 'language' | 'voicemail' | 'speech_input' | 'ai_voice' | 'ai_call' | 'execute_function' | 'dial_out'
 
 export interface IVRNodePosition {
   x: number
@@ -1255,8 +1500,10 @@ export const callLogsService = {
   list: (params?: { status?: string; account?: string; contact_id?: string; direction?: string; ivr_flow_id?: string; phone?: string; from?: string; to?: string; page?: number; limit?: number }) =>
     api.get<{ call_logs: CallLog[]; total: number }>('/call-logs', { params }),
   get: (id: string) => api.get<CallLog>(`/call-logs/${id}`),
-  getRecordingURL: (id: string) =>
-    api.get<{ url: string; duration: number }>(`/call-logs/${id}/recording`),
+  getRecordingURL: (id: string, kind?: 'main' | 'user' | 'assistant' | 'stereo') =>
+    api.get<{ url: string; duration: number; kind?: string }>(`/call-logs/${id}/recording`, {
+      params: kind && kind !== 'main' ? { kind } : undefined,
+    }),
   hold: (id: string) =>
     api.post<{ status: string }>(`/call-logs/${id}/hold`),
   resume: (id: string) =>
@@ -1279,6 +1526,12 @@ export const ivrFlowsService = {
   list: (params?: { search?: string; page?: number; limit?: number }) =>
     api.get<{ ivr_flows: IVRFlow[]; total: number }>('/ivr-flows', { params }),
   get: (id: string) => api.get<IVRFlow>(`/ivr-flows/${id}`),
+  generateFlow: (data: { prompt: string; whatsapp_account?: string }) =>
+    api.post<{
+      name: string
+      description: string
+      menu: IVRFlowData
+    }>('/ivr-flows/generate', data),
   create: (data: { whatsapp_account: string; name: string; description?: string; is_call_start?: boolean; menu: IVRFlowData; welcome_audio_url?: string }) =>
     api.post<IVRFlow>('/ivr-flows', data),
   update: (id: string, data: { name?: string; description?: string; is_active?: boolean; is_call_start?: boolean; is_outgoing_end?: boolean; menu?: IVRFlowData; welcome_audio_url?: string }) =>
@@ -1291,7 +1544,9 @@ export const ivrFlowsService = {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
   },
-  getAudioUrl: (filename: string) => `${api.defaults.baseURL}/ivr-flows/audio/${encodeURIComponent(filename)}`
+  getAudioUrl: (filename: string) => `${api.defaults.baseURL}/ivr-flows/audio/${encodeURIComponent(filename)}`,
+  previewGeminiVoice: (data: { text: string; voice: string }) =>
+    api.post('/ivr-flows/voice-preview', data, { responseType: 'blob' }),
 }
 
 export default api

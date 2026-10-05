@@ -115,6 +115,7 @@ This is the complete seeded catalogue — exactly the permissions returned by `G
   `GET`/`PUT /api/org/settings` (the General and Calling settings tabs) currently require
   authentication only — no permission is checked. The one exception is the Meta App credential
   fields (`meta_app_id`, `meta_config_id`, `meta_app_secret`), which require `accounts:write`.
+  Super admins additionally manage the platform **shared Meta App pool** (`/api/admin/meta-app`) used when an org has no private override.
 </Aside>
 
 ### Permission Matrix
@@ -222,7 +223,7 @@ item and blocks navigation when the user lacks `<resource>:read`:
 | Custom Actions | `custom_actions` |
 | Audit Logs | `audit_logs` |
 | Call Logs | `call_logs` |
-| IVR Flows | `ivr_flows` |
+| Call Flows | `ivr_flows` |
 | Call Transfers | `call_transfers` |
 
 ### Page Access

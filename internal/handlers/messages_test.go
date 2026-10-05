@@ -737,6 +737,17 @@ func TestApp_SendOutgoingMessage_WithSentByUser(t *testing.T) {
 	require.NoError(t, app.DB.First(&dbMsg, msg.ID).Error)
 	require.NotNil(t, dbMsg.SentByUserID)
 	assert.Equal(t, userID, *dbMsg.SentByUserID)
+
+	// Agent reply should mute chatbot automation (default 5 minutes)
+	var dbContact models.Contact
+	require.NoError(t, app.DB.First(&dbContact, contact.ID).Error)
+	require.NotNil(t, dbContact.Metadata)
+	raw, ok := dbContact.Metadata["bot_muted_until"].(string)
+	require.True(t, ok && raw != "", "expected bot_muted_until after agent send")
+	until, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+	assert.True(t, until.After(time.Now().Add(4*time.Minute)))
+	assert.True(t, until.Before(time.Now().Add(6*time.Minute)))
 }
 
 func TestApp_SendOutgoingMessage_UnsupportedType(t *testing.T) {

@@ -35,6 +35,7 @@ export async function loginAs(page: Page, creds: Credentials): Promise<void> {
 
   await page.goto('/login')
   await page.locator('input[type="email"], input[name="email"]').fill(creds.email)
+  await page.locator('button[type="submit"]').click()
   await page.locator('input[type="password"], input[name="password"]').fill(creds.password)
   await page.locator('button[type="submit"]').click()
   await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 10_000 })

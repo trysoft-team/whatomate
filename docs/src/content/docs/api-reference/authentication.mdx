@@ -302,6 +302,67 @@ The provider redirects back here after the user authenticates. On success the en
 GET /api/auth/sso/{provider}/callback
 ```
 
+## Passkeys
+
+Users can add passkeys (WebAuthn discoverable credentials) from their Profile page and then sign in with a fingerprint, face or device PIN instead of their password. The password keeps working.
+
+A passkey is tied to the address it was created on (the relying party ID is the hostname the browser is on). A passkey created on `localhost` won't work on your public domain, and vice versa. Outside `localhost`, the origin must use HTTPS and be `server.public_url`, one of `server.allowed_origins`, or the request host.
+
+### Sign In With a Passkey
+
+Two calls, both public and rate-limited like `/api/auth/login`. The `options` from the first call go to `navigator.credentials.get()`; the resulting credential (JSON-encoded, with base64url binary fields) goes to the second.
+
+```bash
+POST /api/auth/passkey/begin
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "session_id": "random-id",
+    "options": { "publicKey": { "challenge": "...", "rpId": "app.example.com", "userVerification": "required" } }
+  }
+}
+```
+
+```bash
+POST /api/auth/passkey/finish
+```
+
+```json
+{
+  "session_id": "random-id",
+  "credential": { "id": "...", "rawId": "...", "type": "public-key", "response": { "clientDataJSON": "...", "authenticatorData": "...", "signature": "...", "userHandle": "..." } }
+}
+```
+
+On success the response and cookies are the same as [Login](#login). The session expires after 5 minutes and can be used once.
+
+The built-in login page uses passkey autofill (WebAuthn conditional mediation). It calls `begin` on page load and passes the options to `navigator.credentials.get({ mediation: "conditional" })`, and the email field has `autocomplete="username webauthn"`. Focusing the email field then lists saved passkeys in the browser's autofill, and picking one signs in. It requests a fresh challenge every 4 minutes. Password sign-in asks for the email first; **Continue** is enabled once the email is valid, and the password is asked for on the next step. A **Sign in with passkey** button beside Continue opens the regular prompt, which also covers passkeys on another device. Because every page load calls `begin`, it allows six times `login_max_attempts` per window; `finish` keeps the normal limit.
+
+### Manage Your Passkeys
+
+These require an authenticated session and only act on the current user's passkeys.
+
+```bash
+GET    /api/me/passkeys                  # list (id, name, rp_id, created_at, last_used_at, current_site)
+POST   /api/me/passkeys/register/begin   # returns creation options for navigator.credentials.create()
+POST   /api/me/passkeys/register/finish  # body: { "name": "MacBook", "credential": { ... } }
+DELETE /api/me/passkeys/{id}
+```
+
+`current_site` is `false` when the passkey was created on a different address and can't be used from the current one. A user can have up to 20 passkeys.
+
+### Removed Passkeys and the Password Manager
+
+Deleting a passkey removes the server's copy of its public key. The private key stays in the user's password manager (Google Password Manager, iCloud Keychain, a security key), and a website can't delete it. To stop removed passkeys from still being offered, the built-in UI uses the [WebAuthn Signal API](https://developer.chrome.com/docs/identity/webauthn-signal-api) where the browser supports it:
+
+- **After every sign-in and whenever the Profile passkey list loads**, it calls `PublicKeyCredential.signalAllAcceptedCredentials()` with this site's RP ID, the user handle (base64url of the user's UUID bytes), and the `credential_id`s the server still accepts for this site. The password manager hides or removes the rest. This also cleans up passkeys deleted from another device. It also calls `signalCurrentUserDetails()` so the name shown on the passkey follows the user's email and full name.
+- **When passkey sign-in fails because the server has no record of that passkey**, `/api/auth/passkey/finish` returns `401` with `data.reason = "passkey_unknown"`. The UI then calls `PublicKeyCredential.signalUnknownCredential()` for that credential.
+
+Support: Chrome and Edge 132+ (Google Password Manager) and Safari 26+ on macOS and iOS (Apple Passwords / iCloud Keychain). Firefox doesn't support it yet. Safari 26.0 and 26.1 apply the signals but never resolve the returned promises ([WebKit bug 298951](https://bugs.webkit.org/show_bug.cgi?id=298951)), so the UI never waits on them. Browsers without the Signal API ignore these calls. There, users have to delete the passkey from their password manager themselves, and the Profile page tells them so.
+
 ## Using the Session
 
 Browser clients need no extra headers — the httpOnly cookies are sent automatically. For programmatic access, send an API key instead:

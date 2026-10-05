@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { PageHeader, DataTable, SearchInput, DeleteConfirmDialog, ConfirmDialog, IconButton, ErrorState, type Column } from '@/components/shared'
 import { toast } from 'vue-sonner'
-import { Plus, Trash2, Pencil, Zap, Loader2, Globe, Webhook, Code, Ticket, User, BarChart, Link, Phone, Mail, FileText, ExternalLink } from 'lucide-vue-next'
+import { Plus, Trash2, Pencil, Zap, Loader2, Globe, Webhook, Code, Ticket, User, BarChart, Link, Phone, Mail, FileText, ExternalLink, Sparkles } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDate } from '@/lib/utils'
 import { useDebounceFn } from '@vueuse/core'
@@ -108,11 +108,50 @@ function handlePageChange(page: number) {
 function openCreateDialog() {
   isEditing.value = false
   editingActionId.value = null
+  aiDraftNotes.value = null
   formData.value = { name: '', icon: 'zap', action_type: 'webhook', is_active: true, display_order: actions.value.length, config: { url: '', method: 'POST', headers: {}, body: '', open_in_new_tab: true, code: '' } }
   isDialogOpen.value = true
 }
 
+const isGenerateDialogOpen = ref(false)
+const generatePrompt = ref('')
+const isGenerating = ref(false)
+// null when the create dialog was not filled by AI; may be '' when AI had no notes.
+const aiDraftNotes = ref<string | null>(null)
+const generateSuggestions = computed(() => [
+  t('customActions.generateWithAISuggestion1'),
+  t('customActions.generateWithAISuggestion2'),
+  t('customActions.generateWithAISuggestion3'),
+])
+
+function openGenerateDialog() {
+  generatePrompt.value = ''
+  isGenerateDialogOpen.value = true
+}
+
+async function generateAction() {
+  const prompt = generatePrompt.value.trim()
+  if (!prompt) { toast.error(t('customActions.generateWithAIPromptRequired')); return }
+  isGenerating.value = true
+  try {
+    const response = await customActionsService.generate(prompt)
+    const draft = (response.data as any).data || response.data
+    const cfg = draft.config || {}
+    openCreateDialog()
+    formData.value = {
+      ...formData.value,
+      name: draft.name || '', icon: draft.icon || 'zap', action_type: draft.action_type,
+      config: { url: cfg.url || '', method: cfg.method || 'POST', headers: { ...(cfg.headers || {}) }, body: cfg.body || '', open_in_new_tab: cfg.open_in_new_tab !== false, code: cfg.code || '' }
+    }
+    aiDraftNotes.value = draft.notes || ''
+    isGenerateDialogOpen.value = false
+    toast.success(t('customActions.generateWithAIReady'))
+  } catch (e) { toast.error(getErrorMessage(e, t('customActions.generateWithAIFailed'))) }
+  finally { isGenerating.value = false }
+}
+
 function openEditDialog(action: CustomAction) {
+  aiDraftNotes.value = null
   isEditing.value = true
   editingActionId.value = action.id
   formData.value = {
@@ -191,7 +230,20 @@ onMounted(() => fetchActions())
   <div class="flex flex-col h-full bg-[#0a0a0b] light:bg-gray-50">
     <PageHeader :title="$t('customActions.title')" :subtitle="$t('customActions.subtitle')" :icon="Zap" icon-gradient="bg-gradient-to-br from-yellow-500 to-orange-600 shadow-yellow-500/20">
       <template #actions>
-        <Button variant="outline" size="sm" @click="openCreateDialog"><Plus class="h-4 w-4 mr-2" />{{ $t('customActions.addAction') }}</Button>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="generate-action-ai"
+            class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            @click="openGenerateDialog"
+          >
+            <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+              <Sparkles class="h-3.5 w-3.5 shrink-0" />
+              {{ $t('customActions.generateWithAI') }}
+            </span>
+          </button>
+          <Button variant="outline" size="sm" @click="openCreateDialog"><Plus class="h-4 w-4 mr-2" />{{ $t('customActions.addAction') }}</Button>
+        </div>
       </template>
     </PageHeader>
 
@@ -234,7 +286,19 @@ onMounted(() => fetchActions())
                   </div>
                 </template>
                 <template #empty-action>
-                  <Button variant="outline" size="sm" @click="openCreateDialog"><Plus class="h-4 w-4 mr-2" />{{ $t('customActions.addAction') }}</Button>
+                  <div class="inline-flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      @click="openGenerateDialog"
+                    >
+                      <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+                        <Sparkles class="h-3.5 w-3.5 shrink-0" />
+                        {{ $t('customActions.generateWithAI') }}
+                      </span>
+                    </button>
+                    <Button variant="outline" size="sm" @click="openCreateDialog"><Plus class="h-4 w-4 mr-2" />{{ $t('customActions.addAction') }}</Button>
+                  </div>
                 </template>
               </DataTable>
             </CardContent>
@@ -251,6 +315,13 @@ onMounted(() => fetchActions())
           <DialogDescription>{{ $t('customActions.dialogDesc') }}</DialogDescription>
         </DialogHeader>
         <div class="space-y-4 py-4">
+          <div v-if="aiDraftNotes !== null && !isEditing" data-testid="ai-draft-notes" class="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/10 p-3 text-sm">
+            <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-violet-400 light:text-violet-600" />
+            <div>
+              <p class="font-medium">{{ $t('customActions.aiDraftNotes') }}</p>
+              <p v-if="aiDraftNotes" class="text-muted-foreground">{{ aiDraftNotes }}</p>
+            </div>
+          </div>
           <div class="space-y-2"><Label for="name">{{ $t('customActions.name') }}</Label><Input id="name" v-model="formData.name" :placeholder="$t('customActions.namePlaceholder')" /></div>
           <div class="space-y-2">
             <Label>{{ $t('customActions.icon') }}</Label>
@@ -315,6 +386,51 @@ onMounted(() => fetchActions())
         <DialogFooter>
           <Button variant="outline" @click="isDialogOpen = false">{{ $t('common.cancel') }}</Button>
           <Button @click="saveAction" :disabled="isSaving"><Loader2 v-if="isSaving" class="h-4 w-4 mr-2 animate-spin" />{{ isEditing ? $t('common.update') : $t('common.create') }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="isGenerateDialogOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 light:bg-violet-100">
+              <Sparkles class="h-5 w-5 text-primary light:text-violet-600" />
+            </div>
+            <div class="min-w-0 space-y-1">
+              <DialogTitle>{{ $t('customActions.generateWithAI') }}</DialogTitle>
+              <DialogDescription>{{ $t('customActions.generateWithAISubtitle') }}</DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+        <div class="space-y-3 py-2">
+          <Textarea
+            v-model="generatePrompt"
+            data-testid="generate-action-prompt"
+            :placeholder="$t('customActions.generateWithAIPlaceholder')"
+            class="min-h-[110px]"
+            :disabled="isGenerating"
+            @keydown.meta.enter="generateAction"
+            @keydown.ctrl.enter="generateAction"
+          />
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="s in generateSuggestions"
+              :key="s"
+              type="button"
+              class="rounded-full border border-border bg-background px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 hover:text-foreground"
+              :disabled="isGenerating"
+              @click="generatePrompt = s"
+            >{{ s }}</button>
+          </div>
+          <p class="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground"><Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />{{ $t('customActions.generateWithAIHint') }}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="isGenerating" @click="isGenerateDialogOpen = false">{{ $t('common.cancel') }}</Button>
+          <Button :disabled="isGenerating || !generatePrompt.trim()" data-testid="generate-action-submit" @click="generateAction">
+            <Loader2 v-if="isGenerating" class="h-4 w-4 mr-2 animate-spin" /><Sparkles v-else class="h-4 w-4 mr-2" />
+            {{ isGenerating ? $t('customActions.generateWithAIGenerating') : $t('customActions.generateWithAI') }}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -122,7 +122,7 @@ full_name = "Admin"
 ```
 
 <Aside type="note">
-  App-level WhatsApp keys used for Embedded Signup (`app_id`, `app_secret`, `config_id`, `webhook_verify_token`) live in the `[whatsapp]` section of `config.toml`. **Per-organization** settings are not in `config.toml`: WhatsApp account access tokens are configured under **Settings → Accounts**, and AI provider API keys (OpenAI, Anthropic, Google) under **Settings → Chatbot → AI**.
+  App-level WhatsApp keys used for Embedded Signup (`app_id`, `app_secret`, `config_id`, `webhook_verify_token`) live in the `[whatsapp]` section of `config.toml`. **Per-organization** settings are not in `config.toml`: WhatsApp account access tokens are configured under **Settings → Accounts**, and AI provider API keys (OpenAI, Anthropic, Google, OpenRouter) under **Settings → Chatbot → AI**.
 </Aside>
 
 ## Sections in detail
@@ -247,6 +247,27 @@ Required only if you use WhatsApp voice calling / IVR.
 | `[[calling.ice_servers]]` | One block per STUN/TURN server. STUN-only works in permissive networks; configure TURN for guaranteed connectivity behind strict NAT or corporate firewalls. Each block takes `urls` plus either a static `username`/`credential`, or a `secret` (+ optional `credential_ttl`) for coturn `use-auth-secret` / TURN REST mode — see below. |
 
 For a TURN server running coturn's `use-auth-secret` (TURN REST API) mode, set `secret` to coturn's `static-auth-secret` instead of a static `username`/`credential`. Whatomate then generates short-lived credentials per request (username = expiry timestamp, credential = base64 HMAC-SHA1 of the username keyed by the secret). `credential_ttl` (seconds) sets their lifetime and defaults to `86400` (24h). If both `secret` and a static `username`/`credential` are set, `secret` takes priority.
+
+### `[google]`
+
+Optional. Enables **Connect Google account** under **Settings → Google credentials**, so users can sign in with Google instead of pasting a service-account JSON key.
+
+| Field | Notes |
+|---|---|
+| `oauth_client_id` | Client ID of a **Web application** OAuth client from Google Cloud Console → APIs & Services → Credentials. |
+| `oauth_client_secret` | That client's secret. |
+
+Setup:
+
+1. Create the OAuth client and add the **Authorized redirect URI** shown on the Google credentials page: `<origin><base_path>/api/google-credentials/oauth/callback`. The origin is `server.public_url` when set, otherwise the address you opened Whatomate at.
+2. Enable the Google Sheets, Calendar, Docs and Drive APIs in the same project.
+3. Configure the OAuth consent screen. Whatomate requests `spreadsheets`, `calendar.events`, `documents`, `drive.file`, `openid` and `email`. None of these is a "restricted" scope, but Sheets, Calendar and Docs are "sensitive": until Google verifies the app, users see an unverified-app warning, at most 100 test users can connect, and in **Testing** publishing status refresh tokens expire after 7 days (users must reconnect).
+
+`drive.file` only covers files Whatomate created or the user opened with it. To work with arbitrary existing Drive files, use a service account and share the files with it.
+
+If `[google]` is unset, an organization's enabled **Google SSO** client (Settings → SSO) is used instead; add the redirect URI above to that client too.
+
+Connected accounts are stored as encrypted `authorized_user` credentials (OAuth client plus refresh token). Reconnecting the same Google account updates the existing credential instead of creating a duplicate.
 
 ### `[default_admin]`
 

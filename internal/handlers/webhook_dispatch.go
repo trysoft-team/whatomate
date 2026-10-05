@@ -133,13 +133,19 @@ func (a *App) sendWebhook(ctx context.Context, webhook models.Webhook, eventType
 		return
 	}
 
+	started := time.Now()
+	attempts := 0
+	statusCode := 0
+	var lastErr error
+
 	// Retry logic with exponential backoff
 	maxRetries := 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Check if context was cancelled before retry
 		if ctx.Err() != nil {
 			a.Log.Warn("webhook delivery cancelled", "reason", ctx.Err(), "webhook_id", webhook.ID)
-			return
+			lastErr = ctx.Err()
+			break
 		}
 
 		if attempt > 0 {
@@ -147,12 +153,19 @@ func (a *App) sendWebhook(ctx context.Context, webhook models.Webhook, eventType
 			select {
 			case <-ctx.Done():
 				a.Log.Warn("webhook delivery cancelled during backoff", "reason", ctx.Err(), "webhook_id", webhook.ID)
-				return
+				lastErr = ctx.Err()
 			case <-time.After(time.Duration(1<<attempt) * time.Second):
+			}
+			if ctx.Err() != nil {
+				break
 			}
 		}
 
-		if err := a.sendWebhookRequest(ctx, webhook, jsonData); err != nil {
+		attempts++
+		code, err := a.sendWebhookRequest(ctx, webhook, jsonData)
+		statusCode = code
+		if err != nil {
+			lastErr = err
 			a.Log.Warn("webhook delivery failed",
 				"error", err,
 				"webhook_id", webhook.ID,
@@ -168,6 +181,7 @@ func (a *App) sendWebhook(ctx context.Context, webhook models.Webhook, eventType
 			"event", eventType,
 			"url", webhook.URL,
 		)
+		a.recordWebhookDelivery(webhook, eventType, true, statusCode, attempts, time.Since(started), nil)
 		return
 	}
 
@@ -176,12 +190,39 @@ func (a *App) sendWebhook(ctx context.Context, webhook models.Webhook, eventType
 		"event", eventType,
 		"url", webhook.URL,
 	)
+	a.recordWebhookDelivery(webhook, eventType, false, statusCode, attempts, time.Since(started), lastErr)
 }
 
-func (a *App) sendWebhookRequest(ctx context.Context, webhook models.Webhook, jsonData []byte) error {
+// maxWebhookDeliveryErrorLen caps the stored error text per delivery row.
+const maxWebhookDeliveryErrorLen = 500
+
+func (a *App) recordWebhookDelivery(webhook models.Webhook, eventType string, success bool, statusCode, attempts int, duration time.Duration, deliveryErr error) {
+	if a.DB == nil {
+		return
+	}
+	row := models.WebhookDelivery{
+		OrganizationID: webhook.OrganizationID,
+		WebhookID:      webhook.ID,
+		Event:          truncateRunes(eventType, 60),
+		Success:        success,
+		StatusCode:     statusCode,
+		Attempts:       attempts,
+		DurationMs:     int(duration.Milliseconds()),
+	}
+	if deliveryErr != nil {
+		row.Error = truncateRunes(deliveryErr.Error(), maxWebhookDeliveryErrorLen)
+	}
+	if err := a.DB.Create(&row).Error; err != nil {
+		a.Log.Warn("failed to record webhook delivery", "error", err, "webhook_id", webhook.ID)
+	}
+}
+
+// sendWebhookRequest POSTs the payload and returns the HTTP status code
+// (0 when no response was received).
+func (a *App) sendWebhookRequest(ctx context.Context, webhook models.Webhook, jsonData []byte) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", webhook.URL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Set headers
@@ -206,16 +247,16 @@ func (a *App) sendWebhookRequest(ctx context.Context, webhook models.Webhook, js
 	// Send request
 	resp, err := a.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Check for successful status code (2xx)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &WebhookError{StatusCode: resp.StatusCode}
+		return resp.StatusCode, &WebhookError{StatusCode: resp.StatusCode}
 	}
 
-	return nil
+	return resp.StatusCode, nil
 }
 
 func computeHMACSignature(data []byte, secret string) string {

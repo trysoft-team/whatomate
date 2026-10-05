@@ -30,6 +30,7 @@ type agentTransferRow struct {
 	TeamID                *uuid.UUID            `gorm:"column:team_id"`
 	TransferredByUserID   *uuid.UUID            `gorm:"column:transferred_by_user_id"`
 	Notes                 string                `gorm:"column:notes"`
+	AISummary             string                `gorm:"column:ai_summary"`
 	TransferredAt         time.Time             `gorm:"column:transferred_at"`
 	ResumedAt             *time.Time            `gorm:"column:resumed_at"`
 	ResumedBy             *uuid.UUID            `gorm:"column:resumed_by"`
@@ -82,6 +83,7 @@ type AgentTransferResponse struct {
 	TransferredBy     *string               `json:"transferred_by,omitempty"`
 	TransferredByName *string               `json:"transferred_by_name,omitempty"`
 	Notes             string                `json:"notes"`
+	AISummary         string                `json:"ai_summary,omitempty"`
 	TransferredAt     string                `json:"transferred_at"`
 	ResumedAt         *string               `json:"resumed_at,omitempty"`
 	ResumedBy         *string               `json:"resumed_by,omitempty"`
@@ -313,6 +315,7 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 			Status:          t.Status,
 			Source:          t.Source,
 			Notes:           t.Notes,
+			AISummary:       t.AISummary,
 			TransferredAt:   t.TransferredAt.Format(time.RFC3339),
 		}
 
@@ -534,6 +537,7 @@ func (a *App) CreateAgentTransfer(r *fastglue.Request) error {
 
 	// Broadcast WebSocket notification
 	a.broadcastTransferCreated(&transfer, contact)
+	a.queueHandoffSummary(&transfer)
 
 	// Dispatch webhook for transfer created
 	var agentIDStr *string
@@ -569,6 +573,7 @@ func (a *App) CreateAgentTransfer(r *fastglue.Request) error {
 		Status:          transfer.Status,
 		Source:          transfer.Source,
 		Notes:           transfer.Notes,
+		AISummary:       transfer.AISummary,
 		TransferredAt:   transfer.TransferredAt.Format(time.RFC3339),
 	}
 
@@ -643,29 +648,37 @@ func (a *App) ResumeFromTransfer(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Transfer is not active", nil, "")
 	}
 
-	// Update transfer
+	if err := a.resumeAgentTransfer(transfer, &userID); err != nil {
+		a.Log.Error("Failed to resume transfer", "error", err, "transfer_id", transfer.ID)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to resume transfer", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]any{
+		"message": "Transfer resumed, chatbot is now active for this contact",
+	})
+}
+
+// resumeAgentTransfer hands an active transfer back to the chatbot. resumedBy
+// is nil when the system resumes it.
+func (a *App) resumeAgentTransfer(transfer *models.AgentTransfer, resumedBy *uuid.UUID) error {
 	now := time.Now()
 	transfer.Status = models.TransferStatusResumed
 	transfer.ResumedAt = &now
-	transfer.ResumedBy = &userID
+	transfer.ResumedBy = resumedBy
 
 	if err := a.DB.Save(transfer).Error; err != nil {
-		a.Log.Error("Failed to resume transfer", "error", err, "transfer_id", transfer.ID)
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to resume transfer", nil, "")
+		return err
 	}
 
 	// Clear chatbot tracking so client inactivity SLA doesn't trigger after transfer is closed
 	a.ClearContactChatbotTracking(transfer.ContactID)
 
-	// Broadcast WebSocket notification
 	a.broadcastTransferResumed(transfer)
 
-	// Get contact for webhook data
 	var contact models.Contact
 	a.DB.Where("id = ?", transfer.ContactID).First(&contact)
 
-	// Dispatch webhook for transfer resumed
-	a.DispatchWebhook(orgID, models.WebhookEventTransferResumed, TransferEventData{
+	a.DispatchWebhook(transfer.OrganizationID, models.WebhookEventTransferResumed, TransferEventData{
 		TransferID:      transfer.ID.String(),
 		ContactID:       contact.ID.String(),
 		ContactPhone:    contact.PhoneNumber,
@@ -673,10 +686,7 @@ func (a *App) ResumeFromTransfer(r *fastglue.Request) error {
 		Source:          transfer.Source,
 		WhatsAppAccount: transfer.WhatsAppAccount,
 	})
-
-	return r.SendEnvelope(map[string]any{
-		"message": "Transfer resumed, chatbot is now active for this contact",
-	})
+	return nil
 }
 
 // AssignAgentTransfer assigns a transfer to a specific agent
@@ -1003,6 +1013,7 @@ func (a *App) PickNextTransfer(r *fastglue.Request) error {
 		Status:          transfer.Status,
 		Source:          transfer.Source,
 		Notes:           transfer.Notes,
+		AISummary:       transfer.AISummary,
 		TransferredAt:   transfer.TransferredAt.Format(time.RFC3339),
 	}
 
@@ -1121,6 +1132,7 @@ func (a *App) broadcastTransferCreated(transfer *models.AgentTransfer, contact *
 		Type:    websocket.TypeAgentTransfer,
 		Payload: payload,
 	})
+	a.NotifyWidgetLiveUpdate(transfer.OrganizationID, "transfers", "sla", "agents")
 }
 
 func (a *App) broadcastTransferResumed(transfer *models.AgentTransfer) {
@@ -1145,6 +1157,7 @@ func (a *App) broadcastTransferResumed(transfer *models.AgentTransfer) {
 		Type:    websocket.TypeAgentTransferResume,
 		Payload: payload,
 	})
+	a.NotifyWidgetLiveUpdate(transfer.OrganizationID, "transfers", "sla", "agents")
 }
 
 func (a *App) broadcastTransferAssigned(transfer *models.AgentTransfer) {
@@ -1174,6 +1187,7 @@ func (a *App) broadcastTransferAssigned(transfer *models.AgentTransfer) {
 		Type:    websocket.TypeAgentTransferAssign,
 		Payload: payload,
 	})
+	a.NotifyWidgetLiveUpdate(transfer.OrganizationID, "transfers", "sla", "agents")
 }
 
 // saveAndFinalizeTransfer handles the common post-creation steps for agent transfers:
@@ -1212,6 +1226,7 @@ func (a *App) saveAndFinalizeTransfer(transfer *models.AgentTransfer, account *m
 
 	// Broadcast to WebSocket
 	a.broadcastTransferCreated(transfer, contact)
+	a.queueHandoffSummary(transfer)
 
 	return nil
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -46,6 +46,7 @@ interface WhatsAppAccount {
   is_default_incoming: boolean
   is_default_outgoing: boolean
   status: string
+  is_smb?: boolean
   has_access_token: boolean
   has_app_secret: boolean
   created_at: string
@@ -63,6 +64,33 @@ const whatsappConfig = ref<{ app_id: string; config_id: string; api_version: str
 const isFBSDKLoaded = ref(false)
 const isConnectingFB = ref(false)
 const showOnboardingDialog = ref(false)
+// Asset IDs Embedded Signup posts to this window; FB.login's authResponse only carries the code.
+const signupSession = ref<{ waba_id?: string; phone_number_id?: string }>({})
+
+function onEmbeddedSignupMessage(event: MessageEvent) {
+  let host = ''
+  try {
+    host = new URL(event.origin).hostname
+  } catch {
+    return
+  }
+  if (!/(^|\.)facebook\.com$/.test(host)) return
+  let data: any
+  try {
+    data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
+  } catch {
+    return
+  }
+  if (data?.type !== 'WA_EMBEDDED_SIGNUP') return
+  if (typeof data.event === 'string' && data.event.startsWith('FINISH')) {
+    signupSession.value = {
+      waba_id: data.data?.waba_id,
+      phone_number_id: data.data?.phone_number_id,
+    }
+  } else if (data.event === 'CANCEL' || data.event === 'ERROR') {
+    console.warn('Embedded Signup ended early', data.event, data.data)
+  }
+}
 
 const canWrite = computed(() => authStore.hasPermission('accounts', 'write'))
 const canDelete = computed(() => authStore.hasPermission('accounts', 'delete'))
@@ -87,8 +115,10 @@ watch(() => organizationsStore.selectedOrgId, () => {
   fetchWhatsAppConfig()
 })
 onMounted(async () => {
+  window.addEventListener('message', onEmbeddedSignupMessage)
   await Promise.all([fetchAccounts(), fetchWhatsAppConfig()])
 })
+onBeforeUnmount(() => window.removeEventListener('message', onEmbeddedSignupMessage))
 
 async function fetchAccounts() {
   isLoading.value = true
@@ -152,6 +182,7 @@ function launchWhatsAppSignup(isCoexistence: boolean = true) {
 
   showOnboardingDialog.value = false
   isConnectingFB.value = true
+  signupSession.value = {}
 
   const loginOptions: any = {
     config_id: whatsappConfig.value.config_id,
@@ -176,8 +207,8 @@ function launchWhatsAppSignup(isCoexistence: boolean = true) {
     (response: any) => {
       if (response.authResponse) {
         const code = response.authResponse.code
-        const phoneNumberId = response.authResponse.phone_number_id
-        const wabaId = response.authResponse.waba_id
+        const phoneNumberId = response.authResponse.phone_number_id || signupSession.value.phone_number_id || ''
+        const wabaId = response.authResponse.waba_id || signupSession.value.waba_id || ''
 
         if (!code) {
           toast.error('Incomplete data from Facebook: missing authorization code')
@@ -209,6 +240,7 @@ async function exchangeCodeForToken(code: string, phoneNumberId: string, wabaId:
 
     const account = response.data.data.account
     const pin = response.data.data.pin
+    const warning = response.data.data.warning
 
     if (account.status === 'pending_registration') {
       toast.warning('Account created. Phone registration required.')
@@ -217,6 +249,12 @@ async function exchangeCodeForToken(code: string, phoneNumberId: string, wabaId:
       if (pin) {
         toast.info(`Your 2FA PIN: ${pin}. Please save it securely.`, { duration: 10000 })
       }
+    }
+    if (account.is_smb && response.data.data.coexistence_sync_started) {
+      toast.info(t('accounts.coexistenceSyncStarted'), { duration: 12000 })
+    }
+    if (warning) {
+      toast.warning(warning, { duration: 12000 })
     }
 
     await fetchAccounts()
@@ -364,9 +402,25 @@ async function confirmDelete() {
                   </div>
                 </template>
                 <template #cell-status="{ item: account }">
-                  <Badge variant="outline" :class="account.status === 'active' ? 'border-green-600 text-green-600' : ''">
-                    {{ account.status }}
-                  </Badge>
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <Tooltip v-if="account.status === 'disconnected'">
+                      <TooltipTrigger as-child>
+                        <Badge variant="outline" class="border-red-500 text-red-500">{{ account.status }}</Badge>
+                      </TooltipTrigger>
+                      <TooltipContent class="max-w-xs">{{ $t('accounts.disconnectedHint') }}</TooltipContent>
+                    </Tooltip>
+                    <Badge v-else variant="outline" :class="account.status === 'active' ? 'border-green-600 text-green-600' : ''">
+                      {{ account.status }}
+                    </Badge>
+                    <Tooltip v-if="account.is_smb">
+                      <TooltipTrigger as-child>
+                        <Badge variant="outline" class="text-[10px] border-sky-500/50 text-sky-400 light:text-sky-600">
+                          <Smartphone class="h-2.5 w-2.5 mr-0.5" /> {{ $t('accounts.coexistenceBadge') }}
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent class="max-w-xs">{{ $t('accounts.coexistenceBadgeHint') }}</TooltipContent>
+                    </Tooltip>
+                  </div>
                 </template>
                 <template #cell-created="{ item: account }">
                   <span class="text-muted-foreground">{{ formatDate(account.created_at) }}</span>

@@ -3,7 +3,9 @@ package handlers
 import (
 	"testing"
 
+	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- processTemplate ---
@@ -40,9 +42,141 @@ func TestProcessTemplate_TripleBraceVariables(t *testing.T) {
 	assert.Equal(t, "Hi Ada (Ada) 15551234567: Hello", result)
 }
 
+func TestProcessTemplate_InboundIsRawJSON(t *testing.T) {
+	t.Parallel()
+	inbound := map[string]any{
+		"object": "whatsapp_business_account",
+		"entry": []any{
+			map[string]any{
+				"id": "1766680270548288",
+				"changes": []any{
+					map[string]any{
+						"field": "messages",
+						"value": map[string]any{
+							"messaging_product": "whatsapp",
+							"metadata": map[string]any{
+								"display_phone_number": "15557693047",
+								"phone_number_id":      "661577767046854",
+							},
+							"contacts": []any{
+								map[string]any{
+									"profile": map[string]any{"name": "Ada"},
+									"wa_id":   "15559876543",
+								},
+							},
+							"messages": []any{
+								map[string]any{
+									"from": "15559876543",
+									"id":   "wamid.abc",
+									"timestamp": "1234567890",
+									"type": "text",
+									"text": map[string]any{"body": "Hello"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data := map[string]any{"inbound": inbound}
+	got := processTemplate("{{{inbound}}}", data)
+	assert.Contains(t, got, `"object":"whatsapp_business_account"`)
+	assert.Contains(t, got, `"messaging_product":"whatsapp"`)
+	assert.Contains(t, got, `"phone_number_id":"661577767046854"`)
+	assert.Equal(t, "Hello", processTemplate("{{inbound.entry[0].changes[0].value.messages[0].text.body}}", data))
+	assert.NotContains(t, got, "message_type")
+	assert.NotContains(t, got, "button_id")
+}
+
 func TestProcessTemplate_TripleBraceMissingIsEmpty(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "Hi ", processTemplate("Hi {{{senderName}}}", nil))
+}
+
+func TestMetaInboundMessageMap_MatchesMetaMessage(t *testing.T) {
+	t.Parallel()
+	msg := IncomingTextMessage{
+		From:      "15559876543",
+		ID:        "wamid.xyz",
+		Timestamp: "1700000000",
+		Type:      "text",
+		Text:      &struct{ Body string `json:"body"` }{Body: "Hi Meta"},
+	}
+	raw := metaInboundMessageMap(msg)
+	require.NotNil(t, raw)
+	assert.Equal(t, "15559876543", raw["from"])
+	assert.Equal(t, "wamid.xyz", raw["id"])
+	assert.Equal(t, "text", raw["type"])
+	text, ok := raw["text"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Hi Meta", text["body"])
+}
+
+func TestBuildMetaWebhookInboundEnvelope_FullBody(t *testing.T) {
+	t.Parallel()
+	msg := IncomingTextMessage{
+		From:       "263774166961",
+		FromUserID: "ZW.26428647883422989",
+		ID:         "wamid.test",
+		Timestamp:  "1790293174",
+		Type:       "text",
+		Text:       &struct{ Body string `json:"body"` }{Body: "Xxx"},
+	}
+	contacts := []map[string]any{
+		{
+			"profile": map[string]any{"name": "Trynos Muchemwa"},
+			"wa_id":   "263774166961",
+			"user_id": "ZW.26428647883422989",
+		},
+	}
+	env := buildMetaWebhookInboundEnvelope(
+		"whatsapp_business_account",
+		"1766680270548288",
+		"whatsapp",
+		"15557693047",
+		"661577767046854",
+		contacts,
+		msg,
+	)
+	assert.Equal(t, "whatsapp_business_account", env["object"])
+	got := processTemplate("{{{inbound}}}", map[string]any{"inbound": env})
+	assert.Contains(t, got, `"object":"whatsapp_business_account"`)
+	assert.Contains(t, got, `"id":"1766680270548288"`)
+	assert.Contains(t, got, `"phone_number_id":"661577767046854"`)
+	assert.Contains(t, got, `"display_phone_number":"15557693047"`)
+	assert.Contains(t, got, `"body":"Xxx"`)
+	assert.Contains(t, got, `"from_user_id":"ZW.26428647883422989"`)
+	assert.Equal(t, "Xxx", processTemplate("{{inbound.entry[0].changes[0].value.messages[0].text.body}}", map[string]any{"inbound": env}))
+}
+
+func TestSeedChatSessionBuiltins_UsesRawInboundAsIs(t *testing.T) {
+	t.Parallel()
+	session := &models.ChatbotSession{
+		PhoneNumber: "15551112222",
+		SessionData: models.JSONB{},
+	}
+	raw := buildMetaWebhookInboundEnvelope(
+		"whatsapp_business_account",
+		"entry-1",
+		"whatsapp",
+		"15550001111",
+		"phone-1",
+		[]map[string]any{{"wa_id": "15551112222", "profile": map[string]any{"name": "Ada"}}},
+		IncomingTextMessage{
+			From: "15551112222", ID: "wamid.raw", Type: "text",
+			Text: &struct{ Body string `json:"body"` }{Body: "Hi"},
+		},
+	)
+	seedChatSessionBuiltins(session, nil, "Hi", &chatRunOpts{
+		MetaType:   "text",
+		RawInbound: raw,
+	})
+	got, ok := session.SessionData["inbound"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, raw, got)
+	assert.Equal(t, "whatsapp_business_account", got["object"])
+	assert.Equal(t, "Hi", processTemplate("{{inbound.entry[0].changes[0].value.messages[0].text.body}}", session.SessionData))
 }
 
 func TestProcessTemplate_MixedBraceSameValue(t *testing.T) {
@@ -627,8 +761,8 @@ func TestFormatValue(t *testing.T) {
 		{"float64 decimal", 3.14, "3.14"},
 		{"bool true", true, "true"},
 		{"bool false", false, "false"},
-		{"slice", []any{"a", "b"}, "[a b]"},
-		{"map", map[string]any{"k": "v"}, "map[k:v]"},
+		{"slice", []any{"a", "b"}, `["a","b"]`},
+		{"map", map[string]any{"k": "v"}, `{"k":"v"}`},
 	}
 
 	for _, tt := range tests {

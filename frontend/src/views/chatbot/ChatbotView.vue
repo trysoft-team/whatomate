@@ -9,6 +9,7 @@ import { chatbotService } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { PageHeader, ConfirmDialog, ErrorState } from '@/components/shared'
 import { getErrorMessage } from '@/lib/api-utils'
+import { RouterLink } from 'vue-router'
 import {
   Bot,
   Key,
@@ -116,8 +117,8 @@ async function retryFetch() {
 }
 
 const statCards = computed(() => [
-  { title: t('chatbot.totalSessions'), key: 'total_sessions', icon: Users, color: 'text-blue-500' },
-  { title: t('chatbot.activeSessions'), key: 'active_sessions', icon: MessageSquare, color: 'text-green-500' },
+  { title: t('chatbot.totalSessions'), key: 'total_sessions', icon: Users, color: 'text-blue-500', to: '/chatbot/sessions' },
+  { title: t('chatbot.activeSessions'), key: 'active_sessions', icon: MessageSquare, color: 'text-green-500', to: '/chatbot/sessions?status=active' },
   { title: t('chatbot.messagesHandled'), key: 'messages_handled', icon: TrendingUp, color: 'text-purple-500' },
   { title: t('chatbot.aiResponses'), key: 'ai_responses', icon: Sparkles, color: 'text-orange-500' }
 ])
@@ -192,7 +193,14 @@ const statCards = computed(() => [
           </template>
           <!-- Actual Stats -->
           <template v-else>
-            <div v-for="card in statCards" :key="card.key" class="card-depth rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 light:bg-white light:border-gray-200">
+            <component
+              :is="card.to ? RouterLink : 'div'"
+              v-for="card in statCards"
+              :key="card.key"
+              :to="card.to"
+              class="card-depth rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 light:bg-white light:border-gray-200"
+              :class="card.to ? 'card-interactive block no-underline text-inherit' : ''"
+            >
               <div class="flex flex-row items-center justify-between space-y-0 pb-2">
                 <span class="text-sm font-medium text-white/50 light:text-gray-500">{{ card.title }}</span>
                 <div :class="[
@@ -216,7 +224,7 @@ const statCards = computed(() => [
                   {{ stats[card.key as keyof Stats].toLocaleString() }}
                 </div>
               </div>
-            </div>
+            </component>
           </template>
         </div>
 

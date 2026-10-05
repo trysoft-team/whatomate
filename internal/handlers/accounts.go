@@ -33,6 +33,8 @@ type AccountRequest struct {
 	IsDefaultOutgoing      bool            `json:"is_default_outgoing"`
 	AutoReadReceipt        bool            `json:"auto_read_receipt"`
 	BusinessCallingEnabled bool            `json:"business_calling_enabled"`
+	AIResponsesEnabled     bool            `json:"ai_responses_enabled"`
+	TypingIndicatorEnabled bool            `json:"typing_indicator_enabled"`
 	DefaultChatbotFlowID   json.RawMessage `json:"default_chatbot_flow_id"`
 }
 
@@ -49,8 +51,11 @@ type AccountResponse struct {
 	IsDefaultOutgoing      bool       `json:"is_default_outgoing"`
 	AutoReadReceipt        bool       `json:"auto_read_receipt"`
 	BusinessCallingEnabled bool       `json:"business_calling_enabled"`
+	AIResponsesEnabled     bool       `json:"ai_responses_enabled"`
+	TypingIndicatorEnabled bool       `json:"typing_indicator_enabled"`
 	DefaultChatbotFlowID   string     `json:"default_chatbot_flow_id,omitempty"`
 	Status                 string     `json:"status"`
+	IsSMB                  bool       `json:"is_smb"` // coexistence: number also active in the WhatsApp Business app
 	HasAccessToken         bool       `json:"has_access_token"`
 	HasAppSecret           bool       `json:"has_app_secret"`
 	PhoneNumber            string     `json:"phone_number,omitempty"`
@@ -130,6 +135,8 @@ func (a *App) CreateAccount(r *fastglue.Request) error {
 		IsDefaultOutgoing:      req.IsDefaultOutgoing,
 		AutoReadReceipt:        req.AutoReadReceipt,
 		BusinessCallingEnabled: req.BusinessCallingEnabled,
+		AIResponsesEnabled:     req.AIResponsesEnabled,
+		TypingIndicatorEnabled: req.TypingIndicatorEnabled,
 		Status:                 "active",
 		CreatedByID:            &userID,
 		UpdatedByID:            &userID,
@@ -209,6 +216,7 @@ func (a *App) UpdateAccount(r *fastglue.Request) error {
 	}
 
 	oldAccount := *account // value copy for audit
+	oldDefaultFlowID := account.DefaultChatbotFlowID
 
 	var req AccountRequest
 	if err := a.decodeRequest(r, &req); err != nil {
@@ -256,12 +264,16 @@ func (a *App) UpdateAccount(r *fastglue.Request) error {
 	}
 	account.AutoReadReceipt = req.AutoReadReceipt
 	account.BusinessCallingEnabled = req.BusinessCallingEnabled
+	account.AIResponsesEnabled = req.AIResponsesEnabled
+	account.TypingIndicatorEnabled = req.TypingIndicatorEnabled
 	clearDefaultFlow := false
+	defaultFlowChanged := false
 	if flowID, applied, err := a.parseDefaultChatbotFlowField(orgID, req.DefaultChatbotFlowID); err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
 	} else if applied {
 		account.DefaultChatbotFlowID = flowID
 		clearDefaultFlow = flowID == nil
+		defaultFlowChanged = !uuidPtrEqual(oldDefaultFlowID, flowID)
 	}
 
 	// Handle default flags
@@ -288,6 +300,9 @@ func (a *App) UpdateAccount(r *fastglue.Request) error {
 			a.Log.Error("Failed to clear default chatbot flow", "error", err)
 			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update account", nil, "")
 		}
+	}
+	if defaultFlowChanged {
+		a.cancelActiveChatbotSessionsForAccount(orgID, account.Name)
 	}
 
 	// Invalidate cache
@@ -487,7 +502,10 @@ func accountToResponse(acc models.WhatsAppAccount) AccountResponse {
 		IsDefaultOutgoing:      acc.IsDefaultOutgoing,
 		AutoReadReceipt:        acc.AutoReadReceipt,
 		BusinessCallingEnabled: acc.BusinessCallingEnabled,
+		AIResponsesEnabled:     acc.AIResponsesEnabled,
+		TypingIndicatorEnabled: acc.TypingIndicatorEnabled,
 		Status:                 acc.Status,
+		IsSMB:                  acc.IsSMB,
 		HasAccessToken:         acc.AccessToken != "",
 		HasAppSecret:           acc.AppSecret != "",
 		CreatedByID:            acc.CreatedByID,
@@ -597,8 +615,8 @@ func (a *App) SubscribeApp(r *fastglue.Request) error {
 	})
 }
 
-// resolveMetaAppCreds resolves Meta app ID, App Secret, and Config ID for an organization,
-// preferring organization-specific settings and falling back to global config defaults.
+// resolveMetaAppCreds resolves Meta app ID, App Secret, and Config ID for an organization.
+// Order: org private override → shared pool (if applies) → config.toml.
 func (a *App) resolveMetaAppCreds(orgID uuid.UUID) (string, string, string, error) {
 	var org models.Organization
 	if err := a.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
@@ -609,24 +627,59 @@ func (a *App) resolveMetaAppCreds(orgID uuid.UUID) (string, string, string, erro
 	appSecret := a.Config.WhatsApp.AppSecret
 	configID := a.Config.WhatsApp.ConfigID
 
-	if org.Settings != nil {
-		if v, ok := org.Settings["meta_app_id"].(string); ok && v != "" {
-			appID = v
-		}
-		if v, ok := org.Settings["meta_config_id"].(string); ok && v != "" {
-			configID = v
-		}
-		if v, ok := org.Settings["meta_app_secret_encrypted"].(string); ok && v != "" {
-			decrypted, err := crypto.Decrypt(v, a.Config.App.EncryptionKey)
-			if err == nil && decrypted != "" {
-				appSecret = decrypted
-			} else if err != nil {
-				a.Log.Error("Failed to decrypt meta app secret from organization settings", "error", err)
-			}
-		}
+	if orgHasMetaOverride(org.Settings) {
+		overlayOrgMetaCreds(org.Settings, a.Config.App.EncryptionKey, &appID, &appSecret, &configID, a)
+		return appID, appSecret, configID, nil
+	}
+
+	shared, err := a.loadSharedMetaApp()
+	if err != nil {
+		a.Log.Error("Failed to load shared meta app for resolve", "error", err, "organization_id", orgID)
+	} else if shared != nil && shared.AppliesToOrg(orgID) {
+		overlaySharedMetaCreds(shared, a.Config.App.EncryptionKey, &appID, &appSecret, &configID, a)
 	}
 
 	return appID, appSecret, configID, nil
+}
+
+func overlayOrgMetaCreds(settings models.JSONB, encKey string, appID, appSecret, configID *string, a *App) {
+	if settings == nil {
+		return
+	}
+	if v, ok := settings["meta_app_id"].(string); ok && strings.TrimSpace(v) != "" {
+		*appID = strings.TrimSpace(v)
+	}
+	if v, ok := settings["meta_config_id"].(string); ok && strings.TrimSpace(v) != "" {
+		*configID = strings.TrimSpace(v)
+	}
+	if v, ok := settings["meta_app_secret_encrypted"].(string); ok && strings.TrimSpace(v) != "" {
+		decrypted, err := crypto.Decrypt(v, encKey)
+		if err == nil && decrypted != "" {
+			*appSecret = decrypted
+		} else if err != nil {
+			a.Log.Error("Failed to decrypt meta app secret from organization settings", "error", err)
+		}
+	}
+}
+
+func overlaySharedMetaCreds(shared *models.SharedMetaAppCredentials, encKey string, appID, appSecret, configID *string, a *App) {
+	if shared == nil {
+		return
+	}
+	if strings.TrimSpace(shared.AppID) != "" {
+		*appID = strings.TrimSpace(shared.AppID)
+	}
+	if strings.TrimSpace(shared.ConfigID) != "" {
+		*configID = strings.TrimSpace(shared.ConfigID)
+	}
+	if shared.AppSecretEncrypted != "" {
+		decrypted, err := crypto.Decrypt(shared.AppSecretEncrypted, encKey)
+		if err == nil && decrypted != "" {
+			*appSecret = decrypted
+		} else if err != nil {
+			a.Log.Error("Failed to decrypt shared meta app secret", "error", err)
+		}
+	}
 }
 
 // ExchangeToken exchanges the temporary code for a permanent access token and creates the account
@@ -697,6 +750,13 @@ func (a *App) ExchangeToken(r *fastglue.Request) error {
 		a.Log.Error("Failed to subscribe app to WABA", "error", err)
 	}
 
+	// 5b. Coexistence numbers: Meta only replays app contacts and chat history
+	// if asked within 24 hours of onboarding, so request both right away.
+	var syncWarnings []string
+	if account.IsSMB {
+		syncWarnings = a.requestCoexistenceSync(ctx, account)
+	}
+
 	// 6. Encrypt credentials at rest
 	plaintextPin := account.Pin
 	if err := a.encryptAccountSecrets(account); err != nil {
@@ -737,9 +797,32 @@ func (a *App) ExchangeToken(r *fastglue.Request) error {
 	}
 	if regErr != nil {
 		out["warning"] = "Registration failed: " + regErr.Error()
+	} else if len(syncWarnings) > 0 {
+		out["warning"] = strings.Join(syncWarnings, "; ")
+	}
+	if account.IsSMB {
+		out["coexistence_sync_started"] = len(syncWarnings) < 2
 	}
 
 	return r.SendEnvelope(out)
+}
+
+// requestCoexistenceSync asks Meta to replay the WhatsApp Business app's
+// contacts and chat history for a coexistence account. Failures are returned
+// as warnings; they don't block onboarding.
+func (a *App) requestCoexistenceSync(ctx context.Context, account *models.WhatsAppAccount) []string {
+	waAccount := a.toWhatsAppAccount(account)
+	var warnings []string
+	for _, s := range []struct{ syncType, label string }{
+		{whatsapp.SMBSyncContacts, "contacts"},
+		{whatsapp.SMBSyncHistory, "chat history"},
+	} {
+		if _, err := a.WhatsApp.RequestSMBAppDataSync(ctx, waAccount, s.syncType); err != nil {
+			a.Log.Error("Failed to request coexistence sync", "sync_type", s.syncType, "phone_id", account.PhoneID, "error", err)
+			warnings = append(warnings, "Could not start "+s.label+" sync: "+err.Error())
+		}
+	}
+	return warnings
 }
 
 func (a *App) discoverWABAAndPhone(ctx context.Context, orgID uuid.UUID, accessToken, phoneID, wabaID, name string) (string, string, string, error) {

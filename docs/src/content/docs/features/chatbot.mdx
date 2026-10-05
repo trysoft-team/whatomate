@@ -127,7 +127,7 @@ Configure AI-powered responses to handle queries that don't match keywords or fl
 
 1. **Choose an AI Provider**
 
-   Select from OpenAI, Anthropic, or Google AI.
+   Select from OpenAI, Anthropic, Google AI, or OpenRouter.
 
 2. **Select a Model**
 
@@ -154,9 +154,31 @@ Configure AI-powered responses to handle queries that don't match keywords or fl
     `-latest` aliases (e.g. `claude-3-5-sonnet-latest`).
   </Card>
   <Card title="Google AI" icon="setting">
-    Gemini 2.0 Flash, Gemini 2.0 Flash-Lite, Gemini 1.5 Flash, Gemini 1.5 Flash-8B
+    Gemini 3.8 / 3.7 / 3.6 / 3.5 Flash, 3.5 Flash-Lite, 3.1 Pro (preview),
+    3.1 Flash-Lite, 3 Flash (preview), and the `gemini-flash-latest`,
+    `gemini-flash-lite-latest` and `gemini-pro-latest` aliases, which always
+    point at Google's current model. Gemini 2.5 is no longer available to new
+    API keys
+  </Card>
+  <Card title="OpenRouter" icon="setting">
+    One key for hundreds of models. The model picker lists OpenRouter's current
+    free models (fetched live and ranked for customer chat), with **Auto**
+    (`openrouter/free`) routing to the best available free model. You can also
+    paste any paid model ID. Free models have daily rate limits and may log
+    prompts.
   </Card>
 </CardGrid>
+
+### Voice transcription
+
+Voice notes in the inbox are transcribed with the provider chosen under
+**Settings → AI → Voice transcription**. By default it uses the AI provider
+above. You can instead pick OpenAI (Whisper), Google Gemini or OpenRouter with
+its own API key. For example, run chat on free OpenRouter models and transcribe
+with a Google key. Leave the model empty to use the default (`whisper-1`,
+`gemini-flash-latest`, or `google/gemini-3.5-flash-lite` on OpenRouter).
+OpenRouter requires at least $0.50 of account credit for audio input, even on
+free models. Anthropic can't transcribe audio.
 
 ## AI Contexts
 

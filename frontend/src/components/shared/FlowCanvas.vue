@@ -37,6 +37,7 @@ defineEmits<{
   'edge-click': [event: EdgeMouseEvent]
   'edge-update': [payload: { edge: Edge; connection: Connection }]
   'node-drag-stop': []
+  'node-drag-start': []
   'edges-change': [changes: any[]]
 }>()
 </script>
@@ -71,6 +72,7 @@ defineEmits<{
       @edge-click="$emit('edge-click', $event)"
       @edge-update="$emit('edge-update', $event)"
       @node-drag-stop="$emit('node-drag-stop')"
+      @node-drag-start="$emit('node-drag-start')"
       @edges-change="$emit('edges-change', $event)"
     >
       <Background

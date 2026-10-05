@@ -27,6 +27,12 @@ Custom Actions allow you to create action buttons that appear in the chat header
 
 Navigate to **Settings > Custom Actions** to manage your action buttons.
 
+### Generate with AI
+
+Click **Generate with AI** and describe what the button should do, for example *"POST the contact's name, phone and tags to my CRM webhook"*. AI picks the action type, icon and configuration (including `{{variables}}` and JavaScript), then opens the draft in the create dialog. Nothing is saved until you click **Create**.
+
+AI never invents credentials. It uses placeholders such as `YOUR_API_KEY` and `https://your-helpdesk.example.com` and lists them in a note at the top of the dialog, so replace them before saving. This requires AI to be enabled in **Settings > AI**; token usage is recorded under the `custom_action_generate` purpose.
+
 ### Webhook Actions
 
 Webhook actions call external APIs when triggered. Configure:

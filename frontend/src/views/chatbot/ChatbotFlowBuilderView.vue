@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, markRaw, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useVueFlow, MarkerType, type NodeMouseEvent, type Edge, type EdgeMouseEvent, type Connection } from '@vue-flow/core'
 import { toast } from 'vue-sonner'
 
 import FlowCanvas from '@/components/shared/FlowCanvas.vue'
-import { chatbotService } from '@/services/api'
+import { chatbotService, accountsService } from '@/services/api'
 import type { ChatFlowGraph, ChatNode, ChatEdge, ChatNodeType } from '@/services/api'
 
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -47,6 +48,8 @@ import {
   Plus,
   Trash2,
   Play,
+  Undo2,
+  Copy,
 } from 'lucide-vue-next'
 
 import AuditLogPanel from '@/components/shared/AuditLogPanel.vue'
@@ -82,6 +85,8 @@ import ChatbotStartNode from '@/components/chatbot/nodes/ChatbotStartNode.vue'
 
 import InteractivePreview from '@/components/chatbot/flow-preview/InteractivePreview.vue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { useChatFlowUndo } from '@/composables/useChatFlowUndo'
+import { FLOW_TEMPLATES, buildTemplateGraph, type FlowTemplateId } from '@/chatbot/flowTemplates'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -93,7 +98,10 @@ const isNewFlow = computed(() => !flowId.value || route.path.endsWith('/new'))
 // Top-level flow metadata
 const name = ref('')
 const description = ref('')
+const whatsappAccount = ref('')
+const accounts = ref<{ id: string; name: string }[]>([])
 const enabled = ref(true)
+const keepSessionActive = ref(false)
 const triggerKeywords = ref('')
 const initialMessage = ref('Hi! Let me help you with that.')
 const completionMessage = ref('Thank you! We have all the information we need.')
@@ -109,6 +117,8 @@ const panelConfig = ref<PanelConfig>({ sections: [] })
 const isLoading = ref(true)
 const loadError = ref(false)
 const isSaving = ref(false)
+const isPublishing = ref(false)
+const hasUnpublishedChanges = ref(false)
 const hasUnsavedChanges = ref(false)
 const showDeleteNodeConfirm = ref(false)
 const cancelDialogOpen = ref(false)
@@ -117,6 +127,18 @@ const auditRefreshKey = ref(0)
 const completionConfigOpen = ref(false)
 const panelConfigOpen = ref(false)
 const activityOpen = ref(false)
+const runsOpen = ref(false)
+
+const flowAnalytics = ref<{
+  started: number
+  completed: number
+  cancelled: number
+  active: number
+  completion_rate: number
+} | null>(null)
+const recentSessions = ref<any[]>([])
+const highlightedPath = ref<string[]>([])
+const selectedRunId = ref<string | null>(null)
 
 const createdAt = ref('')
 const updatedAt = ref('')
@@ -211,6 +233,25 @@ const {
     markerEnd: MarkerType.ArrowClosed,
   },
 })
+
+const { pushSnapshot, popSnapshot, clear: clearUndo, canUndo } = useChatFlowUndo()
+
+function captureUndo() {
+  pushSnapshot(toGraphPayload())
+}
+
+function undoCanvas() {
+  const snap = popSnapshot()
+  if (!snap) return
+  replaceGraph(snap)
+  hasUnsavedChanges.value = true
+}
+
+function replaceGraph(graph: ChatFlowGraph) {
+  if (nodes.value.length) removeNodes(nodes.value.map((n) => n.id))
+  if (edges.value.length) removeEdges(edges.value.map((e) => e.id))
+  loadGraph(graph)
+}
 
 const entryNodeId = ref<string>('')
 const selectedNodeId = ref<string | null>(null)
@@ -344,6 +385,7 @@ const paletteLabels: Record<string, string> = {
 }
 
 function addNodeFromPalette(type: ChatNodeType) {
+  captureUndo()
   const pos = project({ x: window.innerWidth / 2 - 200, y: window.innerHeight / 2 - 200 })
   const id = `node_${Date.now()}_${nodeCounter++}`
   addNodes([
@@ -377,6 +419,29 @@ function addNodeFromPalette(type: ChatNodeType) {
   hasUnsavedChanges.value = true
 }
 
+function duplicateSelectedNode() {
+  const node = selectedNode.value
+  if (!node || node.type === 'start') return
+  captureUndo()
+  const id = `node_${Date.now()}_${nodeCounter++}`
+  const config = structuredClone(node.data?.config || {})
+  addNodes([
+    {
+      id,
+      type: node.type,
+      position: { x: (node.position?.x ?? 0) + 40, y: (node.position?.y ?? 0) + 40 },
+      data: {
+        label: node.data?.label || paletteLabels[node.type as ChatNodeType] || node.type,
+        config,
+        isEntryNode: false,
+      },
+      deletable: true,
+    },
+  ])
+  selectedNodeId.value = id
+  hasUnsavedChanges.value = true
+}
+
 function ensureStartNode() {
   if (nodes.value.some((n) => n.type === 'start')) return
   addNodes([
@@ -392,6 +457,7 @@ function ensureStartNode() {
 }
 
 onConnect((params) => {
+  captureUndo()
   // Enforce single edge per source handle.
   const existing = edges.value.filter(
     (e) => e.source === params.source && e.sourceHandle === params.sourceHandle,
@@ -484,6 +550,7 @@ function confirmDeleteSelectedNode() {
   const node = selectedNode.value
   if (!node) return
   if (node.type === 'start') return
+  captureUndo()
   const nodeId = node.id
   const connected = edges.value.filter((e) => e.source === nodeId || e.target === nodeId)
   if (connected.length > 0) removeEdges(connected)
@@ -491,6 +558,10 @@ function confirmDeleteSelectedNode() {
   selectedNodeId.value = null
   showDeleteNodeConfirm.value = false
   hasUnsavedChanges.value = true
+}
+
+function onNodeDragStart() {
+  captureUndo()
 }
 
 // Track node moves so unsaved-changes nags appear.
@@ -655,9 +726,70 @@ function loadGraph(graph: ChatFlowGraph) {
   setTimeout(() => fitView({ padding: 0.2 }), 100)
 }
 
+async function loadAccounts() {
+  try {
+    const res = await accountsService.list()
+    const data = (res.data as any)?.data || res.data
+    const list = data?.accounts || data || []
+    accounts.value = (Array.isArray(list) ? list : []).map((a: any) => ({
+      id: a.id || a.ID,
+      name: a.name || a.Name,
+    }))
+    if (isNewFlow.value && !whatsappAccount.value && accounts.value.length === 1) {
+      whatsappAccount.value = accounts.value[0].name
+    }
+  } catch {
+    accounts.value = []
+  }
+}
+
+const AI_FLOW_DRAFT_KEY = 'whatomate:ai-flow-draft'
+
+function hydrateAIGeneratedDraft(): boolean {
+  try {
+    const raw = sessionStorage.getItem(AI_FLOW_DRAFT_KEY)
+    if (!raw) return false
+    sessionStorage.removeItem(AI_FLOW_DRAFT_KEY)
+    const draft = JSON.parse(raw) as {
+      name?: string
+      description?: string
+      trigger_keywords?: string[]
+      graph?: ChatFlowGraph
+    }
+    if (!draft.graph || draft.graph.version !== 2 || !Array.isArray(draft.graph.nodes)) {
+      return false
+    }
+    if (draft.name) name.value = draft.name
+    if (draft.description) description.value = draft.description
+    if (Array.isArray(draft.trigger_keywords) && draft.trigger_keywords.length) {
+      triggerKeywords.value = draft.trigger_keywords.join(', ')
+    }
+    loadGraph(draft.graph)
+    hasUnsavedChanges.value = true
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function loadFlow() {
   if (isNewFlow.value) {
-    ensureStartNode()
+    if (route.query.ai === '1') {
+      const hydrated = hydrateAIGeneratedDraft()
+      if (hydrated) {
+        isLoading.value = false
+        return
+      }
+    }
+    const tplId = (route.query.template as FlowTemplateId) || 'blank'
+    const meta = FLOW_TEMPLATES.find((t) => t.id === tplId)
+    if (tplId !== 'blank' && meta) {
+      if (meta.defaultName) name.value = meta.defaultName
+      if (meta.defaultKeywords) triggerKeywords.value = meta.defaultKeywords
+      loadGraph(buildTemplateGraph(tplId))
+    } else {
+      ensureStartNode()
+    }
     isLoading.value = false
     return
   }
@@ -669,7 +801,9 @@ async function loadFlow() {
 
     name.value = flow.name || flow.Name || ''
     description.value = flow.description || flow.Description || ''
+    whatsappAccount.value = flow.whatsapp_account || flow.WhatsAppAccount || ''
     enabled.value = flow.is_enabled ?? flow.IsEnabled ?? flow.enabled ?? true
+    keepSessionActive.value = !!(flow.keep_session_active ?? flow.KeepSessionActive)
     triggerKeywords.value = (flow.trigger_keywords || flow.TriggerKeywords || []).join(', ')
     initialMessage.value = flow.initial_message || flow.InitialMessage || ''
     completionMessage.value = flow.completion_message || flow.CompletionMessage || ''
@@ -689,10 +823,11 @@ async function loadFlow() {
     createdByName.value = flow.created_by_name || flow.created_by?.full_name || ''
     updatedByName.value = flow.updated_by_name || flow.updated_by?.full_name || ''
 
-    const graph = flow.graph || flow.Graph
+    const graph = flow.draft_graph || flow.DraftGraph || flow.graph || flow.Graph
     if (graph && graph.version === 2) {
       loadGraph(graph)
     }
+    hasUnpublishedChanges.value = !!(flow.has_unpublished_changes ?? flow.HasUnpublishedChanges)
   } catch {
     loadError.value = true
   } finally {
@@ -715,6 +850,19 @@ async function saveFlow() {
     toast.error(t('flowBuilder.nameRequired', 'Name is required'))
     return
   }
+  if (!whatsappAccount.value.trim()) {
+    toast.error(t('flowBuilder.accountRequired', 'Please select a WhatsApp account'))
+    return
+  }
+
+  const keywords = triggerKeywords.value.split(',').map((k) => k.trim()).filter(Boolean)
+  const conflicts = await findKeywordConflicts(keywords)
+  if (conflicts.length > 0) {
+    const names = conflicts.map((c) => c.flowName).join(', ')
+    toast.warning(
+      t('flowBuilder.keywordConflictWarn', 'Keywords overlap with: {flows}. Saving anyway.', { flows: names }),
+    )
+  }
 
   isSaving.value = true
   try {
@@ -722,13 +870,15 @@ async function saveFlow() {
     const data: Record<string, any> = {
       name: name.value,
       description: description.value,
-      trigger_keywords: triggerKeywords.value.split(',').map((k) => k.trim()).filter(Boolean),
+      whatsapp_account: whatsappAccount.value,
+      trigger_keywords: keywords,
       initial_message: initialMessage.value,
       completion_message: completionMessage.value,
       on_complete_action: onCompleteAction.value,
       completion_config: onCompleteAction.value === 'webhook' ? completionConfig.value : {},
       panel_config: panelConfig.value,
       enabled: enabled.value,
+      keep_session_active: keepSessionActive.value,
       graph,
     }
 
@@ -736,9 +886,12 @@ async function saveFlow() {
       const response = await chatbotService.createFlow(data)
       const newFlow = response.data.data || response.data
       toast.success(t('common.createdSuccess', { resource: t('resources.Flow') }))
+      hasUnpublishedChanges.value = false
       router.replace(`/chatbot/flows/${newFlow.id}/edit`)
     } else {
-      await chatbotService.updateFlow(flowId.value, data)
+      const response = await chatbotService.updateFlow(flowId.value, data)
+      const payload = (response.data as any)?.data || response.data
+      hasUnpublishedChanges.value = !!(payload?.has_unpublished_changes)
       toast.success(t('common.savedSuccess', { resource: t('resources.Flow') }))
     }
 
@@ -748,6 +901,52 @@ async function saveFlow() {
     toast.error(t('common.failedSave', { resource: t('resources.flow') }))
   } finally {
     isSaving.value = false
+  }
+}
+
+async function publishFlow() {
+  if (isNewFlow.value) {
+    toast.error(t('flowBuilder.saveBeforePublish', 'Save the flow before publishing'))
+    return
+  }
+  if (hasUnsavedChanges.value) {
+    await saveFlow()
+    if (hasUnsavedChanges.value) return
+  }
+  isPublishing.value = true
+  try {
+    await chatbotService.publishFlow(flowId.value)
+    hasUnpublishedChanges.value = false
+    toast.success(t('flowBuilder.publishedSuccess', 'Flow published'))
+  } catch {
+    toast.error(t('flowBuilder.publishFailed', 'Failed to publish flow'))
+  } finally {
+    isPublishing.value = false
+  }
+}
+
+async function findKeywordConflicts(keywords: string[]): Promise<{ flowName: string; keywords: string[] }[]> {
+  if (!keywords.length || !whatsappAccount.value) return []
+  try {
+    const res = await chatbotService.listFlows({
+      whatsapp_account: whatsappAccount.value,
+      limit: 200,
+    })
+    const list = (res.data as any)?.data?.flows || (res.data as any)?.flows || []
+    const mine = new Set(keywords.map((k) => k.toLowerCase()))
+    const conflicts: { flowName: string; keywords: string[] }[] = []
+    for (const f of list) {
+      const id = f.id || f.ID
+      if (!isNewFlow.value && id === flowId.value) continue
+      const other = (f.trigger_keywords || f.TriggerKeywords || []) as string[]
+      const overlap = other.filter((k) => mine.has(String(k).toLowerCase()))
+      if (overlap.length) {
+        conflicts.push({ flowName: f.name || f.Name || id, keywords: overlap })
+      }
+    }
+    return conflicts
+  } catch {
+    return []
   }
 }
 
@@ -792,50 +991,155 @@ function removeCompletionHeader(key: string) {
 }
 
 // Mark changes from text inputs.
-watch([name, description, enabled, triggerKeywords, initialMessage, completionMessage, onCompleteAction, panelConfig], () => {
+watch([name, description, whatsappAccount, enabled, keepSessionActive, triggerKeywords, initialMessage, completionMessage, onCompleteAction, panelConfig], () => {
   if (!isLoading.value) hasUnsavedChanges.value = true
 })
 
+async function loadRunsAndAnalytics() {
+  if (isNewFlow.value || !flowId.value) {
+    flowAnalytics.value = null
+    recentSessions.value = []
+    return
+  }
+  try {
+    const [analyticsRes, sessionsRes] = await Promise.all([
+      chatbotService.getFlowAnalytics(flowId.value),
+      chatbotService.listSessions({ flow_id: flowId.value }),
+    ])
+    const a = (analyticsRes.data as any)?.data || analyticsRes.data
+    flowAnalytics.value = a?.summary || null
+    const s = (sessionsRes.data as any)?.data || sessionsRes.data
+    recentSessions.value = (s?.sessions || []).slice(0, 10)
+  } catch {
+    flowAnalytics.value = null
+    recentSessions.value = []
+  }
+}
+
+function selectRun(session: any) {
+  selectedRunId.value = session.id
+  const path = session.session_data?.__path__ || []
+  const ids = path.map((p: any) => p.node).filter(Boolean)
+  highlightedPath.value = ids
+  applyPathHighlight(ids)
+}
+
+function clearRunHighlight() {
+  selectedRunId.value = null
+  highlightedPath.value = []
+  applyPathHighlight([])
+}
+
+function applyPathHighlight(ids: string[]) {
+  const set = new Set(ids)
+  for (const n of nodes.value) {
+    const base = (n.class as string) || ''
+    const cleaned = base.replace(/\s*ring-2\s+ring-emerald-500\/80/g, '').trim()
+    n.class = set.has(n.id) ? `${cleaned} ring-2 ring-emerald-500/80`.trim() : cleaned
+  }
+}
+
 onMounted(async () => {
+  await loadAccounts()
   loadAvailableFlows()
   await loadFlow()
+  clearUndo()
+  await loadRunsAndAnalytics()
+  window.addEventListener('keydown', onCanvasKeydown)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onCanvasKeydown)
+})
+
+function onCanvasKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+    const tag = (e.target as HTMLElement)?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
+    e.preventDefault()
+    undoCanvas()
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
+    const tag = (e.target as HTMLElement)?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
+    if (selectedNode.value && selectedNode.value.type !== 'start') {
+      e.preventDefault()
+      duplicateSelectedNode()
+    }
+  }
+}
 </script>
 
 <template>
   <div class="flex flex-col h-screen bg-muted/30">
     <!-- Header -->
-    <header class="border-b bg-background px-4 py-3 flex-shrink-0">
+    <header class="border-b bg-background px-4 py-3 flex-shrink-0 space-y-2">
       <div class="flex items-center gap-4">
-        <Button variant="ghost" size="icon" @click="handleCancel">
+        <Button variant="ghost" size="icon" class="shrink-0" @click="handleCancel">
           <ArrowLeft class="h-5 w-5" />
         </Button>
 
-        <div class="flex-1 flex items-center gap-6">
+        <div class="flex-1 flex items-center gap-4 min-w-0 flex-wrap">
           <div class="flex items-center gap-2">
             <Label class="text-sm text-muted-foreground whitespace-nowrap">{{ $t('flowBuilder.name') }}</Label>
             <Input v-model="name" :placeholder="$t('flowBuilder.namePlaceholder')" class="w-48 font-medium" />
           </div>
           <div class="flex items-center gap-2">
+            <Label class="text-sm text-muted-foreground whitespace-nowrap">{{ $t('flowBuilder.account') }}</Label>
+            <Select v-model="whatsappAccount">
+              <SelectTrigger class="w-56 h-9">
+                <SelectValue :placeholder="$t('flowBuilder.selectAccount')" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="acc in accounts" :key="acc.id" :value="acc.name">
+                  {{ acc.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="flex items-center gap-2 min-w-0 flex-1">
             <Label class="text-sm text-muted-foreground whitespace-nowrap">{{ $t('flowBuilder.description') }}</Label>
-            <Input v-model="description" :placeholder="$t('flowBuilder.optional')" class="w-64" />
+            <Input v-model="description" :placeholder="$t('flowBuilder.optional')" class="min-w-[12rem] max-w-md flex-1" />
           </div>
         </div>
+      </div>
 
-        <div class="flex items-center gap-3">
+      <div class="flex items-center justify-between gap-3 pl-12 flex-wrap">
+        <div class="flex items-center gap-4">
           <div class="flex items-center gap-2">
             <Switch :checked="enabled" @update:checked="enabled = $event" />
             <span class="text-sm">{{ enabled ? $t('flowBuilder.enabled') : $t('flowBuilder.disabled') }}</span>
           </div>
+          <div class="flex items-center gap-2" :title="$t('flowBuilder.keepSessionHint')">
+            <Switch :checked="keepSessionActive" @update:checked="keepSessionActive = $event" />
+            <span class="text-sm whitespace-nowrap">{{ $t('flowBuilder.keepSession') }}</span>
+          </div>
+          <Badge v-if="hasUnpublishedChanges" variant="outline" class="text-xs">
+            {{ $t('flowBuilder.unpublishedChanges', 'Unpublished changes') }}
+          </Badge>
+        </div>
 
+        <div class="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" @click="showPreview = true" :disabled="nodes.length === 0">
             <Play class="h-4 w-4 mr-1" />
             {{ $t('flowBuilder.preview', 'Preview') }}
           </Button>
-          <Button variant="outline" @click="handleCancel">{{ $t('flowBuilder.cancel') }}</Button>
-          <Button @click="saveFlow" :disabled="isSaving">
+          <Button variant="outline" size="sm" :disabled="!canUndo" @click="undoCanvas" :title="$t('flowBuilder.undo', 'Undo')">
+            <Undo2 class="h-4 w-4 mr-1" />
+            {{ $t('flowBuilder.undo', 'Undo') }}
+          </Button>
+          <Button variant="outline" size="sm" @click="handleCancel">{{ $t('flowBuilder.cancel') }}</Button>
+          <Button variant="outline" size="sm" @click="saveFlow" :disabled="isSaving || isPublishing">
             <Save class="h-4 w-4 mr-2" />
-            {{ isSaving ? $t('flowBuilder.saving') + '...' : $t('flowBuilder.saveFlow') }}
+            {{ isSaving ? $t('flowBuilder.saving') + '...' : $t('flowBuilder.saveDraft', 'Save draft') }}
+          </Button>
+          <Button
+            v-if="!isNewFlow"
+            size="sm"
+            @click="publishFlow"
+            :disabled="isSaving || isPublishing || (!hasUnpublishedChanges && !hasUnsavedChanges)"
+          >
+            {{ isPublishing ? $t('flowBuilder.publishing', 'Publishing...') : $t('flowBuilder.publish', 'Publish') }}
           </Button>
         </div>
       </div>
@@ -912,6 +1216,7 @@ onMounted(async () => {
           @edge-click="onEdgeClick"
           @edge-update="onEdgeUpdate"
           @edges-change="onEdgesChange"
+          @node-drag-start="onNodeDragStart"
           @node-drag-stop="onNodeDragStop"
         />
       </div>
@@ -926,6 +1231,7 @@ onMounted(async () => {
             :available-flows="availableFlows"
             @update:node="onUpdateNode"
             @delete="requestDeleteSelectedNode"
+            @duplicate="duplicateSelectedNode"
           />
         </div>
 
@@ -935,6 +1241,21 @@ onMounted(async () => {
             <CardHeader class="p-0 pb-2">
               <CardTitle class="text-sm font-medium">{{ $t('flowBuilder.flowSettings') }}</CardTitle>
             </CardHeader>
+
+            <div class="space-y-1.5">
+              <Label class="text-xs">{{ $t('flowBuilder.account') }}</Label>
+              <Select v-model="whatsappAccount">
+                <SelectTrigger class="h-8 text-xs">
+                  <SelectValue :placeholder="$t('flowBuilder.selectAccount')" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="acc in accounts" :key="acc.id" :value="acc.name">
+                    {{ acc.name }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p class="text-[10px] text-muted-foreground">{{ $t('flowBuilder.accountHint') }}</p>
+            </div>
 
             <!-- Trigger keywords -->
             <div class="space-y-1.5">
@@ -1049,6 +1370,56 @@ onMounted(async () => {
             </Collapsible>
 
             <template v-if="!isNewFlow">
+              <Separator />
+              <Collapsible v-model:open="runsOpen">
+                <CollapsibleTrigger class="flex items-center justify-between w-full py-1 text-sm font-medium">
+                  {{ $t('flowBuilder.runsAnalytics', 'Runs & analytics') }}
+                  <component :is="runsOpen ? ChevronDown : ChevronRight" class="h-4 w-4" />
+                </CollapsibleTrigger>
+                <CollapsibleContent class="pt-3 space-y-3">
+                  <div v-if="flowAnalytics" class="grid grid-cols-2 gap-2 text-xs">
+                    <div class="rounded border p-2">
+                      <div class="text-muted-foreground">Started</div>
+                      <div class="font-medium">{{ flowAnalytics.started }}</div>
+                    </div>
+                    <div class="rounded border p-2">
+                      <div class="text-muted-foreground">Completed</div>
+                      <div class="font-medium">{{ flowAnalytics.completed }}</div>
+                    </div>
+                    <div class="rounded border p-2">
+                      <div class="text-muted-foreground">Active</div>
+                      <div class="font-medium">{{ flowAnalytics.active }}</div>
+                    </div>
+                    <div class="rounded border p-2">
+                      <div class="text-muted-foreground">Completion</div>
+                      <div class="font-medium">{{ flowAnalytics.completion_rate.toFixed(0) }}%</div>
+                    </div>
+                  </div>
+                  <div class="space-y-1.5">
+                    <div class="flex items-center justify-between">
+                      <Label class="text-xs">{{ $t('flowBuilder.lastRuns', 'Last runs') }}</Label>
+                      <Button v-if="selectedRunId" variant="ghost" size="sm" class="h-6 text-[10px]" @click="clearRunHighlight">
+                        Clear highlight
+                      </Button>
+                    </div>
+                    <div v-if="recentSessions.length === 0" class="text-[11px] text-muted-foreground">No sessions yet</div>
+                    <button
+                      v-for="s in recentSessions"
+                      :key="s.id"
+                      type="button"
+                      class="w-full text-left rounded border px-2 py-1.5 text-[11px] hover:bg-muted/40"
+                      :class="selectedRunId === s.id ? 'border-emerald-500/50 bg-emerald-500/5' : ''"
+                      @click="selectRun(s)"
+                    >
+                      <div class="flex justify-between gap-2">
+                        <span class="font-medium truncate">{{ s.contact?.profile_name || s.phone_number || s.id }}</span>
+                        <span class="text-muted-foreground shrink-0">{{ s.status }}</span>
+                      </div>
+                    </button>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+
               <Separator />
               <Collapsible v-model:open="activityOpen">
                 <CollapsibleTrigger class="flex items-center justify-between w-full py-1 text-sm font-medium">

@@ -270,6 +270,24 @@ func (Webhook) TableName() string {
 	return "webhooks"
 }
 
+// WebhookDelivery records the final outcome of sending one event to one
+// webhook (after retries).
+type WebhookDelivery struct {
+	BaseModel
+	OrganizationID uuid.UUID `gorm:"type:uuid;index;not null" json:"organization_id"`
+	WebhookID      uuid.UUID `gorm:"type:uuid;index;not null" json:"webhook_id"`
+	Event          string    `gorm:"size:60;index;not null" json:"event"`
+	Success        bool      `gorm:"index;not null;default:false" json:"success"`
+	StatusCode     int       `gorm:"not null;default:0" json:"status_code"` // 0 when no response (network error)
+	Attempts       int       `gorm:"not null;default:0" json:"attempts"`
+	DurationMs     int       `gorm:"not null;default:0" json:"duration_ms"` // across all attempts
+	Error          string    `gorm:"type:text" json:"error,omitempty"`
+}
+
+func (WebhookDelivery) TableName() string {
+	return "webhook_deliveries"
+}
+
 // CustomAction represents a custom action button for chat integrations
 type CustomAction struct {
 	BaseModel
@@ -309,14 +327,24 @@ type WhatsAppAccount struct {
 	// Calling API. Used by the canned-response editor to disable the Call
 	// button option, and by the send path to refuse voice_call sends.
 	BusinessCallingEnabled bool `gorm:"default:false" json:"business_calling_enabled"`
+	// AIResponsesEnabled turns on automatic AI replies when no keyword/flow
+	// matches for this account. Org Chatbot Settings still holds provider/API key.
+	AIResponsesEnabled bool `gorm:"default:false" json:"ai_responses_enabled"`
+	// TypingIndicatorEnabled sends Meta typing_indicator (with read) before
+	// chatbot outbound replies for this account.
+	TypingIndicatorEnabled bool `gorm:"default:false" json:"typing_indicator_enabled"`
 	// DefaultChatbotFlowID is the org chatbot flow started for inbound
 	// messages on this account when no trigger keyword matches.
 	DefaultChatbotFlowID *uuid.UUID `gorm:"type:uuid;index" json:"default_chatbot_flow_id,omitempty"`
-	IsSMB                bool       `gorm:"default:false" json:"is_smb"`
-	Status               string     `gorm:"size:20;default:'active'" json:"status"`
-	Pin                  string     `gorm:"size:255" json:"-"` // 6-digit 2FA PIN (encrypted)
-	CreatedByID          *uuid.UUID `gorm:"type:uuid" json:"created_by_id,omitempty"`
-	UpdatedByID          *uuid.UUID `gorm:"type:uuid" json:"updated_by_id,omitempty"`
+	// FlowPrivateKey / FlowPublicKey are the RSA pair for WhatsApp Flow data
+	// endpoint encryption. The private key is encrypted at rest.
+	FlowPrivateKey string     `gorm:"type:text" json:"-"`
+	FlowPublicKey  string     `gorm:"type:text" json:"flow_public_key,omitempty"`
+	IsSMB          bool       `gorm:"default:false" json:"is_smb"`
+	Status         string     `gorm:"size:20;default:'active'" json:"status"`
+	Pin            string     `gorm:"size:255" json:"-"` // 6-digit 2FA PIN (encrypted)
+	CreatedByID    *uuid.UUID `gorm:"type:uuid" json:"created_by_id,omitempty"`
+	UpdatedByID    *uuid.UUID `gorm:"type:uuid" json:"updated_by_id,omitempty"`
 
 	// Relations
 	Organization *Organization `gorm:"foreignKey:OrganizationID" json:"organization,omitempty"`
@@ -465,6 +493,13 @@ type WhatsAppFlow struct {
 	Screens         JSONBArray `gorm:"type:jsonb;default:'[]'" json:"screens"`
 	PreviewURL      string     `gorm:"type:text" json:"preview_url"`
 	HasLocalChanges bool       `gorm:"default:true" json:"has_local_changes"` // True when local changes need to be synced to Meta
+
+	// Data endpoint (data_exchange). Mode "builtin" routes screens and collects
+	// answers server-side; "proxy" forwards decrypted requests to EndpointProxyURL.
+	EndpointEnabled  bool   `gorm:"default:false" json:"endpoint_enabled"`
+	EndpointMode     string `gorm:"size:20;default:'builtin'" json:"endpoint_mode"`
+	EndpointProxyURL string `gorm:"type:text" json:"endpoint_proxy_url"`
+	EndpointURI      string `gorm:"type:text" json:"endpoint_uri"` // URL last registered with Meta
 
 	// Relations
 	Organization *Organization `gorm:"foreignKey:OrganizationID" json:"organization,omitempty"`

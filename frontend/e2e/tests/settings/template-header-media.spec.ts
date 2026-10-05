@@ -104,7 +104,8 @@ test.describe('Template media header — issue #355', () => {
     await accountCombo.click()
     await page.getByRole('option', { name: accountName }).first().click()
 
-    // Body content.
+    // Body content (Content step).
+    await page.getByTestId('template-step-content').click()
     await page.locator('textarea').first().fill('Hello no-media')
 
     // Switch header type to IMAGE.

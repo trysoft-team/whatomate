@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import type { IVRNode, IVRNodeType } from '@/services/api'
-import { ivrFlowsService } from '@/services/api'
+import { ivrFlowsService, chatbotService } from '@/services/api'
 import { useCallingStore } from '@/stores/calling'
 import { useTeamsStore } from '@/stores/teams'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -418,10 +419,124 @@ function variableChip(name: string) {
   return `{{${name}}}`
 }
 
+type AIContextOption = {
+  id: string
+  name: string
+  context_type?: string
+  enabled?: boolean
+  is_enabled?: boolean
+  priority?: number
+}
+
+const aiContextOptions = ref<AIContextOption[]>([])
+const aiContextsLoading = ref(false)
+let aiContextsFetched = false
+
+async function ensureAIContextsLoaded() {
+  if (aiContextsFetched || aiContextsLoading.value) return
+  aiContextsLoading.value = true
+  try {
+    const res = await chatbotService.listAIContexts({ limit: 200 })
+    const data = (res.data as any)?.data || res.data
+    const list = data?.contexts || data || []
+    aiContextOptions.value = (Array.isArray(list) ? list : []).map((c: any) => ({
+      id: String(c.id),
+      name: String(c.name || 'Untitled'),
+      context_type: c.context_type,
+      enabled: c.enabled ?? c.is_enabled,
+      is_enabled: c.is_enabled ?? c.enabled,
+      priority: c.priority,
+    }))
+    aiContextsFetched = true
+  } catch (e) {
+    console.error('Failed to load AI contexts', e)
+  } finally {
+    aiContextsLoading.value = false
+  }
+}
+
+const aiContextMode = computed(() => {
+  const mode = String(config.value.ai_context_mode || '').toLowerCase()
+  if (mode === 'selected') return 'selected'
+  const ids = Array.isArray(config.value.ai_context_ids) ? config.value.ai_context_ids : []
+  if (ids.length > 0) return 'selected'
+  return 'all'
+})
+
+const selectedAIContextIds = computed((): string[] => {
+  const raw = config.value.ai_context_ids
+  if (!Array.isArray(raw)) return []
+  return raw.map((id: any) => String(id)).filter(Boolean)
+})
+
+function setAIContextMode(mode: 'all' | 'selected') {
+  if (mode === 'all') {
+    const next = { ...props.node.config, ai_context_mode: 'all' }
+    delete next.ai_context_ids
+    emit('update:node', { ...props.node, config: next })
+    return
+  }
+  updateConfigEntries({
+    ai_context_mode: 'selected',
+    ai_context_ids: Array.isArray(config.value.ai_context_ids) ? config.value.ai_context_ids : [],
+  })
+}
+
+function toggleAIContextId(id: string, checked: boolean) {
+  const set = new Set(selectedAIContextIds.value)
+  if (checked) set.add(id)
+  else set.delete(id)
+  updateConfigEntries({
+    ai_context_mode: 'selected',
+    ai_context_ids: Array.from(set),
+  })
+}
+
+function isAIContextSelected(id: string) {
+  return selectedAIContextIds.value.includes(id)
+}
+
+function extraKnowledgeRows(): Array<{ name: string; value: string }> {
+  const raw = config.value.extra_knowledge
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((a: any) => ({ name: a?.name || '', value: a?.value || '' }))
+  }
+  return [{ name: '', value: '' }]
+}
+
+function updateExtraKnowledge(index: number, key: 'name' | 'value', value: string) {
+  const next = extraKnowledgeRows()
+  next[index] = { ...next[index], [key]: value }
+  updateConfig('extra_knowledge', next)
+}
+
+function addExtraKnowledge() {
+  updateConfig('extra_knowledge', [...extraKnowledgeRows(), { name: '', value: '' }])
+}
+
+function removeExtraKnowledge(index: number) {
+  const next = extraKnowledgeRows().filter((_, i) => i !== index)
+  updateConfig('extra_knowledge', next.length ? next : [{ name: '', value: '' }])
+}
+
+watch(
+  () => props.node.type,
+  (type) => {
+    if (type === 'ai_call') ensureAIContextsLoaded()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  if (props.node.type === 'ai_call') ensureAIContextsLoaded()
+})
+
 type AICallTool = {
   name: string
   description: string
   handler: string
+  /** UX flag: after the tool runs, AI Call continues. Canvas edges are only for handler=nodes. */
+  return_to_call?: boolean
   parameters?: Record<string, any>
   http?: { url?: string; method?: string; body_template?: string; headers?: Record<string, string> }
 }
@@ -429,13 +544,18 @@ type AICallTool = {
 const aiCallTools = computed((): AICallTool[] => {
   const raw = config.value.tools
   if (!Array.isArray(raw)) return []
-  return raw.map((t: any) => ({
-    name: t?.name || '',
-    description: t?.description || '',
-    handler: t?.handler || 'http',
-    parameters: t?.parameters,
-    http: t?.http || {},
-  }))
+  return raw.map((t: any) => {
+    const handler = t?.handler || 'http'
+    return {
+      name: t?.name || '',
+      description: t?.description || '',
+      handler,
+      // Default on for nodes; otherwise respect saved flag
+      return_to_call: handler === 'nodes' ? (t?.return_to_call !== false) : !!t?.return_to_call,
+      parameters: t?.parameters,
+      http: t?.http || {},
+    }
+  })
 })
 
 function setAICallTools(next: AICallTool[]) {
@@ -449,6 +569,7 @@ function addAICallTool() {
       name: '',
       description: '',
       handler: 'http',
+      return_to_call: false,
       parameters: { type: 'object', properties: {} },
       http: { url: '', method: 'POST', body_template: '', headers: {} },
     },
@@ -461,8 +582,16 @@ function removeAICallTool(index: number) {
   setAICallTools(next)
 }
 
-function updateAICallTool(index: number, key: keyof AICallTool, value: string) {
-  const next = aiCallTools.value.map((t, i) => (i === index ? { ...t, [key]: value } : t))
+function updateAICallTool(index: number, key: keyof AICallTool, value: string | boolean) {
+  const next = aiCallTools.value.map((t, i) => {
+    if (i !== index) return t
+    const updated = { ...t, [key]: value }
+    // Selecting Nodes implies return-to-call (subgraph resumes AI Call)
+    if (key === 'handler' && value === 'nodes') {
+      updated.return_to_call = true
+    }
+    return updated
+  })
   setAICallTools(next)
 }
 
@@ -793,6 +922,19 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
     <!-- Send Message -->
     <template v-if="node.type === 'send_message'">
       <div class="space-y-1.5">
+        <Label class="text-xs">To (phone)</Label>
+        <Input
+          :model-value="config.to || ''"
+          @update:model-value="(v: string) => updateConfig('to', v)"
+          class="h-8 text-xs font-mono"
+          placeholder="Empty = caller phone"
+        />
+        <p class="text-[10px] text-muted-foreground">
+          WhatsApp number. Leave empty (or use a missing variable) to use the caller’s phone.
+          Mid-call Nodes tools can pass <code class="font-mono">phone</code> / <code class="font-mono">message</code> as arguments.
+        </p>
+      </div>
+      <div class="space-y-1.5">
         <Label class="text-xs">Message body</Label>
         <Textarea
           :model-value="config.body || ''"
@@ -800,7 +942,10 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
           class="min-h-[80px] text-xs resize-none"
           placeholder="Thanks {{caller_name}}, we received your request."
         />
-        <p class="text-[10px] text-muted-foreground">Sent as WhatsApp text to the caller. Supports {{variables}}.</p>
+        <p class="text-[10px] text-muted-foreground">
+          WhatsApp text for this organization. Use flow variables; leave body mostly empty only if a Nodes tool will pass
+          <code class="font-mono">message</code> or fill name/date/time vars.
+        </p>
       </div>
     </template>
 
@@ -916,16 +1061,93 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs font-semibold">Knowledge</Label>
-        <p class="text-xs text-muted-foreground rounded-md border bg-muted/40 px-2.5 py-2">
-          Context is loaded from enabled
+        <p class="text-[10px] text-muted-foreground">
+          Choose
           <a href="/chatbot/ai" class="underline underline-offset-2 hover:text-foreground">AI Contexts</a>
-          (static + API), same as chatbot AI replies.
+          to merge into the session (static + API). Disabled contexts are skipped.
         </p>
+        <div class="rounded-md border bg-muted/40 p-2.5 space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              class="h-3.5 w-3.5"
+              :checked="aiContextMode === 'all'"
+              @change="setAIContextMode('all')"
+            />
+            <span class="text-xs">All enabled contexts</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              class="h-3.5 w-3.5"
+              :checked="aiContextMode === 'selected'"
+              @change="setAIContextMode('selected')"
+            />
+            <span class="text-xs">Selected contexts</span>
+          </label>
+          <div v-if="aiContextMode === 'selected'" class="space-y-1.5 pt-1 border-t border-border/60">
+            <p v-if="aiContextsLoading" class="text-[10px] text-muted-foreground">Loading contexts…</p>
+            <p v-else-if="aiContextOptions.length === 0" class="text-[10px] text-muted-foreground">
+              No AI Contexts yet.
+              <a href="/chatbot/ai" class="underline underline-offset-2 hover:text-foreground">Create one</a>
+            </p>
+            <div
+              v-for="c in aiContextOptions"
+              :key="c.id"
+              class="flex items-start gap-2 py-0.5"
+            >
+              <Checkbox
+                class="mt-0.5"
+                :checked="isAIContextSelected(c.id)"
+                @update:checked="(v: boolean) => toggleAIContextId(c.id, !!v)"
+              />
+              <div class="min-w-0 flex-1">
+                <div class="text-xs truncate">{{ c.name }}</div>
+                <div class="text-[10px] text-muted-foreground flex gap-1.5 flex-wrap">
+                  <span class="capitalize">{{ c.context_type || 'static' }}</span>
+                  <span v-if="!(c.enabled ?? c.is_enabled)" class="text-amber-600">disabled</span>
+                </div>
+              </div>
+            </div>
+            <p v-if="aiContextMode === 'selected' && selectedAIContextIds.length === 0" class="text-[10px] text-muted-foreground">
+              None selected — no knowledge block will be injected.
+            </p>
+          </div>
+        </div>
+        <div class="space-y-1.5 pt-1">
+          <div class="flex items-center justify-between">
+            <Label class="text-xs">Extra knowledge</Label>
+            <Button variant="outline" size="sm" class="h-6 text-xs" @click="addExtraKnowledge">
+              <Plus class="h-3 w-3 mr-1" /> Add
+            </Button>
+          </div>
+          <p class="text-[10px] text-muted-foreground">
+            Named facts injected into the AI prompt. Value can be literal text or a session variable
+            (e.g. <code v-pre class="bg-muted px-1 py-0.5 rounded">{{caller_name}}</code>).
+          </p>
+          <div v-for="(row, i) in extraKnowledgeRows()" :key="i" class="flex items-center gap-1.5">
+            <Input
+              :model-value="row.name"
+              @update:model-value="(v: string) => updateExtraKnowledge(i, 'name', v)"
+              placeholder="Caller name"
+              class="h-7 text-xs w-32"
+            />
+            <Input
+              :model-value="row.value"
+              @update:model-value="(v: string) => updateExtraKnowledge(i, 'value', v)"
+              :placeholder="'Test User or {{caller_name}}'"
+              class="h-7 text-xs flex-1 font-mono"
+            />
+            <Button variant="ghost" size="icon" class="h-6 w-6" @click="removeExtraKnowledge(i)">
+              <Trash2 class="h-3 w-3 text-destructive" />
+            </Button>
+          </div>
+        </div>
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs font-semibold">System Instructions</Label>
         <Textarea :model-value="config.system_instructions || ''" @update:model-value="(v: string) => updateConfig('system_instructions', v)" class="min-h-[80px] text-xs resize-none" placeholder="Optional override — leave blank to use org AI system prompt" />
-        <p class="text-[10px] text-muted-foreground">Blank = org system prompt from Settings → AI. AI Contexts are merged into the Live session instructions.</p>
+        <p class="text-[10px] text-muted-foreground">Blank = org system prompt from Settings → AI. Selected Knowledge contexts are merged into the Live session instructions.</p>
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs font-semibold">Voice</Label>
@@ -1097,6 +1319,11 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
             <Plus class="w-3 h-3 mr-1" /> Add
           </Button>
         </div>
+        <p class="text-[10px] text-muted-foreground leading-snug">
+          Only the <strong>Nodes</strong> handler gets a <code class="font-mono">fn:&lt;name&gt;</code> canvas edge
+          (wire to Send Message, Condition, HTTP, …). Other handlers run inline.
+          <strong>Return to call</strong> means the AI Call continues after the function.
+        </p>
         <div v-for="(tool, idx) in aiCallTools" :key="idx" class="rounded border p-2 space-y-1.5 bg-muted/30">
           <div class="flex justify-between gap-1">
             <Input :model-value="tool.name" @update:model-value="(v: string) => updateAICallTool(idx, 'name', v)" placeholder="function_name" class="h-7 text-xs font-mono" />
@@ -1107,15 +1334,55 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
             <SelectTrigger class="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="http">HTTP</SelectItem>
+              <SelectItem value="nodes">Nodes</SelectItem>
               <SelectItem value="transfer">Transfer</SelectItem>
               <SelectItem value="hangup">Hangup</SelectItem>
               <SelectItem value="set_variable">Set variable</SelectItem>
             </SelectContent>
           </Select>
           <template v-if="(tool.handler || 'http') === 'http'">
-            <Input :model-value="tool.http?.url || ''" @update:model-value="(v: string) => updateAICallToolHTTP(idx, 'url', v)" placeholder="https://…" class="h-7 text-xs font-mono" />
-            <Textarea :model-value="tool.http?.body_template || ''" @update:model-value="(v: string) => updateAICallToolHTTP(idx, 'body_template', v)" placeholder='{"id":"{{order_id}}"}' class="min-h-[40px] text-[10px] font-mono resize-none" />
+            <Select
+              :model-value="tool.http?.method || 'POST'"
+              @update:model-value="(v: any) => updateAICallToolHTTP(idx, 'method', v)"
+            >
+              <SelectTrigger class="h-7 text-xs"><SelectValue placeholder="Method" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="GET">GET</SelectItem>
+                <SelectItem value="POST">POST</SelectItem>
+                <SelectItem value="PUT">PUT</SelectItem>
+                <SelectItem value="PATCH">PATCH</SelectItem>
+                <SelectItem value="DELETE">DELETE</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input :model-value="tool.http?.url || ''" @update:model-value="(v: string) => updateAICallToolHTTP(idx, 'url', v)" placeholder="https://… (inline)" class="h-7 text-xs font-mono" />
+            <Textarea
+              v-if="(tool.http?.method || 'POST') !== 'GET'"
+              :model-value="tool.http?.body_template || ''"
+              @update:model-value="(v: string) => updateAICallToolHTTP(idx, 'body_template', v)"
+              placeholder='{"id":"{{order_id}}"}'
+              class="min-h-[40px] text-[10px] font-mono resize-none"
+            />
+            <p class="text-[10px] text-muted-foreground">
+              Success = HTTP <code class="font-mono">2xx</code>. Non-2xx (e.g. 405) returns
+              <code class="font-mono">success: false</code> to the AI.
+            </p>
           </template>
+          <p v-else-if="tool.handler === 'nodes'" class="text-[10px] text-muted-foreground">
+            Canvas handle <code class="font-mono">fn:{{ tool.name || '…' }}</code> —
+            link to Send Message, Condition, HTTP, or other logic nodes.
+          </p>
+          <div class="flex items-center gap-2 pt-0.5 border-t border-border/50">
+            <Checkbox
+              :checked="!!tool.return_to_call"
+              @update:checked="(v: boolean) => updateAICallTool(idx, 'return_to_call', !!v)"
+            />
+            <Label class="text-xs font-normal cursor-pointer" @click="updateAICallTool(idx, 'return_to_call', !tool.return_to_call)">
+              Return to call
+            </Label>
+          </div>
+          <p v-if="tool.handler === 'nodes'" class="text-[10px] text-muted-foreground">
+            Nodes always resume this AI Call after the linked subgraph. The edge is only on the Nodes type.
+          </p>
         </div>
       </div>
     </template>

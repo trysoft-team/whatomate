@@ -141,9 +141,39 @@ POST /api/contacts/{id}/mark-read
 
 This flips the contact's incoming messages to `read`. If the sending account has **auto read receipts** enabled, Whatomate also sends read receipts (the blue ticks) back to the customer over the WhatsApp API.
 
+### Agent typing indicator
+
+When an agent focuses the chat compose box, Whatomate sends WhatsApp’s typing indicator so the customer sees “typing…”. The indicator refreshes about every 20 seconds while the composer stays focused. **Unfocus** (blur, tab switch, or contact switch) stops refreshing immediately. Meta has no “stop typing” API — the indicator clears when the agent sends a message, or automatically within ~25 seconds of the last refresh.
+
+```
+POST /api/contacts/{id}/typing
+```
+
+Optional body: `{ "whatsapp_account": "<account name>" }` for multi-account contacts. Requires a recent inbound WhatsApp message ID for that conversation.
+
 <Aside type="tip">
   Canned responses speed up repetitive replies — type `/shortcut` in the chat input to insert a pre-written message. See [Canned Responses](/whatomate/features/canned-responses).
 </Aside>
+
+## AI assist
+
+When AI is enabled under **Settings → AI**, agents with **`chat:write`** get AI helpers in the chat view. Nothing is sent to the customer automatically: AI output is placed in the composer (or shown to the agent) for review.
+
+| Tool | Where | What it does |
+|------|-------|--------------|
+| Suggest reply | ✨ menu in the composer | Drafts the next reply from the recent conversation and your AI contexts. |
+| Rewrite draft | ✨ menu | Rewrites the current draft: friendlier, professional, shorter, grammar-only, or WhatsApp formatting. A toast offers **Undo**. |
+| Translate draft | ✨ menu | Detects the customer's language and translates your draft into it. |
+| Quick replies | "Suggest replies" above the composer | Three short reply chips; clicking one fills the composer. |
+| Summarize | ✨ menu | Summary, key points, open questions and customer mood. |
+| Tags & contact details | ✨ menu (needs `contacts:write`) | Proposes tags and details (name, email, company, city, language) the customer stated; apply the ones you tick. |
+| Translate message | Hover an incoming message | Translates it into the agent's UI language. Translations are cached on the message. |
+| Transcribe | Under a voice note | Transcribes the audio with the provider set under **Settings → AI → Voice transcription** (OpenAI Whisper, Gemini, or an audio model on OpenRouter). The transcript is cached on the message. |
+| Suggest template | 24-hour-window-expired banner | Picks an approved template and pre-fills its variables; you review before sending. |
+
+**Handoff summary.** When a chat is transferred to an agent, Whatomate summarizes the conversation in the background and shows it above the composer for the active transfer. Turn it off with **AI handoff summary** in Settings → AI.
+
+Endpoints: `POST /api/contacts/{id}/ai-assist` with `mode` = `suggest_reply`, `rewrite`, `summarize`, `translate`, `quick_replies`, `suggest_tags_fields` or `suggest_template`; and `POST /api/messages/{id}/transcribe`. Usage is recorded under the `chat_assist`, `handoff_summary` and `transcribe` purposes.
 
 ## Private conversation notes
 

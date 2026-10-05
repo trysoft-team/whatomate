@@ -610,4 +610,5 @@ func (a *App) broadcastCallEvent(orgID uuid.UUID, eventType string, payload map[
 		Type:    eventType,
 		Payload: payload,
 	})
+	a.NotifyWidgetLiveUpdate(orgID, "calls", "agents")
 }

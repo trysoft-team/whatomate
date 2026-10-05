@@ -73,6 +73,20 @@ Built-ins available from the first node onward:
 - `{{caller_name}}` — WhatsApp profile name
 - `{{call_id}}` — WhatsApp call ID
 
+#### AI Call
+
+Realtime (Pipecat / Gemini Live) or turn-based multi-turn voice AI using organization AI settings.
+
+| Property | Description |
+|----------|-------------|
+| **Knowledge** | `ai_context_mode`: `all` (default) uses every enabled AI Context; `selected` uses only `ai_context_ids` (one or many). Disabled contexts are skipped. Manage contexts under Chatbot → AI Contexts. |
+| **Extra knowledge** | `extra_knowledge`: name/value facts (e.g. Caller name → `Test User` or `{{caller_name}}`) injected into the prompt after AI Contexts. |
+| **Functions** | Tools the model may call. Handler **Nodes** is the only type with a `fn:<name>` canvas edge (wire to Send Message, Condition, HTTP, …). **Return to call** means the AI Call continues after the function; it does not add an edge. HTTP / Transfer / Hangup / Set variable run inline. |
+| **System instructions** | Optional override of the org AI system prompt |
+| **Voice** | Gemini Live voice (or turn-based TTS provider) |
+
+Caller speech pauses the assistant (barge-in). On `end_call`, the assistant finishes its last words, then the line disconnects — no mid-sentence hangup.
+
 #### Greeting
 
 Plays an audio message to the caller. The audio can be uploaded as a file or generated from text using TTS (text-to-speech).

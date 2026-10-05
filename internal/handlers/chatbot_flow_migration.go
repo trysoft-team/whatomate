@@ -11,6 +11,29 @@ import (
 	"github.com/shridarpatil/whatomate/internal/models"
 )
 
+// BackfillChatbotFlowDraftGraph copies published graph → draft_graph for rows
+// that still have a null draft. Idempotent.
+func BackfillChatbotFlowDraftGraph(db *gorm.DB, lo logf.Logger) error {
+	mig := db.Migrator()
+	if !mig.HasColumn(&models.ChatbotFlow{}, "draft_graph") {
+		return nil
+	}
+	result := db.Exec(`
+		UPDATE chatbot_flows
+		SET draft_graph = graph,
+		    published_at = COALESCE(published_at, updated_at, NOW()),
+		    has_unpublished_changes = false
+		WHERE draft_graph IS NULL AND graph IS NOT NULL
+	`)
+	if result.Error != nil {
+		return fmt.Errorf("backfill draft_graph: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		lo.Info("Backfilled chatbot flow draft graphs", "rows", result.RowsAffected)
+	}
+	return nil
+}
+
 // BackfillChatbotFlowGraph fills ChatbotFlow.Graph for every row where
 // it is currently NULL by running stepsToGraph against the legacy
 // chatbot_flow_steps table + canvas_layout column. Idempotent and safe

@@ -11,6 +11,7 @@ import { User, Eye, EyeOff, Loader2 } from 'lucide-vue-next'
 import { usersService } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { PageHeader } from '@/components/shared'
+import PasskeysCard from '@/components/profile/PasskeysCard.vue'
 import { getErrorMessage } from '@/lib/api-utils'
 
 const { t } = useI18n()
@@ -169,6 +170,8 @@ async function changePassword() {
             </div>
           </CardContent>
         </Card>
+
+        <PasskeysCard />
       </div>
     </ScrollArea>
   </div>

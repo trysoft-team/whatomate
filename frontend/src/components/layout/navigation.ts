@@ -24,7 +24,8 @@ import {
   ScrollText,
   Building2,
   BookUser,
-  Sheet
+  Sheet,
+  History
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 
@@ -79,6 +80,7 @@ export const navigationSections: NavSection[] = [
         childPermissions: ['settings.chatbot', 'chatbot.keywords', 'flows.chatbot', 'chatbot.ai', 'transfers'],
         children: [
           { name: 'nav.overview', path: '/chatbot', icon: Bot, permission: 'settings.chatbot' },
+          { name: 'nav.sessions', path: '/chatbot/sessions', icon: History, permission: 'settings.chatbot' },
           { name: 'nav.keywords', path: '/chatbot/keywords', icon: Key, permission: 'chatbot.keywords' },
           { name: 'nav.flows', path: '/chatbot/flows', icon: Workflow, permission: 'flows.chatbot' },
           { name: 'nav.aiContexts', path: '/chatbot/ai', icon: Sparkles, permission: 'chatbot.ai' },
@@ -147,6 +149,7 @@ export const navigationSections: NavSection[] = [
           { name: 'nav.general', path: '/settings', icon: Settings, permission: 'settings.general' },
           { name: 'nav.organizations', path: '/settings/organizations', icon: Building2, superAdmin: true },
           { name: 'nav.chatbot', path: '/settings/chatbot', icon: Bot, permission: 'settings.chatbot' },
+          { name: 'nav.aiSettings', path: '/settings/ai', icon: Sparkles, permission: 'settings.chatbot' },
           { name: 'nav.accounts', path: '/settings/accounts', icon: Users, permission: 'accounts' },
           { name: 'nav.contacts', path: '/settings/contacts', icon: Contact, permission: 'contacts' },
           { name: 'nav.cannedResponses', path: '/settings/canned-responses', icon: MessageSquareText, permission: 'canned_responses' },

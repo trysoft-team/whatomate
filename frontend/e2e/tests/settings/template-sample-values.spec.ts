@@ -6,7 +6,8 @@ const scope = createTestScope('tpl-sample-values')
 
 async function gotoNewTemplate(page: Page) {
   await page.goto('/templates/new')
-  // Wait for the Vue app to mount — the body textarea is inside the Content card
+  // The body textarea lives on the Content step of the editor
+  await page.getByTestId('template-step-content').click()
   const bodyTextarea = page.locator('textarea').first()
   await bodyTextarea.waitFor({ state: 'visible', timeout: 15000 })
   // Ensure textarea is enabled/editable

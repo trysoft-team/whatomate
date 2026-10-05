@@ -14,11 +14,13 @@ const outputHandles = computed(() => {
   // button taps via the namespaced "button:<id>" outcome (author-controlled
   // ids are prefixed so they can't collide with reserved outcomes like
   // "default" or "true"), so the handle must carry that prefix too.
-  return buttons.value.map((b: any) => ({
+  const handles = buttons.value.map((b: any) => ({
     id: `button:${b.id}`,
     label: b.title || '—',
     title: b.title || '—',
   }))
+  handles.push({ id: 'unmatched', label: 'Unmatched', title: 'Free text / unknown' })
+  return handles
 })
 </script>
 

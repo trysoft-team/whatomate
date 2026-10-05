@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick, computed, defineAsyncComponent } from 'vue'
+import { ref, shallowRef, watch, onMounted, onUnmounted, nextTick, computed, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useContactsStore, type Contact, type Message } from '@/stores/contacts'
@@ -7,12 +7,13 @@ import { useAuthStore } from '@/stores/auth'
 import { useUsersStore } from '@/stores/users'
 import { useTransfersStore } from '@/stores/transfers'
 import { wsService } from '@/services/websocket'
-import { contactsService, chatbotService, messagesService, customActionsService, accountsService, cannedResponsesService, getRequestHeaders, type CustomAction, type ActionResult, type CannedResponse } from '@/services/api'
+import { contactsService, chatbotService, messagesService, customActionsService, accountsService, cannedResponsesService, chatAIService, templatesService, getRequestHeaders, type CustomAction, type ActionResult, type CannedResponse, type ChatAITextResult, type ChatAITemplateSuggestion } from '@/services/api'
 import { useTagsStore } from '@/stores/tags'
 import { TagBadge } from '@/components/ui/tag-badge'
 import { getTagColorClass } from '@/lib/constants'
 import { getErrorMessage } from '@/lib/api-utils'
 import { compressImage } from '@/lib/imageCompression'
+import { formatWhatsAppText } from '@/lib/whatsappFormat'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -88,9 +89,16 @@ import {
   Code,
   RotateCw,
   Filter,
-  StickyNote
+  StickyNote,
+  Bot,
+  Mic,
+  Trash2,
+  Sparkles,
+  Languages,
+  ChevronDown,
+  RefreshCw
 } from 'lucide-vue-next'
-import { getInitials, getAvatarGradient } from '@/lib/utils'
+import { getInitials, getAvatarGradient, formatTime } from '@/lib/utils'
 import { useColorMode } from '@/composables/useColorMode'
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll'
 import CannedResponsePicker from '@/components/chat/CannedResponsePicker.vue'
@@ -104,9 +112,14 @@ import { useNotesStore } from '@/stores/notes'
 import { useHeaderMedia } from '@/composables/useHeaderMedia'
 import { CreateContactDialog } from '@/components/shared'
 import HeaderMediaUpload from '@/components/shared/HeaderMediaUpload.vue'
+import ChatAIMenu from '@/components/chat/ChatAIMenu.vue'
+import ChatAIQuickReplies from '@/components/chat/ChatAIQuickReplies.vue'
+import ChatAISummaryDialog from '@/components/chat/ChatAISummaryDialog.vue'
+import ChatAITagsFieldsDialog from '@/components/chat/ChatAITagsFieldsDialog.vue'
+import RecordingWaveform from '@/components/chat/RecordingWaveform.vue'
 import { Info } from 'lucide-vue-next'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const contactsStore = useContactsStore()
@@ -126,6 +139,24 @@ const isSending = ref(false)
 const isAssignDialogOpen = ref(false)
 const isTransferring = ref(false)
 const isResuming = ref(false)
+const isClosingAgentSession = ref(false)
+const isRecording = ref(false)
+const isSendingRecording = ref(false)
+const recordingSeconds = ref(0)
+let mediaRecorder: MediaRecorder | null = null
+let recordingStream: MediaStream | null = null
+const activeRecordingStream = shallowRef<MediaStream | null>(null)
+let recordingChunks: Blob[] = []
+let recordingMimeType = ''
+let recordingTimer: ReturnType<typeof setInterval> | null = null
+const MAX_RECORDING_SECONDS = 600
+
+const recordingLabel = computed(() => {
+  const s = recordingSeconds.value
+  const mins = Math.floor(s / 60)
+  const secs = s % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+})
 // Tracks incoming messages that arrived while the chat is open.
 // Surfaced as a "N unread messages" pill at the top of the chat panel
 // (WhatsApp-style). Click the pill to jump up to the first message of
@@ -216,10 +247,106 @@ const executingActionId = ref<string | null>(null)
 const isTagFilterOpen = ref(false)
 
 // Service window state
+const nowTick = ref(Date.now())
+let serviceWindowTimer: ReturnType<typeof setInterval> | null = null
+
 const isServiceWindowExpired = computed(() => {
   const contact = contactsStore.currentContact
   if (!contact) return false
+  // Prefer live last_inbound_at when present; fall back to API flag.
+  if (contact.last_inbound_at) {
+    const expires = new Date(contact.last_inbound_at).getTime() + 24 * 60 * 60 * 1000
+    return nowTick.value >= expires
+  }
   return contact.service_window_open === false
+})
+
+const serviceWindowExpiresAt = computed(() => {
+  const raw = contactsStore.currentContact?.last_inbound_at
+  if (!raw) return null
+  return new Date(new Date(raw).getTime() + 24 * 60 * 60 * 1000)
+})
+
+const serviceWindowRemainingMs = computed(() => {
+  const expires = serviceWindowExpiresAt.value
+  if (!expires) return null
+  return expires.getTime() - nowTick.value
+})
+
+const agentSessionMutedUntil = computed(() => {
+  const contact = contactsStore.currentContact
+  if (!contact) return null
+  const raw = contact.bot_muted_until || contact.metadata?.bot_muted_until
+  if (!raw || typeof raw !== 'string') return null
+  const until = new Date(raw)
+  if (Number.isNaN(until.getTime())) return null
+  return until
+})
+
+const agentSessionTimeoutActive = computed(() => {
+  const until = agentSessionMutedUntil.value
+  if (!until) return false
+  return until.getTime() > nowTick.value
+})
+
+const agentSessionRemainingMs = computed(() => {
+  const until = agentSessionMutedUntil.value
+  if (!until) return 0
+  return Math.max(0, until.getTime() - nowTick.value)
+})
+
+function formatCountdown(ms: number): string {
+  const totalSec = Math.ceil(ms / 1000)
+  const mins = Math.floor(totalSec / 60)
+  const secs = totalSec % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+const agentSessionTimeoutLabel = computed(() => {
+  void nowTick.value
+  if (!agentSessionTimeoutActive.value) return ''
+  const time = formatCountdown(agentSessionRemainingMs.value)
+  // Prefer i18n; fall back so the countdown is never blank if the key is missing.
+  const label = t('chat.sessionTimeoutLeft', { time })
+  if (!label || label === 'chat.sessionTimeoutLeft' || !label.includes(time)) {
+    return `Session timeout · ${time}`
+  }
+  return label
+})
+
+function formatDurationShort(ms: number): string {
+  if (ms <= 0) return ''
+  const totalMins = Math.floor(ms / 60000)
+  const hours = Math.floor(totalMins / 60)
+  const mins = totalMins % 60
+  if (hours > 0) return `${hours}h ${mins}m`
+  if (mins > 0) return `${mins}m`
+  return '<1m'
+}
+
+const serviceWindowLabel = computed(() => {
+  void nowTick.value
+  const contact = contactsStore.currentContact
+  if (!contact) return ''
+  if (!contact.last_inbound_at) {
+    return t('chat.serviceWindowNone')
+  }
+  const remaining = serviceWindowRemainingMs.value
+  if (remaining == null) return ''
+  if (remaining <= 0) {
+    return t('chat.serviceWindowClosed')
+  }
+  const timeLeft = formatDurationShort(remaining) || '<1m'
+  return t('chat.serviceWindowOpenLeft', { time: timeLeft })
+})
+
+const serviceWindowTitle = computed(() => {
+  const expires = serviceWindowExpiresAt.value
+  if (!expires) return t('chat.serviceWindowNoneHint')
+  if ((serviceWindowRemainingMs.value ?? 0) <= 0) {
+    return t('chat.serviceWindowClosedHint', { when: expires.toLocaleString() })
+  }
+  return t('chat.serviceWindowOpenHint', { when: expires.toLocaleString() })
 })
 
 function openTemplatePicker() {
@@ -289,6 +416,192 @@ const activeTransfer = computed(() => {
 
 const activeTransferId = computed(() => activeTransfer.value?.id || null)
 
+// AI assist
+const canUseChatAI = authStore.hasPermission('chat', 'write')
+const aiSummaryOpen = ref(false)
+const aiTagsOpen = ref(false)
+const isSuggestingTemplate = ref(false)
+const translatingMessageId = ref<string | null>(null)
+const transcribingMessageId = ref<string | null>(null)
+const hiddenTranslations = ref(new Set<string>())
+const collapsedHandoffSummaries = ref(new Set<string>())
+
+const LOCALE_LANGUAGES: Record<string, string> = {
+  en: 'English', es: 'Spanish', pt: 'Portuguese', hi: 'Hindi', ar: 'Arabic', ta: 'Tamil',
+}
+const agentLanguage = computed(() => LOCALE_LANGUAGES[String(locale.value).split('-')[0]] || 'English')
+const lastMessageId = computed(() => contactsStore.messages[contactsStore.messages.length - 1]?.id)
+
+function applyAIText(text: string, note?: string) {
+  const previous = messageInput.value
+  messageInput.value = text
+  nextTick(() => {
+    autoResizeTextarea()
+    messageInputRef.value?.focus()
+  })
+  if (previous.trim() && previous !== text) {
+    toast.success(note || t('chat.ai.draftReplaced'), {
+      action: { label: t('chat.ai.undo'), onClick: () => { messageInput.value = previous; nextTick(autoResizeTextarea) } },
+    })
+  } else if (note) {
+    toast.success(note)
+  }
+}
+
+function isSameText(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
+function messageTranslation(message: Message): string {
+  if (hiddenTranslations.value.has(message.id)) return ''
+  const text = message.translations?.[agentLanguage.value.toLowerCase()] || ''
+  if (!text || isSameText(text, message.transcript || getMessageContent(message) || '')) return ''
+  return text
+}
+
+function canTranslateMessage(message: Message): boolean {
+  return canUseChatAI && message.direction === 'incoming' && !!(getMessageContent(message) || message.transcript)
+}
+
+async function translateMessage(message: Message) {
+  const key = agentLanguage.value.toLowerCase()
+  const hidden = new Set(hiddenTranslations.value)
+  const cached = message.translations?.[key]
+  if (cached) {
+    if (isSameText(cached, message.transcript || getMessageContent(message) || '')) {
+      toast.info(t('chat.ai.alreadyInLanguage', { language: agentLanguage.value }))
+      return
+    }
+    if (hidden.has(message.id)) hidden.delete(message.id)
+    else hidden.add(message.id)
+    hiddenTranslations.value = hidden
+    return
+  }
+  if (!contactsStore.currentContact || translatingMessageId.value) return
+  translatingMessageId.value = message.id
+  try {
+    const res = await chatAIService.assist<ChatAITextResult>(contactsStore.currentContact.id, {
+      mode: 'translate',
+      message_id: message.id,
+      target_language: agentLanguage.value,
+    })
+    const text = res.data.data.text
+    message.translations = { ...(message.translations || {}), [key]: text }
+    hidden.delete(message.id)
+    hiddenTranslations.value = hidden
+    if (isSameText(text, message.transcript || getMessageContent(message) || '')) {
+      toast.info(t('chat.ai.alreadyInLanguage', { language: agentLanguage.value }))
+    }
+  } catch (e) {
+    toast.error(getErrorMessage(e, t('chat.ai.failed')))
+  } finally {
+    translatingMessageId.value = null
+  }
+}
+
+async function transcribeMessage(message: Message, force = false) {
+  if (transcribingMessageId.value) return
+  transcribingMessageId.value = message.id
+  try {
+    const res = await chatAIService.transcribe(message.id, force)
+    message.transcript = res.data.data.text
+    if (!message.transcript) toast.info(t('chat.ai.noSpeech'))
+  } catch (e) {
+    toast.error(getErrorMessage(e, t('chat.ai.failed')))
+  } finally {
+    transcribingMessageId.value = null
+  }
+}
+
+async function suggestTemplateWithAI() {
+  const contact = contactsStore.currentContact
+  if (!contact || isSuggestingTemplate.value) return
+  isSuggestingTemplate.value = true
+  try {
+    const res = await chatAIService.assist<ChatAITemplateSuggestion>(contact.id, { mode: 'suggest_template' })
+    const suggestion = res.data.data
+    const tplRes = await templatesService.get(suggestion.template_id)
+    const template = (tplRes.data as any)?.data || tplRes.data
+    const body: string = template.body_content || ''
+    const names = [...new Set((body.match(/\{\{([^}]+)\}\}/g) || []).map(m => m.replace(/\{\{|\}\}/g, '').trim()))]
+    handleTemplateWithParams(template, names)
+    for (const [name, value] of Object.entries(suggestion.params || {})) {
+      if (!templateParamValues.value[name]?.trim()) templateParamValues.value[name] = value
+    }
+    if (suggestion.reason) toast.info(suggestion.reason)
+  } catch (e) {
+    toast.error(getErrorMessage(e, t('chat.ai.failed')))
+  } finally {
+    isSuggestingTemplate.value = false
+  }
+}
+
+function toggleHandoffSummary(transferId: string) {
+  const next = new Set(collapsedHandoffSummaries.value)
+  if (next.has(transferId)) next.delete(transferId)
+  else next.add(transferId)
+  collapsedHandoffSummaries.value = next
+}
+
+const TYPING_PULSE_MS = 20_000
+let typingPulseTimer: ReturnType<typeof setInterval> | null = null
+const composerFocused = ref(false)
+
+function stopAgentTypingPulse() {
+  if (typingPulseTimer) {
+    clearInterval(typingPulseTimer)
+    typingPulseTimer = null
+  }
+}
+
+function pulseAgentTyping() {
+  const contact = contactsStore.currentContact
+  if (!contact || !composerFocused.value) return
+  contactsService.sendTyping(contact.id, selectedAccount.value).catch(() => { /* non-critical */ })
+}
+
+function startAgentTypingPulse() {
+  stopAgentTypingPulse()
+  if (!composerFocused.value || !contactsStore.currentContact) return
+  pulseAgentTyping()
+  // Meta typing lasts ~25s; refresh while still focused so it stays visible.
+  typingPulseTimer = setInterval(pulseAgentTyping, TYPING_PULSE_MS)
+}
+
+function onComposerFocus() {
+  composerFocused.value = true
+  startAgentTypingPulse()
+}
+
+function onComposerBlur() {
+  // Stop refreshing immediately. Meta has no "stop typing" API — the
+  // indicator clears on the next outbound message or after ~25s from the
+  // last pulse (whichever comes first).
+  composerFocused.value = false
+  stopAgentTypingPulse()
+}
+
+function onComposerInput() {
+  autoResizeTextarea()
+}
+
+watch(
+  [() => contactsStore.currentContact?.id, selectedAccount],
+  (newVals, oldVals) => {
+    const contactChanged = newVals[0] !== oldVals?.[0]
+    if (contactChanged) {
+      composerFocused.value = false
+      stopAgentTypingPulse()
+      return
+    }
+    if (composerFocused.value) {
+      startAgentTypingPulse()
+    } else {
+      stopAgentTypingPulse()
+    }
+  },
+)
+
 // Check if current user can assign contacts (admin or manager only)
 const canAssignContacts = computed(() => {
   // Try store first, then fallback to localStorage
@@ -341,6 +654,36 @@ async function fetchCustomActions() {
     console.error('Failed to fetch custom actions:', error)
   }
 }
+
+// Tags can be applied to contacts (by flows, AI, or the API) without a matching
+// tag record, so the filter also offers every tag seen on loaded contacts.
+const seenContactTags = ref(new Set<string>())
+watch(() => contactsStore.contacts, (list) => {
+  let added = false
+  const next = new Set(seenContactTags.value)
+  for (const contact of list) {
+    for (const tag of contact.tags || []) {
+      if (tag && !next.has(tag)) {
+        next.add(tag)
+        added = true
+      }
+    }
+  }
+  if (added) seenContactTags.value = next
+}, { immediate: true })
+
+const tagFilterOptions = computed(() => {
+  const options = tagsStore.tags.map(tag => ({ name: tag.name, color: tag.color }))
+  const known = new Set(options.map(o => o.name))
+  const extra: string[] = []
+  for (const name of [...seenContactTags.value, ...contactsStore.selectedTags]) {
+    if (known.has(name)) continue
+    known.add(name)
+    extra.push(name)
+  }
+  extra.sort((a, b) => a.localeCompare(b))
+  return [...options, ...extra.map(name => ({ name, color: 'gray' }))]
+})
 
 function toggleTagFilter(tagName: string) {
   const index = contactsStore.selectedTags.indexOf(tagName)
@@ -481,10 +824,20 @@ onMounted(async () => {
   // See issue #280.
   document.addEventListener('visibilitychange', onUserActive)
   window.addEventListener('focus', onUserActive)
+
+  // Tick so the 24h service-window countdown and agent session-timeout stay fresh.
+  serviceWindowTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1_000)
 })
 
 function onUserActive() {
-  if (document.visibilityState !== 'visible' || !document.hasFocus()) return
+  if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+    // Leaving the tab/window — stop refreshing WhatsApp typing.
+    composerFocused.value = false
+    stopAgentTypingPulse()
+    return
+  }
   if (!firstUnreadId.value) return
   if (contactsStore.currentContact) {
     contactsService.markRead(contactsStore.currentContact.id)
@@ -499,6 +852,12 @@ function onUserActive() {
 }
 
 onUnmounted(() => {
+  stopRecordingCleanup()
+  stopAgentTypingPulse()
+  if (serviceWindowTimer) {
+    clearInterval(serviceWindowTimer)
+    serviceWindowTimer = null
+  }
   wsService.setCurrentContact(null)
   // Clear current contact when leaving chat view so notifications work on other pages
   contactsStore.setCurrentContact(null)
@@ -1246,35 +1605,59 @@ async function transferToAgent() {
 }
 
 async function resumeChatbot() {
-  if (!activeTransferId.value) return
+  const contactId = contactsStore.currentContact?.id
+  const hasMute = agentSessionTimeoutActive.value
+  const transferId = activeTransferId.value
+  if (!hasMute && !transferId) return
 
-  const currentContactId = contactsStore.currentContact?.id
   isResuming.value = true
   try {
-    await chatbotService.resumeTransfer(activeTransferId.value)
-    toast.success(t('chat.resumeSuccess'), {
-      description: t('chat.resumeSuccessDesc')
-    })
-    // Refresh transfers store to update UI
-    await transfersStore.fetchTransfers({ status: 'active' })
-    // Refresh contacts list (assignment may have changed)
-    await contactsStore.fetchContacts()
+    if (hasMute && contactId) {
+      await contactsService.closeAgentSession(contactId)
+      contactsStore.clearBotMutedUntil(contactId)
+    }
 
-    // Check if current contact is still in the list (may have been unassigned)
-    if (currentContactId) {
-      const stillExists = contactsStore.contacts.some(c => c.id === currentContactId)
-      if (!stillExists) {
-        // Contact no longer visible to this user, navigate away
-        contactsStore.setCurrentContact(null)
-        contactsStore.clearMessages()
-        router.push('/chat')
+    if (transferId) {
+      await chatbotService.resumeTransfer(transferId)
+      await transfersStore.fetchTransfers({ status: 'active' })
+      await contactsStore.fetchContacts()
+
+      if (contactId) {
+        const stillExists = contactsStore.contacts.some(c => c.id === contactId)
+        if (!stillExists) {
+          contactsStore.setCurrentContact(null)
+          contactsStore.clearMessages()
+          router.push('/chat')
+          return
+        }
       }
     }
+
+    toast.success(t('chat.resumeSuccess'), {
+      description: t('chat.resumeSuccessDesc'),
+    })
   } catch (error: any) {
     const message = error.response?.data?.message || t('chat.resumeFailed')
     toast.error(message)
   } finally {
     isResuming.value = false
+  }
+}
+
+async function closeAgentSession() {
+  const contact = contactsStore.currentContact
+  if (!contact) return
+  isClosingAgentSession.value = true
+  try {
+    await contactsService.closeAgentSession(contact.id)
+    contactsStore.clearBotMutedUntil(contact.id)
+    toast.success(t('chat.closeSessionSuccess'), {
+      description: t('chat.closeSessionSuccessDesc'),
+    })
+  } catch (error: any) {
+    toast.error(getErrorMessage(error, t('chat.closeSessionFailed')))
+  } finally {
+    isClosingAgentSession.value = false
   }
 }
 
@@ -1317,8 +1700,7 @@ function getMessageStatusClass(status: string) {
 }
 
 function formatMessageTime(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  return formatTime(dateStr)
 }
 
 function formatContactTime(dateStr?: string) {
@@ -1328,7 +1710,7 @@ function formatContactTime(dateStr?: string) {
   const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000)
 
   if (diffDays === 0) {
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    return formatTime(date)
   } else if (diffDays === 1) {
     return 'Yesterday'
   } else if (diffDays < 7) {
@@ -1407,6 +1789,10 @@ function getMessageContent(message: Message): string {
     return '' // Displayed as a visual card, not text
   }
   return '[Message]'
+}
+
+function formatWhatsAppHtml(text: string): string {
+  return formatWhatsAppText(text)
 }
 
 interface LocationData {
@@ -1646,6 +2032,154 @@ function getMediaType(mimeType: string): string {
   return 'document'
 }
 
+function pickRecordingMimeType(): string {
+  const candidates = [
+    'audio/ogg;codecs=opus',
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+  ]
+  for (const type of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) {
+      return type
+    }
+  }
+  return ''
+}
+
+function stopRecordingCleanup() {
+  if (recordingTimer) {
+    clearInterval(recordingTimer)
+    recordingTimer = null
+  }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    try { mediaRecorder.stop() } catch { /* ignore */ }
+  }
+  mediaRecorder = null
+  recordingStream?.getTracks().forEach(t => t.stop())
+  recordingStream = null
+  activeRecordingStream.value = null
+  recordingChunks = []
+  recordingMimeType = ''
+  isRecording.value = false
+  recordingSeconds.value = 0
+}
+
+async function startAudioRecording() {
+  if (isRecording.value || isSendingRecording.value || !contactsStore.currentContact) return
+  if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    toast.error(t('chat.recordingUnsupported'))
+    return
+  }
+  const mimeType = pickRecordingMimeType()
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    recordingStream = stream
+    activeRecordingStream.value = stream
+    recordingChunks = []
+    recordingMimeType = mimeType || 'audio/webm'
+    mediaRecorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream)
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordingChunks.push(e.data)
+    }
+    mediaRecorder.start(250)
+    isRecording.value = true
+    recordingSeconds.value = 0
+    recordingTimer = setInterval(() => {
+      recordingSeconds.value += 1
+      if (recordingSeconds.value >= MAX_RECORDING_SECONDS) {
+        void finishAudioRecording(true)
+      }
+    }, 1000)
+  } catch (err: any) {
+    stopRecordingCleanup()
+    const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
+    toast.error(denied ? t('chat.microphoneDenied') : t('chat.recordingFailed'))
+  }
+}
+
+function cancelAudioRecording() {
+  stopRecordingCleanup()
+}
+
+async function finishAudioRecording(send: boolean) {
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+    if (!send) stopRecordingCleanup()
+    return
+  }
+  const recorder = mediaRecorder
+  const mime = recordingMimeType || recorder.mimeType || 'audio/webm'
+  await new Promise<void>((resolve) => {
+    recorder.onstop = () => resolve()
+    try { recorder.stop() } catch { resolve() }
+  })
+  recordingStream?.getTracks().forEach(t => t.stop())
+  recordingStream = null
+  activeRecordingStream.value = null
+  if (recordingTimer) {
+    clearInterval(recordingTimer)
+    recordingTimer = null
+  }
+  mediaRecorder = null
+  isRecording.value = false
+
+  const chunks = [...recordingChunks]
+  recordingChunks = []
+  const seconds = recordingSeconds.value
+  recordingSeconds.value = 0
+
+  if (!send || chunks.length === 0 || seconds < 1) {
+    return
+  }
+
+  const blob = new Blob(chunks, { type: mime })
+  const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : 'webm'
+  const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: mime.split(';')[0] })
+  await sendRecordedAudio(file)
+}
+
+async function sendRecordedAudio(file: File) {
+  if (!contactsStore.currentContact) return
+  isSendingRecording.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('contact_id', contactsStore.currentContact.id)
+    formData.append('type', 'audio')
+    if (selectedAccount.value) {
+      formData.append('whatsapp_account', selectedAccount.value)
+    }
+    const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
+    const response = await fetch(`${basePath}/api/messages/media`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: getRequestHeaders({ csrf: true }),
+      body: formData,
+    })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}))
+      throw new Error(error.message || 'Failed to send audio')
+    }
+    const result = await response.json()
+    if (result.data) {
+      contactsStore.addMessage(result.data)
+      if (result.data.bot_muted_until) {
+        contactsStore.applyBotMutedUntil(contactsStore.currentContact.id, result.data.bot_muted_until)
+      }
+      scrollToBottom()
+    }
+    toast.success(t('chat.audioSent'))
+  } catch (error: any) {
+    toast.error(t('chat.audioSendFailed'), {
+      description: error.message,
+    })
+  } finally {
+    isSendingRecording.value = false
+  }
+}
+
 async function sendMediaMessage() {
   if (!selectedFile.value || !contactsStore.currentContact) return
 
@@ -1680,6 +2214,9 @@ async function sendMediaMessage() {
     // Add the message to the store (addMessage has duplicate checking for WebSocket)
     if (result.data) {
       contactsStore.addMessage(result.data)
+      if (result.data.bot_muted_until) {
+        contactsStore.applyBotMutedUntil(contactsStore.currentContact.id, result.data.bot_muted_until)
+      }
       scrollToBottom()
     }
 
@@ -1755,12 +2292,12 @@ async function sendMediaMessage() {
                   </Button>
                 </div>
                 <Separator />
-                <div v-if="tagsStore.tags.length === 0" class="py-2 text-center text-sm text-muted-foreground">
+                <div v-if="tagFilterOptions.length === 0" class="py-2 text-center text-sm text-muted-foreground">
                   {{ $t('chat.noTagsAvailable') }}
                 </div>
                 <div v-else class="space-y-1 max-h-48 overflow-y-auto">
                   <button
-                    v-for="tag in tagsStore.tags"
+                    v-for="tag in tagFilterOptions"
                     :key="tag.name"
                     class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm hover:bg-white/[0.08] light:hover:bg-gray-100 transition-colors"
                     :class="contactsStore.selectedTags.includes(tag.name) && 'bg-white/[0.08] light:bg-gray-100'"
@@ -1866,28 +2403,37 @@ async function sendMediaMessage() {
       <!-- Chat Interface -->
       <template v-else>
         <!-- Chat Header -->
-        <div class="h-14 flex-shrink-0 px-4 border-b border-white/[0.08] light:border-gray-200 flex items-center justify-between bg-[#0f0f10] light:bg-white">
-          <div class="flex items-center gap-2">
-            <Avatar class="h-8 w-8 ring-2 ring-white/[0.1] light:ring-gray-200">
+        <div class="min-h-14 flex-shrink-0 px-4 py-2 border-b border-white/[0.08] light:border-gray-200 flex items-center justify-between bg-[#0f0f10] light:bg-white">
+          <div class="flex items-center gap-2 min-w-0">
+            <Avatar class="h-8 w-8 ring-2 ring-white/[0.1] light:ring-gray-200 shrink-0">
               <AvatarImage :src="contactsStore.currentContact.avatar_url" />
               <AvatarFallback :class="'text-xs bg-gradient-to-br text-white ' + getAvatarGradient(contactsStore.currentContact.name || contactsStore.currentContact.phone_number)">
                 {{ getInitials(contactsStore.currentContact.name || contactsStore.currentContact.phone_number) }}
               </AvatarFallback>
             </Avatar>
-            <div>
+            <div class="min-w-0">
               <div class="flex items-center gap-1.5">
-                <p class="text-sm font-medium text-white light:text-gray-900">
+                <p class="text-sm font-medium text-white light:text-gray-900 truncate">
                   {{ contactsStore.currentContact.name || contactsStore.currentContact.phone_number }}
                 </p>
-                <Badge v-if="activeTransferId" class="text-[10px] h-5 bg-orange-500/20 text-orange-400 light:bg-orange-100 light:text-orange-700">
-                  Paused
+                <Badge v-if="activeTransferId || agentSessionTimeoutActive" class="text-[10px] h-5 gap-1 bg-orange-500/20 text-orange-400 light:bg-orange-100 light:text-orange-700">
+                  <Bot class="h-3 w-3 shrink-0" />
+                  {{ $t('chat.paused') }}
                 </Badge>
                 <Badge v-if="contactsStore.currentContact?.marketing_opt_out" class="text-[10px] h-5 bg-red-500/20 text-red-400 light:bg-red-100 light:text-red-700" :title="$t('chat.marketingOptOut')">
                   {{ $t('chat.marketingOptOut', 'Marketing Opt-out') }}
                 </Badge>
               </div>
-              <p class="text-[11px] text-white/50 light:text-gray-500">
+              <p class="text-[11px] text-white/50 light:text-gray-500 truncate">
                 {{ contactsStore.currentContact.phone_number }}
+                <span
+                  v-if="serviceWindowLabel"
+                  class="ml-1.5"
+                  :class="isServiceWindowExpired
+                    ? 'text-amber-400/90 light:text-amber-600'
+                    : 'text-emerald-400/90 light:text-emerald-600'"
+                  :title="serviceWindowTitle"
+                >· {{ serviceWindowLabel }}</span>
               </p>
             </div>
           </div>
@@ -1907,9 +2453,9 @@ async function sendMediaMessage() {
               </TooltipTrigger>
               <TooltipContent>{{ $t('chat.assignToAgent') }}</TooltipContent>
             </Tooltip>
-            <Tooltip v-if="activeTransferId">
+            <Tooltip v-if="activeTransferId || agentSessionTimeoutActive">
               <TooltipTrigger as-child>
-                <Button variant="ghost" size="icon" class="h-8 w-8 text-white/50 hover:text-white hover:bg-white/[0.08] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-100" :disabled="isResuming" @click="resumeChatbot">
+                <Button variant="ghost" size="icon" class="h-8 w-8 text-white/50 hover:text-white hover:bg-white/[0.08] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-100" :disabled="isResuming || isClosingAgentSession" @click="resumeChatbot">
                   <Play class="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
@@ -1985,7 +2531,7 @@ async function sendMediaMessage() {
                   <UserX class="mr-2 h-4 w-4" />
                   <span>{{ $t('chat.transferToAgent') }}</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem v-if="activeTransferId" @click="resumeChatbot" :disabled="isResuming">
+                <DropdownMenuItem v-if="activeTransferId || agentSessionTimeoutActive" @click="resumeChatbot" :disabled="isResuming || isClosingAgentSession">
                   <Play class="mr-2 h-4 w-4" />
                   <span>{{ $t('chat.resumeChatbot') }}</span>
                 </DropdownMenuItem>
@@ -2169,6 +2715,36 @@ async function sendMediaMessage() {
                     class="max-w-[280px]"
                     @error="handleMediaError($event, 'audio')"
                   />
+                  <div v-if="message.transcript" class="mt-1.5 max-w-[280px]" data-testid="audio-transcript">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-[10px] uppercase tracking-wide opacity-60">{{ $t('chat.ai.transcript') }}</span>
+                      <button
+                        v-if="canUseChatAI"
+                        type="button"
+                        class="inline-flex items-center gap-1 text-[10px] opacity-60 hover:opacity-100 disabled:opacity-40"
+                        :disabled="transcribingMessageId === message.id"
+                        :title="$t('chat.ai.retranscribeHint')"
+                        data-testid="retranscribe"
+                        @click="transcribeMessage(message, true)"
+                      >
+                        <Loader2 v-if="transcribingMessageId === message.id" class="h-3 w-3 animate-spin" />
+                        <RefreshCw v-else class="h-3 w-3" />
+                        {{ transcribingMessageId === message.id ? $t('chat.ai.transcribing') : $t('chat.ai.retranscribe') }}
+                      </button>
+                    </div>
+                    <p class="text-sm whitespace-pre-wrap break-words">{{ message.transcript }}</p>
+                  </div>
+                  <button
+                    v-else-if="canUseChatAI"
+                    type="button"
+                    class="mt-1 inline-flex items-center gap-1 text-xs opacity-70 hover:opacity-100 disabled:opacity-50"
+                    :disabled="transcribingMessageId === message.id"
+                    @click="transcribeMessage(message)"
+                  >
+                    <Loader2 v-if="transcribingMessageId === message.id" class="h-3 w-3 animate-spin" />
+                    <Sparkles v-else class="h-3 w-3" />
+                    {{ transcribingMessageId === message.id ? $t('chat.ai.transcribing') : $t('chat.ai.transcribe') }}
+                  </button>
                 </div>
                 <!-- Document message -->
                 <div v-else-if="message.message_type === 'document' && message.media_url" class="mb-2">
@@ -2249,11 +2825,14 @@ async function sendMediaMessage() {
                 </div>
                 <!-- Button reply - WhatsApp style -->
                 <div v-if="message.message_type === 'button_reply'" class="button-reply-bubble">
-                  <span class="whitespace-pre-wrap break-words">{{ getMessageContent(message) }}</span>
+                  <span class="whitespace-pre-wrap break-words wa-formatted" v-html="formatWhatsAppHtml(getMessageContent(message))" />
                   <span class="chat-bubble-time"><span>{{ formatMessageTime(message.created_at) }}</span></span>
                 </div>
                 <!-- Text content (for text messages or captions) -->
-                <span v-else-if="getMessageContent(message)" class="whitespace-pre-wrap break-words">{{ getMessageContent(message) }}<span class="chat-bubble-time"><span>{{ formatMessageTime(message.created_at) }}</span><component v-if="message.direction === 'outgoing'" :is="getMessageStatusIcon(message.status)" :class="['h-4 w-4 status-icon', getMessageStatusClass(message.status)]" /></span></span>
+                <span v-else-if="getMessageContent(message)" class="whitespace-pre-wrap break-words">
+                  <span class="wa-formatted" v-html="formatWhatsAppHtml(getMessageContent(message))" />
+                  <span class="chat-bubble-time"><span>{{ formatMessageTime(message.created_at) }}</span><component v-if="message.direction === 'outgoing'" :is="getMessageStatusIcon(message.status)" :class="['h-4 w-4 status-icon', getMessageStatusClass(message.status)]" /></span>
+                </span>
                 <!-- Fallback for media without URL -->
                 <span v-else-if="isMediaMessage(message) && !message.media_url" class="text-muted-foreground italic">[{{ message.message_type.charAt(0).toUpperCase() + message.message_type.slice(1) }}]<span class="chat-bubble-time"><span>{{ formatMessageTime(message.created_at) }}</span><component v-if="message.direction === 'outgoing'" :is="getMessageStatusIcon(message.status)" :class="['h-4 w-4 status-icon', getMessageStatusClass(message.status)]" /></span></span>
                 <!-- Interactive buttons - WhatsApp style -->
@@ -2321,6 +2900,18 @@ async function sendMediaMessage() {
                     :class="['h-4 w-4 status-icon', getMessageStatusClass(message.status)]"
                   />
                 </span>
+                <!-- AI translation -->
+                <div
+                  v-if="messageTranslation(message)"
+                  class="mt-1.5 pt-1.5 border-t border-current/10 text-sm whitespace-pre-wrap break-words"
+                  data-testid="message-translation"
+                >
+                  <span class="flex items-center gap-1 text-[10px] uppercase tracking-wide opacity-60">
+                    <Languages class="h-3 w-3" />
+                    {{ $t('chat.ai.translatedTo', { language: agentLanguage }) }}
+                  </span>
+                  <span class="wa-formatted" v-html="formatWhatsAppHtml(messageTranslation(message))" />
+                </div>
                 <!-- Reactions display -->
                 <div
                   v-if="message.reactions && message.reactions.length > 0"
@@ -2381,6 +2972,18 @@ async function sendMediaMessage() {
                 >
                   <Reply class="h-3 w-3" />
                 </Button>
+                <Button
+                  v-if="canTranslateMessage(message)"
+                  variant="ghost"
+                  size="icon"
+                  class="h-6 w-6"
+                  :title="$t('chat.ai.translateMessage', { language: agentLanguage })"
+                  :disabled="translatingMessageId === message.id"
+                  @click="translateMessage(message)"
+                >
+                  <Loader2 v-if="translatingMessageId === message.id" class="h-3 w-3 animate-spin" />
+                  <Languages v-else class="h-3 w-3" />
+                </Button>
               </div>
               <!-- Reply button for outgoing messages (shown on hover) -->
               <div v-if="message.direction === 'outgoing'" class="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity self-center ml-1">
@@ -2438,9 +3041,46 @@ async function sendMediaMessage() {
         >
           <Clock class="h-4 w-4 text-red-500 shrink-0" />
           <span class="text-sm text-red-500 flex-1">{{ $t('chat.serviceWindowExpired') }}</span>
+          <Button
+            v-if="canUseChatAI"
+            variant="outline"
+            size="sm"
+            class="border-violet-500/30 text-violet-500 hover:bg-violet-500/10 shrink-0"
+            :disabled="isSuggestingTemplate"
+            data-testid="suggest-template-ai"
+            @click="suggestTemplateWithAI"
+          >
+            <Loader2 v-if="isSuggestingTemplate" class="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            <Sparkles v-else class="h-3.5 w-3.5 mr-1.5" />
+            {{ $t('chat.ai.suggestTemplate') }}
+          </Button>
           <Button variant="outline" size="sm" class="border-red-500/30 text-red-500 hover:bg-red-500/10 shrink-0" @click="openTemplatePicker">
             {{ $t('chat.sendTemplateAction') }}
           </Button>
+        </div>
+
+        <!-- AI handoff summary for the active transfer -->
+        <div
+          v-if="activeTransfer?.ai_summary"
+          class="px-4 py-2 border-t border-violet-500/20 bg-violet-500/[0.06] light:bg-violet-50"
+          data-testid="handoff-summary"
+        >
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 text-xs font-medium text-violet-300 light:text-violet-700"
+            @click="toggleHandoffSummary(activeTransfer.id)"
+          >
+            <Sparkles class="h-3.5 w-3.5 shrink-0" />
+            {{ $t('chat.ai.handoffSummary') }}
+            <ChevronDown
+              class="ml-auto h-3.5 w-3.5 transition-transform"
+              :class="collapsedHandoffSummaries.has(activeTransfer.id) && '-rotate-90'"
+            />
+          </button>
+          <p
+            v-if="!collapsedHandoffSummaries.has(activeTransfer.id)"
+            class="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-white/70 light:text-gray-700"
+          >{{ activeTransfer.ai_summary }}</p>
         </div>
 
         <!-- Reply indicator -->
@@ -2452,18 +3092,49 @@ async function sendMediaMessage() {
             <p class="text-xs font-medium text-white/50 light:text-gray-500">
               Replying to {{ contactsStore.replyingTo.direction === 'incoming' ? (contactsStore.currentContact?.profile_name || contactsStore.currentContact?.name || 'Customer') : 'Yourself' }}
             </p>
-            <p class="text-sm truncate text-white/70 light:text-gray-700">
-              {{ getMessageContent(contactsStore.replyingTo) || '[Media]' }}
-            </p>
+            <p class="text-sm truncate text-white/70 light:text-gray-700 wa-formatted" v-html="formatWhatsAppHtml(getMessageContent(contactsStore.replyingTo) || '[Media]')" />
           </div>
           <button class="w-6 h-6 rounded hover:bg-white/[0.08] light:hover:bg-gray-200 flex items-center justify-center shrink-0 transition-colors" @click="contactsStore.clearReplyingTo">
             <X class="h-4 w-4 text-white/50 light:text-gray-500" />
           </button>
         </div>
 
+        <!-- Agent session timeout (automation paused after agent reply) -->
+        <div
+          v-if="agentSessionTimeoutActive"
+          class="px-4 py-2 border-t border-amber-500/20 bg-amber-500/10 flex items-center justify-center gap-2"
+          role="status"
+        >
+          <Clock class="h-3.5 w-3.5 text-amber-400 light:text-amber-700 shrink-0" />
+          <span class="text-xs font-medium text-amber-200 light:text-amber-800 tabular-nums">
+            {{ agentSessionTimeoutLabel }}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="h-7 px-2.5 text-xs border-amber-500/40 text-amber-100 hover:bg-amber-500/20 light:text-amber-900 light:border-amber-300 light:hover:bg-amber-100 shrink-0"
+            :disabled="isClosingAgentSession"
+            @click="closeAgentSession"
+          >
+            <Loader2 v-if="isClosingAgentSession" class="h-3 w-3 animate-spin mr-1" />
+            {{ $t('chat.closeSession') }}
+          </Button>
+        </div>
+
         <!-- Message Input -->
         <div class="p-4 border-t border-white/[0.08] light:border-gray-200 bg-[#0f0f10] light:bg-white">
-          <form @submit.prevent="sendMessage" class="flex items-center gap-2 p-2 rounded-xl bg-white/[0.06] light:bg-gray-100 border border-white/[0.08] light:border-gray-200">
+          <ChatAIQuickReplies
+            v-if="canUseChatAI && !isRecording && !isServiceWindowExpired"
+            :contact-id="contactsStore.currentContact.id"
+            :last-message-id="lastMessageId"
+            @use="applyAIText"
+          />
+          <form
+            v-if="!isRecording"
+            @submit.prevent="sendMessage"
+            class="flex items-center gap-2 p-2 rounded-xl bg-white/[0.06] light:bg-gray-100 border border-white/[0.08] light:border-gray-200"
+          >
             <Tooltip>
               <TooltipTrigger as-child>
                 <span>
@@ -2518,6 +3189,15 @@ async function sendMediaMessage() {
               </TooltipTrigger>
               <TooltipContent>{{ $t('chat.attachFile') }}</TooltipContent>
             </Tooltip>
+            <ChatAIMenu
+              v-if="canUseChatAI"
+              :contact-id="contactsStore.currentContact.id"
+              :draft="messageInput"
+              :can-edit-contact="canWriteContacts"
+              @apply="applyAIText"
+              @summarize="aiSummaryOpen = true"
+              @suggest-tags="aiTagsOpen = true"
+            />
             <input
               ref="fileInputRef"
               type="file"
@@ -2532,12 +3212,57 @@ async function sendMediaMessage() {
               rows="1"
               class="flex-1 bg-transparent text-[14px] text-white light:text-gray-900 placeholder:text-white/30 light:placeholder:text-gray-400 focus:outline-none resize-none min-h-[36px] max-h-[120px] py-2 overflow-y-auto"
               @keydown.enter.exact.prevent="sendMessage"
-              @input="autoResizeTextarea"
+              @input="onComposerInput"
+              @focus="onComposerFocus"
+              @blur="onComposerBlur"
             />
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <button
+                  type="button"
+                  class="w-9 h-9 rounded-lg hover:bg-white/[0.08] light:hover:bg-gray-200 flex items-center justify-center transition-colors disabled:opacity-50"
+                  :disabled="isSendingRecording || isServiceWindowExpired"
+                  @click="startAudioRecording"
+                >
+                  <Mic class="w-[18px] h-[18px] text-red-500/80 light:text-red-500" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{{ $t('chat.recordAudio') }}</TooltipContent>
+            </Tooltip>
             <button type="submit" class="w-9 h-9 rounded-lg bg-emerald-600 hover:bg-emerald-500 light:bg-emerald-500 light:hover:bg-emerald-600 flex items-center justify-center transition-colors disabled:opacity-50" :disabled="!messageInput.trim() || isSending">
               <Send class="w-4 h-4 text-white" />
             </button>
           </form>
+
+          <div
+            v-else
+            class="flex items-center gap-3 p-2 rounded-xl bg-red-500/10 border border-red-500/25"
+          >
+            <button
+              type="button"
+              class="w-9 h-9 rounded-lg hover:bg-red-500/20 flex items-center justify-center transition-colors"
+              :title="$t('chat.cancelRecording')"
+              @click="cancelAudioRecording"
+            >
+              <Trash2 class="w-[18px] h-[18px] text-red-400" />
+            </button>
+            <div class="flex-1 flex items-center gap-3 min-w-0">
+              <span class="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+              <span class="text-sm font-medium text-red-300 light:text-red-700 tabular-nums shrink-0">{{ recordingLabel }}</span>
+              <span class="sr-only" role="status">{{ $t('chat.recording') }}</span>
+              <RecordingWaveform :stream="activeRecordingStream" data-testid="recording-waveform" />
+            </div>
+            <button
+              type="button"
+              class="w-9 h-9 rounded-lg bg-emerald-600 hover:bg-emerald-500 flex items-center justify-center transition-colors disabled:opacity-50"
+              :disabled="isSendingRecording || recordingSeconds < 1"
+              :title="$t('chat.sendRecording')"
+              @click="finishAudioRecording(true)"
+            >
+              <Loader2 v-if="isSendingRecording" class="w-4 h-4 text-white animate-spin" />
+              <Send v-else class="w-4 h-4 text-white" />
+            </button>
+          </div>
         </div>
       </template>
     </div>
@@ -2557,6 +3282,19 @@ async function sendMediaMessage() {
       @close="isInfoPanelOpen = false"
       @tags-updated="(tags) => contactsStore.updateContactTags(contactsStore.currentContact!.id, tags)"
     />
+
+    <template v-if="contactsStore.currentContact && canUseChatAI">
+      <ChatAISummaryDialog
+        v-model:open="aiSummaryOpen"
+        :contact-id="contactsStore.currentContact.id"
+      />
+      <ChatAITagsFieldsDialog
+        v-if="canWriteContacts"
+        v-model:open="aiTagsOpen"
+        :contact="contactsStore.currentContact"
+        @applied="(patch) => contactsStore.patchContact(contactsStore.currentContact!.id, patch)"
+      />
+    </template>
 
     <!-- Template Params Dialog -->
     <Dialog v-model:open="templateDialogOpen">
@@ -2841,5 +3579,35 @@ async function sendMediaMessage() {
 .sticky-date-enter-from,
 .sticky-date-leave-to {
   opacity: 0;
+}
+
+.wa-formatted :deep(strong) {
+  font-weight: 700;
+}
+
+.wa-formatted :deep(em) {
+  font-style: italic;
+}
+
+.wa-formatted :deep(s) {
+  text-decoration: line-through;
+}
+
+.wa-formatted :deep(.wa-mono),
+.wa-formatted :deep(.wa-pre) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.wa-formatted :deep(.wa-pre) {
+  display: block;
+  white-space: pre-wrap;
+  padding: 0.25rem 0.4rem;
+  border-radius: 0.25rem;
+  background: rgb(255 255 255 / 0.08);
+}
+
+.wa-formatted :deep(em .wa-mono) {
+  font-style: italic;
 }
 </style>

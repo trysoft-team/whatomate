@@ -20,35 +20,33 @@ test.describe('WhatsApp Flows Management', () => {
     await expect(flowsPage.syncButton).toBeVisible()
   })
 
-  test('should open create flow dialog', async () => {
-    await flowsPage.openCreateDialog()
-    await flowsPage.expectDialogVisible()
-    await flowsPage.expectDialogTitle(/WhatsApp Flow/i)
+  test('should open create flow page', async ({ page }) => {
+    await flowsPage.openCreatePage()
+    await expect(page).toHaveURL(/\/flows\/new/)
+    await flowsPage.expectEditorVisible()
   })
 
   test('should show validation error for empty flow name', async ({ page }) => {
-    await flowsPage.openCreateDialog()
-    await flowsPage.createDialog.getByRole('button', { name: /Create Flow/i }).click()
+    await flowsPage.openCreatePage()
+    await page.getByRole('button', { name: /Create Flow/i }).last().click()
     await expect(page.locator('[data-sonner-toast]')).toBeVisible({ timeout: 5000 })
   })
 
-  test('should have account selector in create dialog', async () => {
-    await flowsPage.openCreateDialog()
-    const dialog = flowsPage.createDialog
-    await expect(dialog.locator('label').filter({ hasText: /Account/i }).first()).toBeVisible()
-    await expect(dialog.locator('button[role="combobox"]').first()).toBeVisible()
+  test('should have account selector on create page', async ({ page }) => {
+    await flowsPage.openCreatePage()
+    await expect(page.locator('label').filter({ hasText: /Account/i }).first()).toBeVisible()
+    await expect(page.locator('button[role="combobox"]').first()).toBeVisible()
   })
 
-  test('should have category selector in create dialog', async () => {
-    await flowsPage.openCreateDialog()
-    const dialog = flowsPage.createDialog
-    await expect(dialog.locator('label').filter({ hasText: /Category/i }).first()).toBeVisible()
+  test('should have category selector on create page', async ({ page }) => {
+    await flowsPage.openCreatePage()
+    await expect(page.locator('label').filter({ hasText: /Category/i }).first()).toBeVisible()
   })
 
-  test('should cancel flow creation', async () => {
-    await flowsPage.openCreateDialog()
-    await flowsPage.createDialog.getByRole('button', { name: /Cancel/i }).click()
-    await flowsPage.expectDialogHidden()
+  test('should navigate back from create page', async ({ page }) => {
+    await flowsPage.openCreatePage()
+    await flowsPage.backButton.click()
+    await expect(page).toHaveURL(/\/flows$/)
   })
 
   test('should filter flows by account', async ({ page }) => {
@@ -58,7 +56,7 @@ test.describe('WhatsApp Flows Management', () => {
   })
 })
 
-test.describe('WhatsApp Flows Edit Dialog', () => {
+test.describe('WhatsApp Flows Edit Page', () => {
   let flowsPage: FlowsPage
 
   test.beforeEach(async ({ page }) => {
@@ -67,25 +65,23 @@ test.describe('WhatsApp Flows Edit Dialog', () => {
     await flowsPage.goto()
   })
 
-  test('should open edit dialog when clicking edit button', async () => {
+  test('should open edit page when clicking edit button', async ({ page }) => {
     if (await flowsPage.clickEditButton()) {
-      await flowsPage.expectDialogVisible()
-      await flowsPage.expectDialogTitle(/Edit WhatsApp Flow/i)
+      await expect(page).toHaveURL(/\/flows\/[^/]+\/edit/)
+      await expect(page.getByRole('heading', { name: /Edit WhatsApp Flow/i })).toBeVisible()
     }
   })
 
-  test('should have Save Changes button in edit mode', async () => {
+  test('should have Save Changes button in edit mode', async ({ page }) => {
     if (await flowsPage.clickEditButton()) {
-      await expect(flowsPage.editDialog.getByRole('button', { name: /Save Changes/i })).toBeVisible()
+      await expect(page.getByRole('button', { name: /Save Changes/i })).toBeVisible()
     }
   })
 
-  test('should have Cancel button in edit dialog', async () => {
+  test('should navigate back from edit page', async ({ page }) => {
     if (await flowsPage.clickEditButton()) {
-      const cancelBtn = flowsPage.editDialog.getByRole('button', { name: /Cancel/i })
-      await expect(cancelBtn).toBeVisible()
-      await cancelBtn.click()
-      await flowsPage.expectDialogHidden()
+      await flowsPage.backButton.click()
+      await expect(page).toHaveURL(/\/flows$/)
     }
   })
 })

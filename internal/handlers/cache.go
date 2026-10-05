@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shridarpatil/whatomate/internal/crypto"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/shridarpatil/whatomate/internal/websocket"
 	"gorm.io/gorm"
@@ -41,7 +42,8 @@ const (
 // chatbotSettingsCache is used for caching since AI.APIKey has json:"-" tag
 type chatbotSettingsCache struct {
 	models.ChatbotSettings
-	AIAPIKey string `json:"ai_api_key_cache"`
+	AIAPIKey         string `json:"ai_api_key_cache"`
+	TranscribeAPIKey string `json:"transcribe_api_key_cache"`
 }
 
 // getChatbotSettingsCached retrieves chatbot settings from cache or database
@@ -49,14 +51,17 @@ func (a *App) getChatbotSettingsCached(orgID uuid.UUID, whatsAppAccount string) 
 	ctx := context.Background()
 	cacheKey := fmt.Sprintf("%s%s:%s", settingsCachePrefix, orgID.String(), whatsAppAccount)
 
-	// Try cache first
-	cached, err := a.Redis.Get(ctx, cacheKey).Result()
-	if err == nil && cached != "" {
-		var cacheData chatbotSettingsCache
-		if err := json.Unmarshal([]byte(cached), &cacheData); err == nil {
-			// Restore the API key from the cache wrapper
-			cacheData.AI.APIKey = cacheData.AIAPIKey
-			return &cacheData.ChatbotSettings, nil
+	if a.Redis != nil {
+		cached, err := a.Redis.Get(ctx, cacheKey).Result()
+		if err == nil && cached != "" {
+			var cacheData chatbotSettingsCache
+			if err := json.Unmarshal([]byte(cached), &cacheData); err == nil {
+				// Restore the API key from the cache wrapper
+				cacheData.AI.APIKey = cacheData.AIAPIKey
+				cacheData.AI.TranscribeAPIKey = cacheData.TranscribeAPIKey
+				a.decryptChatbotSettingsSecrets(&cacheData.ChatbotSettings)
+				return &cacheData.ChatbotSettings, nil
+			}
 		}
 	}
 
@@ -72,15 +77,28 @@ func (a *App) getChatbotSettingsCached(orgID uuid.UUID, whatsAppAccount string) 
 	}
 
 	// Cache the result (include AI APIKey explicitly since it has json:"-" tag)
-	cacheData := chatbotSettingsCache{
-		ChatbotSettings: settings,
-		AIAPIKey:        settings.AI.APIKey,
-	}
-	if data, err := json.Marshal(cacheData); err == nil {
-		a.Redis.Set(ctx, cacheKey, data, settingsCacheTTL)
+	if a.Redis != nil {
+		cacheData := chatbotSettingsCache{
+			ChatbotSettings:  settings,
+			AIAPIKey:         settings.AI.APIKey,
+			TranscribeAPIKey: settings.AI.TranscribeAPIKey,
+		}
+		if data, err := json.Marshal(cacheData); err == nil {
+			a.Redis.Set(ctx, cacheKey, data, settingsCacheTTL)
+		}
 	}
 
+	a.decryptChatbotSettingsSecrets(&settings)
 	return &settings, nil
+}
+
+// decryptChatbotSettingsSecrets decrypts the stored API keys so callers can use
+// them directly. Redis keeps the encrypted form.
+func (a *App) decryptChatbotSettingsSecrets(s *models.ChatbotSettings) {
+	if a.Config == nil || a.Config.App.EncryptionKey == "" {
+		return
+	}
+	crypto.DecryptFields(a.Config.App.EncryptionKey, &s.AI.APIKey, &s.AI.ElevenLabsAPIKey, &s.AI.TranscribeAPIKey)
 }
 
 // getChatbotFlowsCached retrieves all enabled flows with steps from cache or database

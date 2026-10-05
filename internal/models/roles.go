@@ -220,10 +220,10 @@ func DefaultPermissions() []Permission {
 		// Call Logs
 		{Resource: ResourceCallLogs, Action: ActionRead, Description: "View call logs"},
 
-		// IVR Flows
-		{Resource: ResourceIVRFlows, Action: ActionRead, Description: "View IVR flows"},
-		{Resource: ResourceIVRFlows, Action: ActionWrite, Description: "Create and edit IVR flows"},
-		{Resource: ResourceIVRFlows, Action: ActionDelete, Description: "Delete IVR flows"},
+		// Call Flows (API resource: ivr_flows)
+		{Resource: ResourceIVRFlows, Action: ActionRead, Description: "View call flows"},
+		{Resource: ResourceIVRFlows, Action: ActionWrite, Description: "Create and edit call flows"},
+		{Resource: ResourceIVRFlows, Action: ActionDelete, Description: "Delete call flows"},
 
 		// Call Transfers
 		{Resource: ResourceCallTransfers, Action: ActionRead, Description: "View call transfers"},

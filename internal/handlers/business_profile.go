@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -83,6 +86,153 @@ func (a *App) UpdateBusinessProfile(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(profile)
+}
+
+// displayNameMaxRunes is a sanity cap; Meta's guidelines decide what's acceptable.
+const displayNameMaxRunes = 100
+
+type displayNameResponse struct {
+	whatsapp.DisplayNameStatus
+	// CanReregister is false for coexistence numbers, which are registered
+	// through the WhatsApp Business app rather than the registration API.
+	CanReregister bool `json:"can_reregister"`
+	HasStoredPin  bool `json:"has_stored_pin"`
+}
+
+func (a *App) displayNameStatusResponse(ctx context.Context, account *models.WhatsAppAccount) (*displayNameResponse, error) {
+	status, err := a.WhatsApp.GetDisplayNameStatus(ctx, a.toWhatsAppAccount(account))
+	if err != nil {
+		return nil, err
+	}
+	return &displayNameResponse{
+		DisplayNameStatus: *status,
+		CanReregister:     !account.IsSMB,
+		HasStoredPin:      account.Pin != "",
+	}, nil
+}
+
+// GetDisplayName returns the account's live display name and any pending change.
+func (a *App) GetDisplayName(r *fastglue.Request) error {
+	orgID, _, err := a.requireAuth(r, models.ResourceAccounts, models.ActionRead)
+	if err != nil {
+		return nil
+	}
+	id, err := parsePathUUID(r, "id", "account")
+	if err != nil {
+		return nil
+	}
+	account, err := a.resolveWhatsAppAccountByID(r, id, orgID)
+	if err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), businessProfileHTTPTimeout)
+	defer cancel()
+	resp, err := a.displayNameStatusResponse(ctx, account)
+	if err != nil {
+		a.Log.Error("Failed to get display name", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusBadGateway, err.Error(), nil, "")
+	}
+	return r.SendEnvelope(resp)
+}
+
+// RequestDisplayNameChange submits a new display name for Meta's review.
+func (a *App) RequestDisplayNameChange(r *fastglue.Request) error {
+	orgID, userID, err := a.requireAuth(r, models.ResourceAccounts, models.ActionWrite)
+	if err != nil {
+		return nil
+	}
+	id, err := parsePathUUID(r, "id", "account")
+	if err != nil {
+		return nil
+	}
+	var req struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := a.decodeRequest(r, &req); err != nil {
+		return nil
+	}
+	name := strings.TrimSpace(req.DisplayName)
+	if name == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Display name is required", nil, "")
+	}
+	if utf8.RuneCountInString(name) > displayNameMaxRunes {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Display name is too long", nil, "")
+	}
+	account, err := a.resolveWhatsAppAccountByID(r, id, orgID)
+	if err != nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), businessProfileHTTPTimeout)
+	defer cancel()
+	if err := a.WhatsApp.RequestDisplayNameChange(ctx, a.toWhatsAppAccount(account), name); err != nil {
+		a.Log.Error("Failed to request display name change", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
+	}
+	a.logAudit(orgID, userID, "account", account.ID, models.AuditActionUpdated,
+		map[string]any{"display_name_request": nil}, map[string]any{"display_name_request": name})
+
+	resp, err := a.displayNameStatusResponse(ctx, account)
+	if err != nil {
+		return r.SendEnvelope(map[string]any{"new_display_name": name, "new_name_status": "PENDING_REVIEW"})
+	}
+	return r.SendEnvelope(resp)
+}
+
+// ApplyDisplayName re-registers the phone number so an approved display name
+// takes effect. Meta ignores re-registration before the name is approved.
+func (a *App) ApplyDisplayName(r *fastglue.Request) error {
+	orgID, userID, err := a.requireAuth(r, models.ResourceAccounts, models.ActionWrite)
+	if err != nil {
+		return nil
+	}
+	id, err := parsePathUUID(r, "id", "account")
+	if err != nil {
+		return nil
+	}
+	var req struct {
+		Pin string `json:"pin"`
+	}
+	_ = r.Decode(&req, "json")
+	account, err := a.resolveWhatsAppAccountByID(r, id, orgID)
+	if err != nil {
+		return nil
+	}
+	if account.IsSMB {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest,
+			"Coexistence numbers are registered through the WhatsApp Business app and can't be re-registered here", nil, "")
+	}
+
+	pin := strings.TrimSpace(req.Pin)
+	if pin == "" {
+		pin = account.Pin
+	}
+	if len(pin) != 6 || strings.Trim(pin, "0123456789") != "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest,
+			"Enter the number's 6-digit two-step verification PIN", nil, "")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), businessProfileHTTPTimeout)
+	defer cancel()
+	if err := a.WhatsApp.RegisterPhoneNumber(ctx, account.PhoneID, pin, account.AccessToken, account.APIVersion); err != nil {
+		a.Log.Error("Re-registration for display name failed", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
+	}
+
+	if pin != account.Pin {
+		account.Pin = pin
+		if err := a.encryptAccountSecrets(account); err != nil {
+			a.Log.Error("Failed to encrypt account secrets", "error", err)
+		} else if err := a.DB.Model(account).Update("pin", account.Pin).Error; err != nil {
+			a.Log.Error("Failed to store PIN", "error", err)
+		}
+		a.InvalidateWhatsAppAccountCache(account.PhoneID)
+	}
+	a.logAudit(orgID, userID, "account", account.ID, models.AuditActionUpdated,
+		nil, map[string]any{"display_name_applied": true})
+
+	return r.SendEnvelope(map[string]any{"success": true})
 }
 
 // UpdateProfilePicture handles the profile picture upload

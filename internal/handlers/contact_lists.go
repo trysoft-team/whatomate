@@ -142,6 +142,23 @@ type googleCredResponse struct {
 	Label       string    `json:"label"`
 	ClientEmail string    `json:"client_email,omitempty"`
 	HasJSON     bool      `json:"has_json"`
+	AuthType    string    `json:"auth_type"`
+	Scopes      []string  `json:"scopes,omitempty"`
+}
+
+func toGoogleCredResponse(c models.GoogleCredential) googleCredResponse {
+	authType := c.AuthType
+	if authType == "" {
+		authType = models.GoogleAuthServiceAccount
+	}
+	return googleCredResponse{
+		ID:          c.ID,
+		Label:       c.Label,
+		ClientEmail: c.ClientEmail,
+		HasJSON:     c.EncryptedJSON != "",
+		AuthType:    authType,
+		Scopes:      strings.Fields(c.Scopes),
+	}
 }
 
 // ListGoogleCredentials lists org Google service-account credentials (no secrets).
@@ -156,9 +173,7 @@ func (a *App) ListGoogleCredentials(r *fastglue.Request) error {
 	}
 	out := make([]googleCredResponse, 0, len(creds))
 	for _, c := range creds {
-		out = append(out, googleCredResponse{
-			ID: c.ID, Label: c.Label, ClientEmail: c.ClientEmail, HasJSON: c.EncryptedJSON != "",
-		})
+		out = append(out, toGoogleCredResponse(c))
 	}
 	return r.SendEnvelope(out)
 }
@@ -196,11 +211,12 @@ func (a *App) CreateGoogleCredential(r *fastglue.Request) error {
 		Label:          strings.TrimSpace(req.Label),
 		EncryptedJSON:  enc,
 		ClientEmail:    parsed.ClientEmail,
+		AuthType:       models.GoogleAuthServiceAccount,
 	}
 	if err := a.DB.Create(&cred).Error; err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to save credential", nil, "")
 	}
-	return r.SendEnvelope(googleCredResponse{ID: cred.ID, Label: cred.Label, ClientEmail: cred.ClientEmail, HasJSON: true})
+	return r.SendEnvelope(toGoogleCredResponse(cred))
 }
 
 // DeleteGoogleCredential removes a stored credential.

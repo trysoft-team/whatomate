@@ -78,6 +78,18 @@ const router = createRouter({
           meta: { permission: 'flows.whatsapp' }
         },
         {
+          path: 'flows/new',
+          name: 'flow-new',
+          component: () => import('@/views/settings/WhatsAppFlowBuilderView.vue'),
+          meta: { permission: 'flows.whatsapp' }
+        },
+        {
+          path: 'flows/:id/edit',
+          name: 'flow-edit',
+          component: () => import('@/views/settings/WhatsAppFlowBuilderView.vue'),
+          meta: { permission: 'flows.whatsapp' }
+        },
+        {
           path: 'campaigns',
           name: 'campaigns',
           component: () => import('@/views/settings/CampaignsView.vue'),
@@ -93,6 +105,12 @@ const router = createRouter({
           path: 'chatbot',
           name: 'chatbot',
           component: () => import('@/views/chatbot/ChatbotView.vue'),
+          meta: { permission: 'settings.chatbot' }
+        },
+        {
+          path: 'chatbot/sessions',
+          name: 'chatbot-sessions',
+          component: () => import('@/views/chatbot/ChatbotSessionsView.vue'),
           meta: { permission: 'settings.chatbot' }
         },
         {
@@ -175,6 +193,12 @@ const router = createRouter({
           path: 'settings/chatbot',
           name: 'chatbot-settings',
           component: () => import('@/views/settings/ChatbotSettingsView.vue'),
+          meta: { permission: 'settings.chatbot' }
+        },
+        {
+          path: 'settings/ai',
+          name: 'ai-settings',
+          component: () => import('@/views/settings/AISettingsView.vue'),
           meta: { permission: 'settings.chatbot' }
         },
         {
@@ -370,6 +394,7 @@ const navigationOrder: NavAccess[] = [
   { path: '/chat', permission: 'chat' },
   { path: '/chatbot', permission: 'settings.chatbot', childPaths: [
     { path: '/chatbot', permission: 'settings.chatbot' },
+    { path: '/chatbot/sessions', permission: 'settings.chatbot' },
     { path: '/chatbot/keywords', permission: 'chatbot.keywords' },
     { path: '/chatbot/flows', permission: 'flows.chatbot' },
     { path: '/chatbot/ai', permission: 'chatbot.ai' }
@@ -389,6 +414,7 @@ const navigationOrder: NavAccess[] = [
     { path: '/settings', permission: 'settings.general' },
     { path: '/settings/organizations', superAdmin: true },
     { path: '/settings/chatbot', permission: 'settings.chatbot' },
+    { path: '/settings/ai', permission: 'settings.chatbot' },
     { path: '/settings/accounts', permission: 'accounts' },
     { path: '/settings/canned-responses', permission: 'canned_responses' },
     { path: '/settings/contacts', permission: 'contacts' },
@@ -435,6 +461,11 @@ router.beforeEach(async (to, _from, next) => {
   // Hydrate the store from localStorage before any route decision — an authenticated user hitting /login must be redirected away.
   if (!authStore.isAuthenticated && (to.meta.requiresAuth !== false || to.name === 'login' || to.name === 'register')) {
     authStore.restoreSession()
+  }
+
+  // Keep org display prefs (time format, etc.) in sync for formatTime helpers.
+  if (authStore.isAuthenticated) {
+    void import('@/lib/orgDisplay').then(m => m.hydrateOrgDisplayPrefs())
   }
 
   // Check if route requires auth

@@ -14,6 +14,7 @@ import type { Column } from '@/components/shared/types'
 import SearchInput from '@/components/shared/SearchInput.vue'
 import { ErrorState } from '@/components/shared'
 import IVRPathTree from '@/components/calling/IVRPathTree.vue'
+import { formatDateTime } from '@/lib/utils'
 
 const { t } = useI18n()
 const store = useCallingStore()
@@ -37,6 +38,8 @@ const selectedLog = ref<CallLog | null>(null)
 const selectedTransfers = ref<CallTransfer[]>([])
 const recordingURL = ref<string | null>(null)
 const recordingLoading = ref(false)
+const aiRecordingURLs = ref<Partial<Record<'user' | 'assistant' | 'stereo', string>>>({})
+const aiRecordingLoading = ref(false)
 
 const statusOptions = [
   { value: 'all', label: t('calling.allStatuses') },
@@ -89,6 +92,7 @@ async function viewDetail(log: CallLog) {
   selectedTransfers.value = []
   showDetail.value = true
   recordingURL.value = null
+  aiRecordingURLs.value = {}
 
   // Fetch full call log detail (includes transfers)
   try {
@@ -104,10 +108,12 @@ async function viewDetail(log: CallLog) {
     // Fall back to list data
   }
 
+  const detail = selectedLog.value ?? log
+
   // Fetch recording URL if recording exists
-  if (log.recording_s3_key) {
+  if (detail.recording_s3_key) {
     recordingLoading.value = true
-    callLogsService.getRecordingURL(log.id)
+    callLogsService.getRecordingURL(detail.id)
       .then(res => {
         const data = (res.data as any).data ?? res.data
         const url = data.url as string
@@ -121,6 +127,41 @@ async function viewDetail(log: CallLog) {
         recordingLoading.value = false
       })
   }
+
+  const aiRecs = detail.ai_call_artifacts?.recordings
+  if (aiRecs && (aiRecs.user || aiRecs.assistant || aiRecs.stereo)) {
+    aiRecordingLoading.value = true
+    const kinds = (['stereo', 'user', 'assistant'] as const).filter((k) => !!aiRecs[k])
+    const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
+    Promise.all(
+      kinds.map(async (kind) => {
+        try {
+          const res = await callLogsService.getRecordingURL(detail.id, kind)
+          const data = (res.data as any).data ?? res.data
+          const url = data.url as string
+          return [kind, url.startsWith('http') ? url : `${basePath}${url}`] as const
+        } catch {
+          return [kind, ''] as const
+        }
+      })
+    )
+      .then((entries) => {
+        const next: Partial<Record<'user' | 'assistant' | 'stereo', string>> = {}
+        for (const [kind, url] of entries) {
+          if (url) next[kind] = url
+        }
+        aiRecordingURLs.value = next
+      })
+      .finally(() => {
+        aiRecordingLoading.value = false
+      })
+  }
+}
+
+function hasAICallArtifacts(log: CallLog | null): boolean {
+  if (!log?.ai_call_artifacts) return false
+  const arts = log.ai_call_artifacts
+  return !!(arts.transcript?.length || arts.recordings?.user || arts.recordings?.assistant || arts.recordings?.stereo)
 }
 
 function formatDuration(seconds: number): string {
@@ -132,7 +173,7 @@ function formatDuration(seconds: number): string {
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString()
+  return formatDateTime(dateStr)
 }
 
 function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
@@ -333,7 +374,7 @@ watch(phoneSearch, () => {
           <template #cell-duration="{ item: log }">
             <span class="inline-flex items-center gap-1.5">
               {{ formatDuration(log.duration) }}
-              <Mic v-if="log.recording_s3_key" class="h-3.5 w-3.5 text-muted-foreground" :title="t('calling.recording')" />
+              <Mic v-if="log.recording_s3_key || hasAICallArtifacts(log)" class="h-3.5 w-3.5 text-muted-foreground" :title="t('calling.recording')" />
             </span>
           </template>
           <template #cell-agent="{ item: log }">
@@ -477,6 +518,46 @@ watch(phoneSearch, () => {
             <p v-if="selectedLog.recording_duration" class="text-xs text-muted-foreground">
               {{ formatDuration(selectedLog.recording_duration) }}
             </p>
+          </div>
+
+          <div v-if="hasAICallArtifacts(selectedLog)" class="space-y-3">
+            <p class="text-sm text-muted-foreground">{{ t('calling.aiCallArtifacts') }}</p>
+
+            <div v-if="selectedLog.ai_call_artifacts?.recordings" class="space-y-2">
+              <div v-if="aiRecordingLoading" class="flex items-center gap-2 text-sm text-muted-foreground">
+                <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-primary" />
+                {{ t('common.loading') }}
+              </div>
+              <template v-else>
+                <div v-if="aiRecordingURLs.stereo" class="space-y-1">
+                  <p class="text-xs text-muted-foreground">{{ t('calling.aiRecordingStereo') }}</p>
+                  <audio :src="aiRecordingURLs.stereo" controls preload="none" class="w-full" />
+                </div>
+                <div v-if="aiRecordingURLs.user" class="space-y-1">
+                  <p class="text-xs text-muted-foreground">{{ t('calling.aiRecordingUser') }}</p>
+                  <audio :src="aiRecordingURLs.user" controls preload="none" class="w-full" />
+                </div>
+                <div v-if="aiRecordingURLs.assistant" class="space-y-1">
+                  <p class="text-xs text-muted-foreground">{{ t('calling.aiRecordingAssistant') }}</p>
+                  <audio :src="aiRecordingURLs.assistant" controls preload="none" class="w-full" />
+                </div>
+              </template>
+            </div>
+
+            <div
+              v-if="selectedLog.ai_call_artifacts?.transcript?.length"
+              class="max-h-56 overflow-y-auto rounded-md border p-3 space-y-2 text-sm"
+            >
+              <p class="text-xs text-muted-foreground mb-1">{{ t('calling.aiTranscript') }}</p>
+              <div
+                v-for="(line, idx) in selectedLog.ai_call_artifacts.transcript"
+                :key="idx"
+                class="space-y-0.5"
+              >
+                <p class="text-xs font-medium capitalize text-muted-foreground">{{ line.role }}</p>
+                <p class="text-foreground whitespace-pre-wrap">{{ line.text }}</p>
+              </div>
+            </div>
           </div>
 
           <div v-if="selectedLog.error_message">

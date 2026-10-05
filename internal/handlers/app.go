@@ -39,7 +39,7 @@ type App struct {
 	// CallManager handles WebRTC call sessions (nil when calling is disabled)
 	CallManager *calling.Manager
 	// TTS generates audio from text for IVR greetings (nil when not configured)
-	TTS *tts.PiperTTS
+	TTS tts.Synthesizer
 	// S3Client for serving call recording presigned URLs (nil when not configured)
 	S3Client *storage.S3Client
 	// wg tracks background goroutines for graceful shutdown

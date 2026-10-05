@@ -6,6 +6,7 @@ import { useNotesStore } from '@/stores/notes'
 import { contactsService } from '@/services/api'
 import { toast } from 'vue-sonner'
 import router from '@/router'
+import { i18n } from '@/i18n'
 
 // Notification sound
 let notificationSound: HTMLAudioElement | null = null
@@ -45,6 +46,7 @@ function showNotification(title: string, body: string, contactId: string) {
 const WS_TYPE_AUTH = 'auth'
 const WS_TYPE_NEW_MESSAGE = 'new_message'
 const WS_TYPE_STATUS_UPDATE = 'status_update'
+const WS_TYPE_CONTACT_UPDATE = 'contact_update'
 const WS_TYPE_SET_CONTACT = 'set_contact'
 const WS_TYPE_PING = 'ping'
 const WS_TYPE_PONG = 'pong'
@@ -57,6 +59,7 @@ const WS_TYPE_AGENT_TRANSFER = 'agent_transfer'
 const WS_TYPE_AGENT_TRANSFER_RESUME = 'agent_transfer_resume'
 const WS_TYPE_AGENT_TRANSFER_ASSIGN = 'agent_transfer_assign'
 const WS_TYPE_TRANSFER_ESCALATION = 'transfer_escalation'
+const WS_TYPE_AGENT_TRANSFER_SUMMARY = 'agent_transfer_summary'
 
 // Campaign types
 const WS_TYPE_CAMPAIGN_STATS_UPDATE = 'campaign_stats_update'
@@ -87,6 +90,7 @@ const WS_TYPE_OUTGOING_CALL_ENDED = 'outgoing_call_ended'
 const WS_TYPE_CONVERSATION_NOTE_CREATED = 'conversation_note_created'
 const WS_TYPE_CONVERSATION_NOTE_UPDATED = 'conversation_note_updated'
 const WS_TYPE_CONVERSATION_NOTE_DELETED = 'conversation_note_deleted'
+const WS_TYPE_WIDGET_LIVE_UPDATE = 'widget_live_update'
 
 interface WSMessage {
   type: string
@@ -106,6 +110,7 @@ class WebSocketService {
   private isConnected = false
   private hasConnectedBefore = false
   private campaignStatsCallbacks: ((payload: any) => void)[] = []
+  private widgetLiveCallbacks: ((sources: string[]) => void)[] = []
   private getTokenFn: (() => Promise<string | null>) | null = null
 
   async connect(getToken?: () => Promise<string | null>) {
@@ -226,6 +231,9 @@ class WebSocketService {
         case WS_TYPE_STATUS_UPDATE:
           this.handleStatusUpdate(store, message.payload)
           break
+        case WS_TYPE_CONTACT_UPDATE:
+          this.handleContactUpdate(store, message.payload)
+          break
         case WS_TYPE_AGENT_TRANSFER:
           this.handleAgentTransfer(message.payload)
           break
@@ -237,6 +245,11 @@ class WebSocketService {
           break
         case WS_TYPE_TRANSFER_ESCALATION:
           this.handleTransferEscalation(message.payload)
+          break
+        case WS_TYPE_AGENT_TRANSFER_SUMMARY:
+          if (message.payload?.id && message.payload?.ai_summary) {
+            useTransfersStore().updateTransfer(message.payload.id, { ai_summary: message.payload.ai_summary })
+          }
           break
         case WS_TYPE_REACTION_UPDATE:
           this.handleReactionUpdate(store, message.payload)
@@ -281,6 +294,9 @@ class WebSocketService {
           break
         case WS_TYPE_CONVERSATION_NOTE_DELETED:
           useNotesStore().onNoteDeleted(message.payload.id)
+          break
+        case WS_TYPE_WIDGET_LIVE_UPDATE:
+          this.handleWidgetLiveUpdate(message.payload)
           break
         default:
           // Unknown message type, ignore
@@ -380,6 +396,22 @@ class WebSocketService {
 
   private handleStatusUpdate(store: ReturnType<typeof useContactsStore>, payload: any) {
     store.updateMessageStatus(payload.message_id, payload.status, payload.error_message)
+  }
+
+  private handleContactUpdate(store: ReturnType<typeof useContactsStore>, payload: any) {
+    if (!payload?.contact_id) return
+    if (payload.bot_muted_cleared) {
+      store.clearBotMutedUntil(payload.contact_id)
+      if (payload.reason === 'service_window_closed' && store.currentContact?.id === payload.contact_id) {
+        toast.info(i18n.global.t('chat.sessionClosedWindowExpired'), {
+          description: i18n.global.t('chat.sessionClosedWindowExpiredDesc'),
+        })
+      }
+      return
+    }
+    if (payload.bot_muted_until) {
+      store.applyBotMutedUntil(payload.contact_id, payload.bot_muted_until)
+    }
   }
 
   private handleReactionUpdate(store: ReturnType<typeof useContactsStore>, payload: any) {
@@ -545,6 +577,11 @@ class WebSocketService {
     this.campaignStatsCallbacks.forEach(callback => callback(payload))
   }
 
+  private handleWidgetLiveUpdate(payload: any) {
+    const sources = Array.isArray(payload?.sources) ? payload.sources as string[] : []
+    this.widgetLiveCallbacks.forEach(callback => callback(sources))
+  }
+
   private async handlePermissionsUpdated() {
     const authStore = useAuthStore()
 
@@ -571,6 +608,16 @@ class WebSocketService {
       const index = this.campaignStatsCallbacks.indexOf(callback)
       if (index > -1) {
         this.campaignStatsCallbacks.splice(index, 1)
+      }
+    }
+  }
+
+  onWidgetLiveUpdate(callback: (sources: string[]) => void) {
+    this.widgetLiveCallbacks.push(callback)
+    return () => {
+      const index = this.widgetLiveCallbacks.indexOf(callback)
+      if (index > -1) {
+        this.widgetLiveCallbacks.splice(index, 1)
       }
     }
   }

@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { api } from '@/services/api'
+import { api, type Passkey } from '@/services/api'
+import {
+  getPasskey,
+  isPasskeySignalSupported,
+  PASSKEY_UNKNOWN_REASON,
+  signalAcceptedPasskeys,
+  signalUnknownPasskey,
+  type GetPasskeyOptions,
+} from '@/lib/passkeys'
 
 export interface UserSettings {
   email_notifications?: boolean
@@ -74,6 +82,7 @@ export const useAuthStore = defineStore('auth', () => {
     // Org override is per-session: leaving it behind makes the next user on this
     // browser send X-Organization-ID for an org they may not belong to.
     localStorage.removeItem('selected_organization_id')
+    localStorage.removeItem('org_display_prefs')
   }
 
   /**
@@ -124,10 +133,44 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * Tell the browser's password manager which of this user's passkeys the
+   * server still accepts for this site, so ones removed here (or from another
+   * device) stop being offered. No-op where the WebAuthn Signal API is missing.
+   */
+  async function syncBrowserPasskeys(passkeys?: Passkey[]): Promise<void> {
+    const current = user.value
+    if (!current || !isPasskeySignalSupported()) return
+    try {
+      const list = passkeys ?? ((await api.get('/me/passkeys')).data.data as Passkey[] | null) ?? []
+      const ids = list.filter(p => p.current_site && p.credential_id).map(p => p.credential_id)
+      await signalAcceptedPasskeys(current, ids)
+    } catch {
+      // Best effort: without a trustworthy list, signal nothing.
+    }
+  }
+
   async function login(email: string, password: string): Promise<void> {
     const response = await api.post('/auth/login', { email, password })
     // Server sets cookies; response body has { user, expires_in }
     setAuth({ user: response.data.data.user })
+    void syncBrowserPasskeys()
+  }
+
+  async function loginWithPasskey(opts: GetPasskeyOptions = {}): Promise<void> {
+    const begin = await api.post('/auth/passkey/begin', {}, { signal: opts.signal })
+    const { session_id, options } = begin.data.data
+    const credential = await getPasskey(options, opts)
+    try {
+      const response = await api.post('/auth/passkey/finish', { session_id, credential })
+      setAuth({ user: response.data.data.user })
+    } catch (error: any) {
+      if (error?.response?.data?.data?.reason === PASSKEY_UNKNOWN_REASON) {
+        void signalUnknownPasskey(String(credential.id ?? ''))
+      }
+      throw error
+    }
+    void syncBrowserPasskeys()
   }
 
   async function register(data: {
@@ -208,6 +251,8 @@ export const useAuthStore = defineStore('auth', () => {
     restoreBreakTime,
     refreshUserData,
     login,
+    loginWithPasskey,
+    syncBrowserPasskeys,
     register,
     switchOrg,
     logout,

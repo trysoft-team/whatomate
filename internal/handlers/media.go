@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,6 +144,33 @@ func (a *App) DownloadAndSaveMedia(ctx context.Context, mediaID string, mimeType
 	return relativePath, nil
 }
 
+var (
+	errMediaStorageConfig = errors.New("media storage configuration error")
+	errMediaInvalidPath   = errors.New("invalid media path")
+)
+
+// localMediaPath resolves a storage-relative media path to an absolute file
+// path inside the media directory, rejecting traversal and symlinks. Returns
+// an error wrapping os.ErrNotExist when the file is missing.
+func (a *App) localMediaPath(mediaURL string) (string, error) {
+	baseDir, err := filepath.Abs(a.getMediaStoragePath())
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errMediaStorageConfig, err)
+	}
+	fullPath, err := filepath.Abs(filepath.Join(baseDir, filepath.Clean(mediaURL)))
+	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
+		return "", errMediaInvalidPath
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", errMediaInvalidPath
+	}
+	return fullPath, nil
+}
+
 // ServeMedia serves media files from local storage
 // Only authorized users who have access to the message can view the media
 func (a *App) ServeMedia(r *fastglue.Request) error {
@@ -192,24 +220,15 @@ func (a *App) ServeMedia(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "No media found", nil, "")
 	}
 
-	// Security: prevent directory traversal and symlink attacks
 	filePath := filepath.Clean(message.MediaURL)
-	baseDir, err := filepath.Abs(a.getMediaStoragePath())
-	if err != nil {
+	fullPath, err := a.localMediaPath(message.MediaURL)
+	switch {
+	case errors.Is(err, errMediaStorageConfig):
 		a.Log.Error("Storage configuration error", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Storage configuration error", nil, "")
-	}
-	fullPath, err := filepath.Abs(filepath.Join(baseDir, filePath))
-	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid file path", nil, "")
-	}
-
-	// Reject symlinks
-	info, err := os.Lstat(fullPath)
-	if err != nil {
+	case errors.Is(err, os.ErrNotExist):
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "File not found", nil, "")
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	case err != nil:
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid file path", nil, "")
 	}
 

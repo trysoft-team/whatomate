@@ -17,6 +17,7 @@ export interface AgentTransfer {
   transferred_by?: string
   transferred_by_name?: string
   notes?: string
+  ai_summary?: string
   transferred_at: string
   resumed_at?: string
   resumed_by?: string

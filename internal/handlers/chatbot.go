@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/audit"
+	"github.com/shridarpatil/whatomate/internal/crypto"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -26,11 +29,22 @@ type ChatbotSettingsResponse struct {
 	AllowAgentQueuePickup        bool              `json:"allow_agent_queue_pickup"`
 	AssignToSameAgent            bool              `json:"assign_to_same_agent"`
 	AgentCurrentConversationOnly bool              `json:"agent_current_conversation_only"`
+	AgentSessionTimeoutMinutes   int               `json:"agent_session_timeout_minutes"`
+	AgentSessionTimeoutMessage   string            `json:"agent_session_timeout_message"`
+	AgentAppendInitials          bool              `json:"agent_append_initials"`
 	AIEnabled                    bool              `json:"ai_enabled"`
 	AIProvider                   models.AIProvider `json:"ai_provider"`
 	AIModel                      string            `json:"ai_model"`
 	AIMaxTokens                  int               `json:"ai_max_tokens"`
 	AISystemPrompt               string            `json:"ai_system_prompt"`
+	AIHandoffSummary             bool              `json:"ai_handoff_summary"`
+	TranscribeProvider           models.AIProvider `json:"transcribe_provider"`
+	TranscribeModel              string            `json:"transcribe_model"`
+	HasTranscribeKey             bool              `json:"has_transcribe_key"`
+	VoiceProvider                string            `json:"voice_provider"`
+	OpenAITTSVoice               string            `json:"openai_tts_voice"`
+	ElevenLabsVoiceID            string            `json:"elevenlabs_voice_id"`
+	HasElevenLabsKey             bool              `json:"has_elevenlabs_key"`
 	// SLA Settings
 	SLAEnabled             bool     `json:"sla_enabled"`
 	SLAResponseMinutes     int      `json:"sla_response_minutes"`
@@ -78,12 +92,16 @@ type KeywordRuleResponse struct {
 
 // ChatbotFlowResponse represents a chatbot flow for API response
 type ChatbotFlowResponse struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	TriggerKeywords []string `json:"trigger_keywords"`
-	Enabled         bool     `json:"enabled"`
-	CreatedAt       string   `json:"created_at"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	Description           string   `json:"description"`
+	WhatsAppAccount       string   `json:"whatsapp_account"`
+	IsDefault             bool     `json:"is_default"`
+	HasUnpublishedChanges bool     `json:"has_unpublished_changes"`
+	TriggerKeywords       []string `json:"trigger_keywords"`
+	StepsCount            int      `json:"steps_count"`
+	Enabled               bool     `json:"enabled"`
+	CreatedAt             string   `json:"created_at"`
 }
 
 // AIContextResponse represents an AI context for API response
@@ -170,12 +188,23 @@ func (a *App) GetChatbotSettings(r *fastglue.Request) error {
 		AllowAgentQueuePickup:        settings.AgentAssignment.AllowQueuePickup,
 		AssignToSameAgent:            settings.AgentAssignment.AssignToSameAgent,
 		AgentCurrentConversationOnly: settings.AgentAssignment.CurrentConversationOnly,
+		AgentSessionTimeoutMinutes:   agentSessionTimeoutMinutes(&settings),
+		AgentSessionTimeoutMessage:   settings.AgentAssignment.SessionTimeoutMessage,
+		AgentAppendInitials:          settings.AgentAssignment.AppendAgentInitials,
 		// AI
-		AIEnabled:      settings.AI.Enabled,
-		AIProvider:     settings.AI.Provider,
-		AIModel:        settings.AI.Model,
-		AIMaxTokens:    settings.AI.MaxTokens,
-		AISystemPrompt: settings.AI.SystemPrompt,
+		AIEnabled:         settings.AI.Enabled,
+		AIProvider:        settings.AI.Provider,
+		AIModel:           settings.AI.Model,
+		AIMaxTokens:       settings.AI.MaxTokens,
+		AISystemPrompt:    settings.AI.SystemPrompt,
+		AIHandoffSummary:   settings.AI.HandoffSummary,
+		TranscribeProvider: settings.AI.TranscribeProvider,
+		TranscribeModel:    settings.AI.TranscribeModel,
+		HasTranscribeKey:   settings.AI.TranscribeAPIKey != "",
+		VoiceProvider:      settings.AI.VoiceProvider,
+		OpenAITTSVoice:     settings.AI.OpenAITTSVoice,
+		ElevenLabsVoiceID:  settings.AI.ElevenLabsVoiceID,
+		HasElevenLabsKey:   settings.AI.ElevenLabsAPIKey != "",
 		// SLA Settings
 		SLAEnabled:             settings.SLA.Enabled,
 		SLAResponseMinutes:     settings.SLA.ResponseMinutes,
@@ -218,7 +247,18 @@ func chatbotAgentsSnapshot(s *models.ChatbotSettings) map[string]any {
 		"allow_agent_queue_pickup":        s.AgentAssignment.AllowQueuePickup,
 		"assign_to_same_agent":            s.AgentAssignment.AssignToSameAgent,
 		"agent_current_conversation_only": s.AgentAssignment.CurrentConversationOnly,
+		"agent_session_timeout_minutes":   agentSessionTimeoutMinutes(s),
+		"agent_session_timeout_message":   s.AgentAssignment.SessionTimeoutMessage,
+		"agent_append_initials":           s.AgentAssignment.AppendAgentInitials,
 	}
+}
+
+// agentSessionTimeoutMinutes returns the agent-reply mute duration (default 5).
+func agentSessionTimeoutMinutes(s *models.ChatbotSettings) int {
+	if s == nil || s.AgentAssignment.SessionTimeoutMinutes <= 0 {
+		return 5
+	}
+	return s.AgentAssignment.SessionTimeoutMinutes
 }
 
 // chatbotHoursSnapshot captures the fields shown on the Chatbot "Business Hours" tab.
@@ -256,11 +296,19 @@ func chatbotSLASnapshot(s *models.ChatbotSettings) map[string]any {
 // change the activity log should surface.
 func chatbotAISnapshot(s *models.ChatbotSettings) map[string]any {
 	return map[string]any{
-		"ai_enabled":       s.AI.Enabled,
-		"ai_provider":      s.AI.Provider,
-		"ai_model":         s.AI.Model,
-		"ai_max_tokens":    s.AI.MaxTokens,
-		"ai_system_prompt": s.AI.SystemPrompt,
+		"ai_enabled":           s.AI.Enabled,
+		"ai_provider":          s.AI.Provider,
+		"ai_model":             s.AI.Model,
+		"ai_max_tokens":        s.AI.MaxTokens,
+		"ai_system_prompt":     s.AI.SystemPrompt,
+		"ai_handoff_summary":   s.AI.HandoffSummary,
+		"transcribe_provider":  s.AI.TranscribeProvider,
+		"transcribe_model":     s.AI.TranscribeModel,
+		"has_transcribe_key":   s.AI.TranscribeAPIKey != "",
+		"voice_provider":       s.AI.VoiceProvider,
+		"openai_tts_voice":     s.AI.OpenAITTSVoice,
+		"elevenlabs_voice_id":  s.AI.ElevenLabsVoiceID,
+		"has_elevenlabs_key":   s.AI.ElevenLabsAPIKey != "",
 	}
 }
 
@@ -284,12 +332,23 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 		AllowAgentQueuePickup        *bool              `json:"allow_agent_queue_pickup"`
 		AssignToSameAgent            *bool              `json:"assign_to_same_agent"`
 		AgentCurrentConversationOnly *bool              `json:"agent_current_conversation_only"`
+		AgentSessionTimeoutMinutes   *int               `json:"agent_session_timeout_minutes"`
+		AgentSessionTimeoutMessage   *string            `json:"agent_session_timeout_message"`
+		AgentAppendInitials          *bool              `json:"agent_append_initials"`
 		AIEnabled                    *bool              `json:"ai_enabled"`
 		AIProvider                   *models.AIProvider `json:"ai_provider"`
 		AIAPIKey                     *string            `json:"ai_api_key"`
 		AIModel                      *string            `json:"ai_model"`
 		AIMaxTokens                  *int               `json:"ai_max_tokens"`
 		AISystemPrompt               *string            `json:"ai_system_prompt"`
+		AIHandoffSummary             *bool              `json:"ai_handoff_summary"`
+		TranscribeProvider           *models.AIProvider `json:"transcribe_provider"`
+		TranscribeModel              *string            `json:"transcribe_model"`
+		TranscribeAPIKey             *string            `json:"transcribe_api_key"`
+		VoiceProvider                *string            `json:"voice_provider"`
+		ElevenLabsAPIKey             *string            `json:"elevenlabs_api_key"`
+		OpenAITTSVoice               *string            `json:"openai_tts_voice"`
+		ElevenLabsVoiceID            *string            `json:"elevenlabs_voice_id"`
 		// SLA Settings
 		SLAEnabled             *bool     `json:"sla_enabled"`
 		SLAResponseMinutes     *int      `json:"sla_response_minutes"`
@@ -356,7 +415,8 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 		req.GreetingButtons != nil || req.FallbackMessage != nil ||
 		req.FallbackButtons != nil || req.SessionTimeoutMinutes != nil
 	agentsTouched := req.AllowAgentQueuePickup != nil || req.AssignToSameAgent != nil ||
-		req.AgentCurrentConversationOnly != nil
+		req.AgentCurrentConversationOnly != nil || req.AgentSessionTimeoutMinutes != nil ||
+		req.AgentSessionTimeoutMessage != nil || req.AgentAppendInitials != nil
 	hoursTouched := req.BusinessHoursEnabled != nil || req.BusinessHours != nil ||
 		req.OutOfHoursMessage != nil || req.AllowAutomatedOutsideHours != nil
 	slaTouched := req.SLAEnabled != nil || req.SLAResponseMinutes != nil ||
@@ -367,7 +427,10 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 		req.ClientReminderMessage != nil || req.ClientAutoCloseMinutes != nil ||
 		req.ClientAutoCloseMessage != nil
 	aiTouched := req.AIEnabled != nil || req.AIProvider != nil || req.AIAPIKey != nil ||
-		req.AIModel != nil || req.AIMaxTokens != nil || req.AISystemPrompt != nil
+		req.AIModel != nil || req.AIMaxTokens != nil || req.AISystemPrompt != nil ||
+		req.AIHandoffSummary != nil || req.VoiceProvider != nil || req.ElevenLabsAPIKey != nil ||
+		req.OpenAITTSVoice != nil || req.ElevenLabsVoiceID != nil ||
+		req.TranscribeProvider != nil || req.TranscribeModel != nil || req.TranscribeAPIKey != nil
 
 	// Update fields if provided
 	if req.Enabled != nil {
@@ -424,6 +487,22 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 	if req.AgentCurrentConversationOnly != nil {
 		settings.AgentAssignment.CurrentConversationOnly = *req.AgentCurrentConversationOnly
 	}
+	if req.AgentSessionTimeoutMinutes != nil {
+		mins := *req.AgentSessionTimeoutMinutes
+		if mins < 1 {
+			mins = 1
+		}
+		if mins > 1440 {
+			mins = 1440
+		}
+		settings.AgentAssignment.SessionTimeoutMinutes = mins
+	}
+	if req.AgentSessionTimeoutMessage != nil {
+		settings.AgentAssignment.SessionTimeoutMessage = *req.AgentSessionTimeoutMessage
+	}
+	if req.AgentAppendInitials != nil {
+		settings.AgentAssignment.AppendAgentInitials = *req.AgentAppendInitials
+	}
 
 	// AI Settings
 	if req.AIEnabled != nil {
@@ -444,6 +523,36 @@ func (a *App) UpdateChatbotSettings(r *fastglue.Request) error {
 	if req.AISystemPrompt != nil {
 		settings.AI.SystemPrompt = *req.AISystemPrompt
 	}
+	if req.AIHandoffSummary != nil {
+		settings.AI.HandoffSummary = *req.AIHandoffSummary
+	}
+	if req.TranscribeProvider != nil {
+		if *req.TranscribeProvider != settings.AI.TranscribeProvider && (req.TranscribeAPIKey == nil || *req.TranscribeAPIKey == "") {
+			settings.AI.TranscribeAPIKey = ""
+		}
+		settings.AI.TranscribeProvider = *req.TranscribeProvider
+	}
+	if req.TranscribeModel != nil {
+		settings.AI.TranscribeModel = strings.TrimSpace(*req.TranscribeModel)
+	}
+	if req.TranscribeAPIKey != nil && *req.TranscribeAPIKey != "" {
+		settings.AI.TranscribeAPIKey = *req.TranscribeAPIKey
+	}
+	if req.VoiceProvider != nil {
+		settings.AI.VoiceProvider = *req.VoiceProvider
+	}
+	if req.ElevenLabsAPIKey != nil && *req.ElevenLabsAPIKey != "" {
+		settings.AI.ElevenLabsAPIKey = *req.ElevenLabsAPIKey
+	}
+	if req.OpenAITTSVoice != nil {
+		settings.AI.OpenAITTSVoice = *req.OpenAITTSVoice
+	}
+	if req.ElevenLabsVoiceID != nil {
+		settings.AI.ElevenLabsVoiceID = *req.ElevenLabsVoiceID
+	}
+
+	// Encrypt secret fields before persist (no-op when already enc: prefixed or key empty).
+	_ = crypto.EncryptFields(a.Config.App.EncryptionKey, &settings.AI.APIKey, &settings.AI.ElevenLabsAPIKey, &settings.AI.TranscribeAPIKey)
 
 	// SLA Settings
 	if req.SLAEnabled != nil {
@@ -836,8 +945,13 @@ func (a *App) ListChatbotFlows(r *fastglue.Request) error {
 
 	pg := parsePagination(r)
 	search := string(r.RequestCtx.QueryArgs().Peek("search"))
+	accountFilter := string(r.RequestCtx.QueryArgs().Peek("whatsapp_account"))
 
 	query := a.DB.Model(&models.ChatbotFlow{}).Where("organization_id = ?", orgID)
+
+	if accountFilter != "" {
+		query = query.Where("whats_app_account = ?", accountFilter)
+	}
 
 	// Apply search filter - search by name, description, or trigger keywords
 	if search != "" {
@@ -855,19 +969,65 @@ func (a *App) ListChatbotFlows(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to fetch flows", nil, "")
 	}
 
+	defaultFlowIDs := a.defaultChatbotFlowIDsForOrg(orgID)
+
 	response := make([]ChatbotFlowResponse, len(flows))
 	for i, flow := range flows {
+		graphForCount := flow.DraftGraph
+		if graphForCount == nil {
+			graphForCount = flow.Graph
+		}
 		response[i] = ChatbotFlowResponse{
-			ID:              flow.ID.String(),
-			Name:            flow.Name,
-			Description:     flow.Description,
-			TriggerKeywords: flow.TriggerKeywords,
-			Enabled:         flow.IsEnabled,
-			CreatedAt:       flow.CreatedAt.Format(time.RFC3339),
+			ID:                    flow.ID.String(),
+			Name:                  flow.Name,
+			Description:           flow.Description,
+			WhatsAppAccount:       flow.WhatsAppAccount,
+			IsDefault:             defaultFlowIDs[flow.ID],
+			HasUnpublishedChanges: flow.HasUnpublishedChanges,
+			TriggerKeywords:       flow.TriggerKeywords,
+			StepsCount:            chatbotFlowGraphNodeCount(graphForCount),
+			Enabled:               flow.IsEnabled,
+			CreatedAt:             flow.CreatedAt.Format(time.RFC3339),
 		}
 	}
 
 	return r.SendEnvelope(listEnvelope("flows", response, total, pg))
+}
+
+// defaultChatbotFlowIDsForOrg returns flow IDs that are set as an account default.
+func (a *App) defaultChatbotFlowIDsForOrg(orgID uuid.UUID) map[uuid.UUID]bool {
+	out := make(map[uuid.UUID]bool)
+	var accounts []models.WhatsAppAccount
+	if err := a.DB.Select("default_chatbot_flow_id").
+		Where("organization_id = ? AND default_chatbot_flow_id IS NOT NULL", orgID).
+		Find(&accounts).Error; err != nil {
+		return out
+	}
+	for _, acc := range accounts {
+		if acc.DefaultChatbotFlowID != nil {
+			out[*acc.DefaultChatbotFlowID] = true
+		}
+	}
+	return out
+}
+
+// chatbotFlowGraphNodeCount returns the number of nodes in a v2 flow graph.
+func chatbotFlowGraphNodeCount(graph models.JSONB) int {
+	if graph == nil {
+		return 0
+	}
+	raw, ok := graph["nodes"]
+	if !ok || raw == nil {
+		return 0
+	}
+	switch nodes := raw.(type) {
+	case []any:
+		return len(nodes)
+	case []map[string]any:
+		return len(nodes)
+	default:
+		return 0
+	}
 }
 
 // CreateChatbotFlow creates a new chatbot flow
@@ -884,6 +1044,7 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 	var req struct {
 		Name              string         `json:"name"`
 		Description       string         `json:"description"`
+		WhatsAppAccount   string         `json:"whatsapp_account"`
 		TriggerKeywords   []string       `json:"trigger_keywords"`
 		InitialMessage    string         `json:"initial_message"`
 		CompletionMessage string         `json:"completion_message"`
@@ -892,6 +1053,7 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 		PanelConfig       map[string]any `json:"panel_config"`
 		Graph             map[string]any `json:"graph"`
 		Enabled           bool           `json:"enabled"`
+		KeepSessionActive bool           `json:"keep_session_active"`
 	}
 
 	if err := json.Unmarshal(r.RequestCtx.PostBody(), &req); err != nil {
@@ -901,22 +1063,35 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 	if req.Name == "" {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Name is required", nil, "")
 	}
+	if strings.TrimSpace(req.WhatsAppAccount) == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "whatsapp_account is required", nil, "")
+	}
+	if _, err := a.resolveWhatsAppAccount(orgID, req.WhatsAppAccount); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "WhatsApp account not found", nil, "")
+	}
 
+	now := time.Now()
+	graph := models.JSONB(req.Graph)
 	flow := models.ChatbotFlow{
-		BaseModel:         models.BaseModel{ID: uuid.New()},
-		OrganizationID:    orgID,
-		Name:              req.Name,
-		Description:       req.Description,
-		TriggerKeywords:   req.TriggerKeywords,
-		InitialMessage:    req.InitialMessage,
-		CompletionMessage: req.CompletionMessage,
-		OnCompleteAction:  req.OnCompleteAction,
-		CompletionConfig:  models.JSONB(req.CompletionConfig),
-		PanelConfig:       models.JSONB(req.PanelConfig),
-		Graph:             models.JSONB(req.Graph),
-		IsEnabled:         req.Enabled,
-		CreatedByID:       &userID,
-		UpdatedByID:       &userID,
+		BaseModel:             models.BaseModel{ID: uuid.New()},
+		OrganizationID:        orgID,
+		WhatsAppAccount:       req.WhatsAppAccount,
+		Name:                  req.Name,
+		Description:           req.Description,
+		TriggerKeywords:       req.TriggerKeywords,
+		InitialMessage:        req.InitialMessage,
+		CompletionMessage:     req.CompletionMessage,
+		OnCompleteAction:      req.OnCompleteAction,
+		CompletionConfig:      models.JSONB(req.CompletionConfig),
+		PanelConfig:           models.JSONB(req.PanelConfig),
+		Graph:                 graph,
+		DraftGraph:            graph,
+		PublishedAt:           &now,
+		HasUnpublishedChanges: false,
+		IsEnabled:             req.Enabled,
+		KeepSessionActive:     req.KeepSessionActive,
+		CreatedByID:           &userID,
+		UpdatedByID:           &userID,
 	}
 
 	if err := a.DB.Create(&flow).Error; err != nil {
@@ -988,6 +1163,7 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 	var req struct {
 		Name              *string        `json:"name"`
 		Description       *string        `json:"description"`
+		WhatsAppAccount   *string        `json:"whatsapp_account"`
 		TriggerKeywords   []string       `json:"trigger_keywords"`
 		InitialMessage    *string        `json:"initial_message"`
 		CompletionMessage *string        `json:"completion_message"`
@@ -996,6 +1172,8 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 		PanelConfig       map[string]any `json:"panel_config"`
 		Graph             map[string]any `json:"graph"`
 		Enabled           *bool          `json:"enabled"`
+		KeepSessionActive *bool          `json:"keep_session_active"`
+		IsDefault         *bool          `json:"is_default"`
 	}
 
 	if err := json.Unmarshal(r.RequestCtx.PostBody(), &req); err != nil {
@@ -1007,6 +1185,16 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 	}
 	if req.Description != nil {
 		flow.Description = *req.Description
+	}
+	if req.WhatsAppAccount != nil {
+		accountName := strings.TrimSpace(*req.WhatsAppAccount)
+		if accountName == "" {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "whatsapp_account is required", nil, "")
+		}
+		if _, err := a.resolveWhatsAppAccount(orgID, accountName); err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "WhatsApp account not found", nil, "")
+		}
+		flow.WhatsAppAccount = accountName
 	}
 	if len(req.TriggerKeywords) > 0 {
 		flow.TriggerKeywords = req.TriggerKeywords
@@ -1026,11 +1214,23 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 	if req.PanelConfig != nil {
 		flow.PanelConfig = models.JSONB(req.PanelConfig)
 	}
+	invalidateCache := false
 	if req.Graph != nil {
-		flow.Graph = models.JSONB(req.Graph)
+		flow.DraftGraph = models.JSONB(req.Graph)
+		flow.HasUnpublishedChanges = !chatbotGraphsEqual(flow.DraftGraph, flow.Graph)
 	}
 	if req.Enabled != nil {
 		flow.IsEnabled = *req.Enabled
+		invalidateCache = true
+	}
+	if req.KeepSessionActive != nil {
+		flow.KeepSessionActive = *req.KeepSessionActive
+		invalidateCache = true
+	}
+	if req.Name != nil || req.Description != nil || len(req.TriggerKeywords) > 0 ||
+		req.WhatsAppAccount != nil || req.InitialMessage != nil || req.CompletionMessage != nil ||
+		req.OnCompleteAction != nil || req.CompletionConfig != nil {
+		invalidateCache = true
 	}
 	flow.UpdatedByID = &userID
 
@@ -1039,13 +1239,232 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update flow", nil, "")
 	}
 
-	a.InvalidateChatbotFlowsCache(orgID)
+	if req.IsDefault != nil {
+		if err := a.setChatbotFlowAsAccountDefault(orgID, flow, *req.IsDefault); err != nil {
+			a.Log.Error("Failed to update account default flow", "error", err, "flow", flow.ID)
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
+		}
+		invalidateCache = true
+	}
+
+	if invalidateCache {
+		a.InvalidateChatbotFlowsCache(orgID)
+	}
 
 	a.logAudit(orgID, userID,
 		"chatbot_flow", flow.ID, models.AuditActionUpdated, &oldFlow, flow)
 
 	return r.SendEnvelope(map[string]any{
-		"message": "Flow updated successfully",
+		"message":                 "Flow updated successfully",
+		"has_unpublished_changes": flow.HasUnpublishedChanges,
+	})
+}
+
+// PublishChatbotFlow copies draft_graph to the live graph used by inbound processing.
+func (a *App) PublishChatbotFlow(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+
+	if !a.HasPermission(userID, models.ResourceFlowsChatbot, models.ActionWrite, orgID) {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Permission denied", nil, "")
+	}
+
+	id, err := parsePathUUID(r, "id", "flow")
+	if err != nil {
+		return nil
+	}
+
+	flow, err := findByIDAndOrg[models.ChatbotFlow](a.DB, r, id, orgID, "Flow")
+	if err != nil {
+		return nil
+	}
+
+	oldFlow := *flow
+	draft := flow.DraftGraph
+	if draft == nil {
+		draft = flow.Graph
+	}
+	if draft == nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Nothing to publish", nil, "")
+	}
+
+	now := time.Now()
+	flow.Graph = draft
+	flow.DraftGraph = draft
+	flow.PublishedAt = &now
+	flow.HasUnpublishedChanges = false
+	flow.UpdatedByID = &userID
+
+	if err := a.DB.Save(flow).Error; err != nil {
+		a.Log.Error("Failed to publish flow", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to publish flow", nil, "")
+	}
+
+	a.InvalidateChatbotFlowsCache(orgID)
+	a.logAudit(orgID, userID,
+		"chatbot_flow", flow.ID, models.AuditActionUpdated, &oldFlow, flow)
+
+	return r.SendEnvelope(map[string]any{
+		"message":      "Flow published successfully",
+		"published_at": now.Format(time.RFC3339),
+	})
+}
+
+// chatbotGraphsEqual reports whether two JSONB graphs are semantically equal.
+func chatbotGraphsEqual(a, b models.JSONB) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	aa, err1 := json.Marshal(a)
+	bb, err2 := json.Marshal(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return string(aa) == string(bb)
+}
+
+// setChatbotFlowAsAccountDefault sets or clears this flow as the WhatsApp account's default chat flow.
+// Changing the default cancels all active chatbot sessions for that account.
+func (a *App) setChatbotFlowAsAccountDefault(orgID uuid.UUID, flow *models.ChatbotFlow, makeDefault bool) error {
+	if flow.WhatsAppAccount == "" {
+		return fmt.Errorf("flow has no WhatsApp account")
+	}
+	account, err := a.resolveWhatsAppAccount(orgID, flow.WhatsAppAccount)
+	if err != nil {
+		return fmt.Errorf("WhatsApp account not found")
+	}
+
+	changed := false
+	if makeDefault {
+		if account.DefaultChatbotFlowID != nil && *account.DefaultChatbotFlowID == flow.ID {
+			return nil
+		}
+		if err := a.DB.Model(account).Update("default_chatbot_flow_id", flow.ID).Error; err != nil {
+			return fmt.Errorf("failed to update account default flow")
+		}
+		changed = true
+	} else if account.DefaultChatbotFlowID != nil && *account.DefaultChatbotFlowID == flow.ID {
+		if err := a.DB.Model(account).Updates(map[string]any{"default_chatbot_flow_id": nil}).Error; err != nil {
+			return fmt.Errorf("failed to update account default flow")
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	a.InvalidateWhatsAppAccountCache(account.PhoneID)
+	a.cancelActiveChatbotSessionsForAccount(orgID, account.Name)
+	return nil
+}
+
+// cancelActiveChatbotSessionsForAccount ends all active chatbot sessions for an account
+// and clears per-contact chatbot inactivity tracking.
+func (a *App) cancelActiveChatbotSessionsForAccount(orgID uuid.UUID, accountName string) {
+	if accountName == "" {
+		return
+	}
+	var sessions []models.ChatbotSession
+	if err := a.DB.Select("id", "contact_id").
+		Where("organization_id = ? AND whats_app_account = ? AND status = ?", orgID, accountName, models.SessionStatusActive).
+		Find(&sessions).Error; err != nil {
+		a.Log.Error("Failed to list active chatbot sessions for cancel", "error", err, "account", accountName)
+		return
+	}
+	if len(sessions) == 0 {
+		return
+	}
+
+	now := time.Now()
+	if err := a.DB.Model(&models.ChatbotSession{}).
+		Where("organization_id = ? AND whats_app_account = ? AND status = ?", orgID, accountName, models.SessionStatusActive).
+		Updates(map[string]any{
+			"status":       models.SessionStatusCancelled,
+			"completed_at": now,
+			"current_step": "",
+			"step_retries": 0,
+		}).Error; err != nil {
+		a.Log.Error("Failed to cancel chatbot sessions", "error", err, "account", accountName)
+		return
+	}
+
+	seen := make(map[uuid.UUID]struct{}, len(sessions))
+	for _, s := range sessions {
+		if _, ok := seen[s.ContactID]; ok {
+			continue
+		}
+		seen[s.ContactID] = struct{}{}
+		a.ClearContactChatbotTracking(s.ContactID)
+	}
+	a.Log.Info("Cancelled chatbot sessions after default flow change",
+		"account", accountName, "sessions", len(sessions), "contacts", len(seen))
+}
+
+// countActiveChatbotSessionsForAccount returns active sessions for an account,
+// optionally limited to those still within the org session timeout window.
+func (a *App) countActiveChatbotSessionsForAccount(orgID uuid.UUID, accountName string) int64 {
+	if accountName == "" {
+		return 0
+	}
+	query := a.DB.Model(&models.ChatbotSession{}).
+		Where("organization_id = ? AND whats_app_account = ? AND status = ?", orgID, accountName, models.SessionStatusActive)
+
+	timeoutMins := 30
+	var settings models.ChatbotSettings
+	if err := a.DB.Where("organization_id = ? AND (whats_app_account = ? OR whats_app_account = '')", orgID, accountName).
+		Order("CASE WHEN whats_app_account = '' THEN 1 ELSE 0 END").
+		First(&settings).Error; err == nil && settings.SessionTimeoutMins > 0 {
+		timeoutMins = settings.SessionTimeoutMins
+	}
+	cutoff := time.Now().Add(-time.Duration(timeoutMins) * time.Minute)
+	query = query.Where("last_activity_at > ?", cutoff)
+
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		a.Log.Error("Failed to count active chatbot sessions", "error", err, "account", accountName)
+		return 0
+	}
+	return count
+}
+
+// CountChatbotSessions returns a count of chatbot sessions matching filters.
+func (a *App) CountChatbotSessions(r *fastglue.Request) error {
+	orgID, err := a.getOrgID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+
+	accountName := string(r.RequestCtx.QueryArgs().Peek("whatsapp_account"))
+	status := string(r.RequestCtx.QueryArgs().Peek("status"))
+	if status == "" {
+		status = string(models.SessionStatusActive)
+	}
+
+	var count int64
+	if status == string(models.SessionStatusActive) && accountName != "" {
+		count = a.countActiveChatbotSessionsForAccount(orgID, accountName)
+	} else {
+		query := a.DB.Model(&models.ChatbotSession{}).Where("organization_id = ?", orgID)
+		if accountName != "" {
+			query = query.Where("whats_app_account = ?", accountName)
+		}
+		if status != "" {
+			query = query.Where("status = ?", status)
+		}
+		if err := query.Count(&count).Error; err != nil {
+			a.Log.Error("Failed to count chatbot sessions", "error", err)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to count sessions", nil, "")
+		}
+	}
+
+	return r.SendEnvelope(map[string]any{
+		"count":             count,
+		"whatsapp_account":  accountName,
+		"status":            status,
 	})
 }
 
@@ -1369,14 +1788,30 @@ func (a *App) ListChatbotSessions(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
 	}
 
+	// Mark idle sessions past Session Timeout before listing so the UI reflects expiry.
+	a.expireIdleChatbotSessions(orgID)
+
 	status := string(r.RequestCtx.QueryArgs().Peek("status"))
+	accountName := string(r.RequestCtx.QueryArgs().Peek("whatsapp_account"))
+	flowIDStr := string(r.RequestCtx.QueryArgs().Peek("flow_id"))
 
 	query := a.DB.Where("organization_id = ?", orgID).
 		Preload("Contact").
+		Preload("CurrentFlow").
 		Order("last_activity_at DESC")
 
 	if status != "" {
 		query = query.Where("status = ?", status)
+	}
+	if accountName != "" {
+		query = query.Where("whats_app_account = ?", accountName)
+	}
+	if flowIDStr != "" {
+		flowID, err := uuid.Parse(flowIDStr)
+		if err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid flow_id", nil, "")
+		}
+		query = query.Where("current_flow_id = ?", flowID)
 	}
 
 	var sessions []models.ChatbotSession
@@ -1411,6 +1846,93 @@ func (a *App) GetChatbotSession(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(session)
+}
+
+// GetChatbotFlowAnalytics returns session totals and drop-off for a flow.
+func (a *App) GetChatbotFlowAnalytics(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+	if !a.HasPermission(userID, models.ResourceFlowsChatbot, models.ActionRead, orgID) {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "Permission denied", nil, "")
+	}
+
+	id, err := parsePathUUID(r, "id", "flow")
+	if err != nil {
+		return nil
+	}
+
+	var flow models.ChatbotFlow
+	if err := a.DB.Where("id = ? AND organization_id = ?", id, orgID).First(&flow).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Flow not found", nil, "")
+	}
+
+	type statusRow struct {
+		Status string
+		Count  int64
+	}
+	var rows []statusRow
+	a.DB.Model(&models.ChatbotSession{}).
+		Select("status, COUNT(*) as count").
+		Where("organization_id = ? AND current_flow_id = ?", orgID, id).
+		Group("status").
+		Scan(&rows)
+
+	var started, completed, cancelled, active int64
+	for _, row := range rows {
+		started += row.Count
+		switch models.SessionStatus(row.Status) {
+		case models.SessionStatusCompleted:
+			completed = row.Count
+		case models.SessionStatusCancelled:
+			cancelled = row.Count
+		case models.SessionStatusActive:
+			active = row.Count
+		}
+	}
+
+	var dropSessions []models.ChatbotSession
+	a.DB.Select("id", "status", "current_step", "session_data").
+		Where("organization_id = ? AND current_flow_id = ? AND status != ?", orgID, id, models.SessionStatusCompleted).
+		Order("last_activity_at DESC").
+		Limit(500).
+		Find(&dropSessions)
+
+	dropOff := map[string]int64{}
+	for _, s := range dropSessions {
+		nodeID := s.CurrentStep
+		if nodeID == "" {
+			if path, ok := s.SessionData["__path__"].([]any); ok && len(path) > 0 {
+				if last, ok := path[len(path)-1].(map[string]any); ok {
+					if n, ok := last["node"].(string); ok {
+						nodeID = n
+					}
+				}
+			}
+		}
+		if nodeID == "" {
+			nodeID = "(unknown)"
+		}
+		dropOff[nodeID]++
+	}
+
+	completionRate := 0.0
+	if started > 0 {
+		completionRate = float64(completed) / float64(started) * 100
+	}
+
+	return r.SendEnvelope(map[string]any{
+		"flow_id": id.String(),
+		"summary": map[string]any{
+			"started":         started,
+			"completed":       completed,
+			"cancelled":       cancelled,
+			"active":          active,
+			"completion_rate": completionRate,
+		},
+		"drop_off": dropOff,
+	})
 }
 
 // getChatbotStats returns chatbot statistics for an organization

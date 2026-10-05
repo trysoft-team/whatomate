@@ -52,9 +52,10 @@ func executeHTTPCallback(url, method string, headers map[string]string, body str
 	}, nil
 }
 
-// interpolateTemplate replaces {{key}} placeholders with values from the variables map.
+// interpolateTemplate replaces {{key}} and {{{key}}} placeholders with values from the variables map.
 func interpolateTemplate(tpl string, vars map[string]string) string {
 	for k, v := range vars {
+		tpl = strings.ReplaceAll(tpl, "{{{"+k+"}}}", v)
 		tpl = strings.ReplaceAll(tpl, "{{"+k+"}}", v)
 	}
 	return tpl

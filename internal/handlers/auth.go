@@ -55,26 +55,6 @@ func (a *App) Login(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Invalid credentials", nil, "")
 	}
 
-	// Load permissions from cache
-	if user.Role != nil && user.RoleID != nil {
-		cachedPerms, err := a.GetRolePermissionsCached(*user.RoleID)
-		if err == nil {
-			permissions := make([]models.Permission, 0, len(cachedPerms))
-			for _, p := range cachedPerms {
-				for i := len(p) - 1; i >= 0; i-- {
-					if p[i] == ':' {
-						permissions = append(permissions, models.Permission{
-							Resource: p[:i],
-							Action:   p[i+1:],
-						})
-						break
-					}
-				}
-			}
-			user.Role.Permissions = permissions
-		}
-	}
-
 	// Check if user is active
 	if !user.IsActive {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Account is disabled", nil, "")
@@ -85,14 +65,45 @@ func (a *App) Login(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Invalid credentials", nil, "")
 	}
 
-	// Generate tokens
-	accessToken, err := a.generateAccessToken(&user)
+	return a.startLoginSession(r, &user)
+}
+
+// loadCachedRolePermissions fills user.Role.Permissions from the role cache.
+func (a *App) loadCachedRolePermissions(user *models.User) {
+	if user.Role == nil || user.RoleID == nil {
+		return
+	}
+	cachedPerms, err := a.GetRolePermissionsCached(*user.RoleID)
+	if err != nil {
+		return
+	}
+	permissions := make([]models.Permission, 0, len(cachedPerms))
+	for _, p := range cachedPerms {
+		for i := len(p) - 1; i >= 0; i-- {
+			if p[i] == ':' {
+				permissions = append(permissions, models.Permission{
+					Resource: p[:i],
+					Action:   p[i+1:],
+				})
+				break
+			}
+		}
+	}
+	user.Role.Permissions = permissions
+}
+
+// startLoginSession issues tokens for an authenticated, active user (Role
+// preloaded), sets the auth cookies and writes the login response.
+func (a *App) startLoginSession(r *fastglue.Request, user *models.User) error {
+	a.loadCachedRolePermissions(user)
+
+	accessToken, err := a.generateAccessToken(user)
 	if err != nil {
 		a.Log.Error("Failed to generate access token", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate token", nil, "")
 	}
 
-	refreshToken, err := a.generateRefreshToken(&user)
+	refreshToken, err := a.generateRefreshToken(user)
 	if err != nil {
 		a.Log.Error("Failed to generate refresh token", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate token", nil, "")
@@ -102,7 +113,7 @@ func (a *App) Login(r *fastglue.Request) error {
 
 	return r.SendEnvelope(CookieAuthResponse{
 		ExpiresIn: a.Config.JWT.AccessExpiryMins * 60,
-		User:      user,
+		User:      *user,
 	})
 }
 

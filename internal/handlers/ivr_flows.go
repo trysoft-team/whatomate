@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/shridarpatil/whatomate/internal/crypto"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/internal/tts"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 	"gorm.io/gorm"
@@ -68,7 +71,7 @@ func (a *App) GetIVRFlow(r *fastglue.Request) error {
 		return nil
 	}
 
-	flow, err := findByIDAndOrg[models.IVRFlow](a.DB.Preload("CreatedBy").Preload("UpdatedBy"), r, flowID, orgID, "IVR Flow")
+	flow, err := findByIDAndOrg[models.IVRFlow](a.DB.Preload("CreatedBy").Preload("UpdatedBy"), r, flowID, orgID, "Call Flow")
 	if err != nil {
 		return nil
 	}
@@ -170,7 +173,7 @@ func (a *App) UpdateIVRFlow(r *fastglue.Request) error {
 		return nil
 	}
 
-	flow, err := findByIDAndOrg[models.IVRFlow](a.DB, r, flowID, orgID, "IVR Flow")
+	flow, err := findByIDAndOrg[models.IVRFlow](a.DB, r, flowID, orgID, "Call Flow")
 	if err != nil {
 		return nil
 	}
@@ -426,7 +429,7 @@ func (a *App) DeleteIVRFlow(r *fastglue.Request) error {
 		return nil
 	}
 
-	flow, err := findByIDAndOrg[models.IVRFlow](a.DB, r, flowID, orgID, "IVR Flow")
+	flow, err := findByIDAndOrg[models.IVRFlow](a.DB, r, flowID, orgID, "Call Flow")
 	if err != nil {
 		return nil
 	}
@@ -611,6 +614,48 @@ func (a *App) ServeIVRAudio(r *fastglue.Request) error {
 	return nil
 }
 
+// PreviewIVRGeminiVoice synthesizes welcome/preview text with a Gemini TTS voice
+// using the org AI API key, returning audio/wav for the IVR editor preview button.
+func (a *App) PreviewIVRGeminiVoice(r *fastglue.Request) error {
+	orgID, _, err := a.requireAuth(r, models.ResourceIVRFlows, models.ActionRead)
+	if err != nil {
+		return nil
+	}
+
+	var req struct {
+		Text  string `json:"text"`
+		Voice string `json:"voice"`
+	}
+	if err := r.Decode(&req, "json"); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid request body", nil, "")
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "text is required", nil, "")
+	}
+
+	settings, err := a.getChatbotSettingsCached(orgID, "")
+	if err != nil || settings == nil || strings.TrimSpace(settings.AI.APIKey) == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest,
+			"Configure a Google/Gemini API key in Settings → AI first", nil, "")
+	}
+	apiKey := settings.AI.APIKey
+	if a.Config != nil && a.Config.App.EncryptionKey != "" {
+		crypto.DecryptFields(a.Config.App.EncryptionKey, &apiKey)
+	}
+
+	wav, err := tts.SynthesizeGeminiWAV(r.RequestCtx, apiKey, text, req.Voice, a.HTTPClient)
+	if err != nil {
+		a.Log.Warn("IVR Gemini voice preview failed", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusBadGateway, "Voice preview failed: "+err.Error(), nil, "")
+	}
+
+	r.RequestCtx.Response.Header.Set("Content-Type", "audio/wav")
+	r.RequestCtx.Response.Header.Set("Cache-Control", "no-store")
+	r.RequestCtx.SetBody(wav)
+	return nil
+}
+
 // UploadOrgAudio handles multipart audio file uploads for org-level hold music and ringback tones.
 // The "type" query parameter must be "hold_music" or "ringback".
 func (a *App) UploadOrgAudio(r *fastglue.Request) error {
@@ -752,6 +797,9 @@ func transcodeToOpus(inputPath, outputPath string) error {
 // for any node with a non-empty "greeting_text" in its config. The generated
 // audio filename is set as the node's "audio_file" config field.
 func (a *App) generateIVRAudio(menu models.JSONB) error {
+	if a.TTS == nil {
+		return nil
+	}
 	nodesRaw, ok := menu["nodes"]
 	if !ok {
 		return nil
@@ -781,7 +829,7 @@ func (a *App) generateIVRAudio(menu models.JSONB) error {
 		if greetingText == "" {
 			continue
 		}
-		filename, err := a.TTS.Generate(greetingText)
+		filename, err := a.TTS.Generate(context.Background(), greetingText, tts.SynthOpts{})
 		if err != nil {
 			return err
 		}

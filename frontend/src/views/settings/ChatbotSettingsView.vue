@@ -18,7 +18,7 @@ import MessageButtonsEditor from '@/components/shared/MessageButtonsEditor.vue'
 import type { ButtonConfig } from '@/types/flow-preview'
 import { validateWhatsAppButtons } from '@/lib/whatsappButtons'
 import { toast } from 'vue-sonner'
-import { Bot, Loader2, Brain, X, Clock, AlertTriangle, UserPlus, MessageSquare, Users } from 'lucide-vue-next'
+import { Bot, Loader2, X, Clock, AlertTriangle, UserPlus, MessageSquare, Users } from 'lucide-vue-next'
 import { chatbotService } from '@/services/api'
 import { useUsersStore } from '@/stores/users'
 import { useAuthStore } from '@/stores/auth'
@@ -42,7 +42,6 @@ const messagesLogKey = ref(0)
 const agentsLogKey = ref(0)
 const hoursLogKey = ref(0)
 const slaLogKey = ref(0)
-const aiLogKey = ref(0)
 
 function refreshActivityLog(key: typeof messagesLogKey) {
   setTimeout(() => { key.value++ }, 500)
@@ -91,34 +90,10 @@ const chatbotSettings = ref({
   allow_automated_outside_hours: true,
   allow_agent_queue_pickup: true,
   assign_to_same_agent: true,
-  agent_current_conversation_only: false
-})
-
-// AI Settings
-const aiSettings = ref({
-  ai_enabled: false,
-  ai_provider: '',
-  ai_api_key: '',
-  ai_model: '',
-  ai_max_tokens: 500,
-  ai_system_prompt: ''
-})
-
-const isAIEnabled = ref(false)
-
-const aiProviders = [
-  { value: 'openai', label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
-  { value: 'anthropic', label: 'Anthropic', models: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-latest'] },
-  { value: 'google', label: 'Google AI', models: ['gemini-3.6-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'] }
-]
-
-const availableModels = computed(() => {
-  const provider = aiProviders.find(p => p.value === aiSettings.value.ai_provider)
-  return provider?.models || []
-})
-
-watch(isAIEnabled, (newValue) => {
-  aiSettings.value.ai_enabled = newValue
+  agent_current_conversation_only: false,
+  agent_session_timeout_minutes: 5,
+  agent_session_timeout_message: '',
+  agent_append_initials: false
 })
 
 // SLA Settings
@@ -198,18 +173,10 @@ onMounted(async () => {
         allow_automated_outside_hours: chatbotData.settings.allow_automated_outside_hours !== false,
         allow_agent_queue_pickup: chatbotData.settings.allow_agent_queue_pickup !== false,
         assign_to_same_agent: chatbotData.settings.assign_to_same_agent !== false,
-        agent_current_conversation_only: chatbotData.settings.agent_current_conversation_only === true
-      }
-
-      const aiEnabledValue = chatbotData.settings.ai_enabled === true
-      isAIEnabled.value = aiEnabledValue
-      aiSettings.value = {
-        ai_enabled: aiEnabledValue,
-        ai_provider: chatbotData.settings.ai_provider || '',
-        ai_api_key: '',
-        ai_model: chatbotData.settings.ai_model || '',
-        ai_max_tokens: chatbotData.settings.ai_max_tokens || 500,
-        ai_system_prompt: chatbotData.settings.ai_system_prompt || ''
+        agent_current_conversation_only: chatbotData.settings.agent_current_conversation_only === true,
+        agent_session_timeout_minutes: chatbotData.settings.agent_session_timeout_minutes || 5,
+        agent_session_timeout_message: chatbotData.settings.agent_session_timeout_message || '',
+        agent_append_initials: chatbotData.settings.agent_append_initials === true
       }
 
       const slaEnabledValue = chatbotData.settings.sla_enabled === true
@@ -276,7 +243,10 @@ async function saveAgentSettings() {
     await chatbotService.updateSettings({
       allow_agent_queue_pickup: chatbotSettings.value.allow_agent_queue_pickup,
       assign_to_same_agent: chatbotSettings.value.assign_to_same_agent,
-      agent_current_conversation_only: chatbotSettings.value.agent_current_conversation_only
+      agent_current_conversation_only: chatbotSettings.value.agent_current_conversation_only,
+      agent_session_timeout_minutes: chatbotSettings.value.agent_session_timeout_minutes,
+      agent_session_timeout_message: chatbotSettings.value.agent_session_timeout_message,
+      agent_append_initials: chatbotSettings.value.agent_append_initials
     })
     toast.success(t('chatbotSettings.agentSettingsSaved'))
     refreshActivityLog(agentsLogKey)
@@ -300,30 +270,6 @@ async function saveBusinessHoursSettings() {
     refreshActivityLog(hoursLogKey)
   } catch (error) {
     toast.error(t('common.failedSave', { resource: t('resources.chatbotSettings') }))
-  } finally {
-    isSubmitting.value = false
-  }
-}
-
-async function saveAISettings() {
-  isSubmitting.value = true
-  try {
-    const payload: any = {
-      ai_enabled: aiSettings.value.ai_enabled,
-      ai_provider: aiSettings.value.ai_provider,
-      ai_model: aiSettings.value.ai_model,
-      ai_max_tokens: aiSettings.value.ai_max_tokens,
-      ai_system_prompt: aiSettings.value.ai_system_prompt
-    }
-    if (aiSettings.value.ai_api_key) {
-      payload.ai_api_key = aiSettings.value.ai_api_key
-    }
-    await chatbotService.updateSettings(payload)
-    toast.success(t('chatbotSettings.aiSettingsSaved'))
-    aiSettings.value.ai_api_key = ''
-    refreshActivityLog(aiLogKey)
-  } catch (error) {
-    toast.error(t('chatbotSettings.aiSaveFailed'))
   } finally {
     isSubmitting.value = false
   }
@@ -377,7 +323,7 @@ function removeEscalationUser(userId: string) {
     <ScrollArea class="flex-1">
       <div class="p-6 space-y-4 max-w-4xl mx-auto">
         <Tabs default-value="messages" class="w-full">
-          <TabsList class="grid w-full grid-cols-5 mb-6">
+          <TabsList class="grid w-full grid-cols-4 mb-6">
             <TabsTrigger value="messages">
               <MessageSquare class="h-4 w-4 mr-2" />
               {{ $t('chatbotSettings.messages') }}
@@ -393,10 +339,6 @@ function removeEscalationUser(userId: string) {
             <TabsTrigger value="sla">
               <AlertTriangle class="h-4 w-4 mr-2" />
               {{ $t('chatbotSettings.sla') }}
-            </TabsTrigger>
-            <TabsTrigger value="ai">
-              <Brain class="h-4 w-4 mr-2" />
-              {{ $t('chatbotSettings.ai') }}
             </TabsTrigger>
           </TabsList>
 
@@ -514,6 +456,47 @@ function removeEscalationUser(userId: string) {
                   <Switch
                     :checked="chatbotSettings.agent_current_conversation_only"
                     @update:checked="chatbotSettings.agent_current_conversation_only = $event"
+                  />
+                </div>
+
+                <Separator />
+
+                <div class="space-y-2 py-2">
+                  <Label for="agent-session-timeout">{{ $t('chatbotSettings.agentSessionTimeout') }}</Label>
+                  <Input
+                    id="agent-session-timeout"
+                    v-model.number="chatbotSettings.agent_session_timeout_minutes"
+                    type="number"
+                    min="1"
+                    max="1440"
+                    class="w-32"
+                  />
+                  <p class="text-xs text-muted-foreground">{{ $t('chatbotSettings.agentSessionTimeoutHint') }}</p>
+                </div>
+
+                <Separator />
+
+                <div class="space-y-2 py-2">
+                  <Label for="agent-session-timeout-message">{{ $t('chatbotSettings.agentSessionTimeoutMessage') }}</Label>
+                  <Textarea
+                    id="agent-session-timeout-message"
+                    v-model="chatbotSettings.agent_session_timeout_message"
+                    :placeholder="$t('chatbotSettings.agentSessionTimeoutMessagePlaceholder')"
+                    rows="3"
+                  />
+                  <p class="text-xs text-muted-foreground">{{ $t('chatbotSettings.agentSessionTimeoutMessageHint') }}</p>
+                </div>
+
+                <Separator />
+
+                <div class="flex items-center justify-between py-2">
+                  <div>
+                    <p class="font-medium">{{ $t('chatbotSettings.agentAppendInitials') }}</p>
+                    <p class="text-sm text-muted-foreground">{{ $t('chatbotSettings.agentAppendInitialsDesc') }}</p>
+                  </div>
+                  <Switch
+                    :checked="chatbotSettings.agent_append_initials"
+                    @update:checked="chatbotSettings.agent_append_initials = $event"
                   />
                 </div>
 
@@ -799,95 +782,6 @@ function removeEscalationUser(userId: string) {
             </Card>
             <div v-if="orgID" class="mt-4">
               <AuditLogPanel :key="slaLogKey" resource-type="settings.chatbot.sla" :resource-id="orgID" />
-            </div>
-          </TabsContent>
-
-          <!-- AI Tab -->
-          <TabsContent value="ai">
-            <Card>
-              <CardHeader>
-                <CardTitle>{{ $t('chatbotSettings.aiSettings') }}</CardTitle>
-                <CardDescription>{{ $t('chatbotSettings.aiSettingsDesc') }}</CardDescription>
-              </CardHeader>
-              <CardContent class="space-y-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <p class="font-medium">{{ $t('chatbotSettings.enableAiResponses') }}</p>
-                    <p class="text-sm text-muted-foreground">{{ $t('chatbotSettings.enableAiResponsesDesc') }}</p>
-                  </div>
-                  <Switch
-                    :checked="isAIEnabled"
-                    @update:checked="(val: boolean) => isAIEnabled = val"
-                  />
-                </div>
-
-                <div v-if="isAIEnabled" class="space-y-4 pt-2">
-                  <Separator />
-
-                  <div class="grid grid-cols-2 gap-4">
-                    <div class="space-y-2">
-                      <Label>{{ $t('chatbotSettings.aiProvider') }}</Label>
-                      <Select v-model="aiSettings.ai_provider">
-                        <SelectTrigger>
-                          <SelectValue :placeholder="$t('chatbotSettings.selectProvider') + '...'" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem v-for="provider in aiProviders" :key="provider.value" :value="provider.value">
-                            {{ provider.label }}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div class="space-y-2">
-                      <Label>{{ $t('chatbotSettings.model') }}</Label>
-                      <Select v-model="aiSettings.ai_model" :disabled="!aiSettings.ai_provider">
-                        <SelectTrigger>
-                          <SelectValue :placeholder="$t('chatbotSettings.selectModel') + '...'" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem v-for="model in availableModels" :key="model" :value="model">
-                            {{ model }}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-
-                  <div class="space-y-2">
-                    <Label>{{ $t('chatbotSettings.apiKey') }}</Label>
-                    <Input
-                      v-model="aiSettings.ai_api_key"
-                      type="password"
-                      :placeholder="$t('chatbotSettings.apiKeyPlaceholder') + '...'"
-                    />
-                    <p class="text-xs text-muted-foreground">{{ $t('chatbotSettings.apiKeyHint') }}</p>
-                  </div>
-
-                  <div class="space-y-2">
-                    <Label>{{ $t('chatbotSettings.maxTokens') }}</Label>
-                    <Input v-model.number="aiSettings.ai_max_tokens" type="number" min="100" max="4000" class="w-32" />
-                  </div>
-
-                  <div class="space-y-2">
-                    <Label>{{ $t('chatbotSettings.systemPrompt') }}</Label>
-                    <Textarea
-                      v-model="aiSettings.ai_system_prompt"
-                      :placeholder="$t('chatbotSettings.systemPromptPlaceholder') + '...'"
-                      :rows="3"
-                    />
-                  </div>
-                </div>
-
-                <div class="flex justify-end pt-2">
-                  <Button @click="saveAISettings" :disabled="isSubmitting">
-                    <Loader2 v-if="isSubmitting" class="mr-2 h-4 w-4 animate-spin" />
-                    {{ $t('chatbotSettings.saveChanges') }}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-            <div v-if="orgID" class="mt-4">
-              <AuditLogPanel :key="aiLogKey" resource-type="settings.chatbot.ai" :resource-id="orgID" />
             </div>
           </TabsContent>
         </Tabs>

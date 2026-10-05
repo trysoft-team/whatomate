@@ -65,6 +65,26 @@ services:
     volumes:
       - redis-data:/data
 
+  # Pipecat realtime AI Call sidecar (optional).
+  # Enable [pipecat] in config.toml and set auth_token to match PIPECAT_AUTH_TOKEN.
+  pipecat:
+    build:
+      context: ./services/pipecat-bot
+      dockerfile: Dockerfile
+    image: whatomate-pipecat:local
+    container_name: whatomate_pipecat
+    restart: unless-stopped
+    networks:
+      - whatomate
+    ports:
+      - "127.0.0.1:7860:7860"
+    environment:
+      PIPECAT_AUTH_TOKEN: ${PIPECAT_AUTH_TOKEN:-dev-pipecat-secret}
+      PIPECAT_HOST: 0.0.0.0
+      PIPECAT_PORT: 7860
+    profiles:
+      - pipecat
+
 networks:
   whatomate:
 

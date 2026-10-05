@@ -7,11 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { PageHeader, SearchInput, DeleteConfirmDialog, DataTable, IconButton, ErrorState, type Column } from '@/components/shared'
 import { cannedResponsesService, type CannedResponse } from '@/services/api'
 import { useCrudState } from '@/composables/useCrudState'
+import { storeAICannedResponseDraft } from '@/lib/cannedResponseDraft'
 import { toast } from 'vue-sonner'
-import { Plus, MessageSquareText, Pencil, Trash2, Copy } from 'lucide-vue-next'
+import { Plus, MessageSquareText, Pencil, Trash2, Copy, Sparkles, Loader2 } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
 import { CANNED_RESPONSE_CATEGORIES, getLabelFromValue } from '@/lib/constants'
 import { useSearchPagination } from '@/composables/useSearchPagination'
@@ -74,6 +77,37 @@ watch(selectedCategory, () => {
 function openCreate() { router.push('/settings/canned-responses/new') }
 function openEdit(response: CannedResponse) { router.push(`/settings/canned-responses/${response.id}`) }
 
+const isGenerateDialogOpen = ref(false)
+const generatePrompt = ref('')
+const isGenerating = ref(false)
+const generateSuggestions = computed(() => [
+  t('cannedResponses.generateWithAISuggestion1'),
+  t('cannedResponses.generateWithAISuggestion2'),
+  t('cannedResponses.generateWithAISuggestion3'),
+])
+
+function openGenerateDialog() {
+  generatePrompt.value = ''
+  isGenerateDialogOpen.value = true
+}
+
+async function generateResponse() {
+  const prompt = generatePrompt.value.trim()
+  if (!prompt) { toast.error(t('cannedResponses.generateWithAIPromptRequired')); return }
+  isGenerating.value = true
+  try {
+    const response = await cannedResponsesService.generate(prompt)
+    storeAICannedResponseDraft((response.data as any).data || response.data)
+    isGenerateDialogOpen.value = false
+    toast.success(t('cannedResponses.generateWithAIReady'))
+    router.push('/settings/canned-responses/new')
+  } catch (err) {
+    toast.error(getErrorMessage(err, t('cannedResponses.generateWithAIFailed')))
+  } finally {
+    isGenerating.value = false
+  }
+}
+
 onMounted(() => fetchItems())
 
 const isDeleting = ref(false)
@@ -101,7 +135,20 @@ function getCategoryLabel(category: string): string { return getLabelFromValue(C
   <div class="flex flex-col h-full bg-[#0a0a0b] light:bg-gray-50">
     <PageHeader :title="$t('cannedResponses.title')" :icon="MessageSquareText" icon-gradient="bg-gradient-to-br from-teal-500 to-emerald-600 shadow-teal-500/20" back-link="/settings" :breadcrumbs="breadcrumbs">
       <template #actions>
-        <Button variant="outline" size="sm" @click="openCreate"><Plus class="h-4 w-4 mr-2" />{{ $t('cannedResponses.addResponse') }}</Button>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="generate-canned-ai"
+            class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            @click="openGenerateDialog"
+          >
+            <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+              <Sparkles class="h-3.5 w-3.5 shrink-0" />
+              {{ $t('cannedResponses.generateWithAI') }}
+            </span>
+          </button>
+          <Button variant="outline" size="sm" @click="openCreate"><Plus class="h-4 w-4 mr-2" />{{ $t('cannedResponses.addResponse') }}</Button>
+        </div>
       </template>
     </PageHeader>
 
@@ -198,9 +245,21 @@ function getCategoryLabel(category: string): string { return getLabelFromValue(C
                   </div>
                 </template>
                 <template #empty-action>
-                  <Button variant="outline" size="sm" @click="openCreate">
-                    <Plus class="h-4 w-4 mr-2" />{{ $t('cannedResponses.addResponse') }}
-                  </Button>
+                  <div class="inline-flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="btn-press relative inline-flex h-8 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-xs font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      @click="openGenerateDialog"
+                    >
+                      <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-3 text-xs text-violet-300 light:bg-violet-50 light:text-violet-600">
+                        <Sparkles class="h-3.5 w-3.5 shrink-0" />
+                        {{ $t('cannedResponses.generateWithAI') }}
+                      </span>
+                    </button>
+                    <Button variant="outline" size="sm" @click="openCreate">
+                      <Plus class="h-4 w-4 mr-2" />{{ $t('cannedResponses.addResponse') }}
+                    </Button>
+                  </div>
                 </template>
               </DataTable>
             </CardContent>
@@ -208,6 +267,51 @@ function getCategoryLabel(category: string): string { return getLabelFromValue(C
         </div>
       </div>
     </ScrollArea>
+
+    <Dialog v-model:open="isGenerateDialogOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 light:bg-violet-100">
+              <Sparkles class="h-5 w-5 text-primary light:text-violet-600" />
+            </div>
+            <div class="min-w-0 space-y-1">
+              <DialogTitle>{{ $t('cannedResponses.generateWithAI') }}</DialogTitle>
+              <DialogDescription>{{ $t('cannedResponses.generateWithAISubtitle') }}</DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+        <div class="space-y-3 py-2">
+          <Textarea
+            v-model="generatePrompt"
+            data-testid="generate-canned-prompt"
+            :placeholder="$t('cannedResponses.generateWithAIPlaceholder')"
+            class="min-h-[110px]"
+            :disabled="isGenerating"
+            @keydown.meta.enter="generateResponse"
+            @keydown.ctrl.enter="generateResponse"
+          />
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="s in generateSuggestions"
+              :key="s"
+              type="button"
+              class="rounded-full border border-border bg-background px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 hover:text-foreground"
+              :disabled="isGenerating"
+              @click="generatePrompt = s"
+            >{{ s }}</button>
+          </div>
+          <p class="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground"><Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />{{ $t('cannedResponses.generateWithAIHint') }}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="isGenerating" @click="isGenerateDialogOpen = false">{{ $t('common.cancel') }}</Button>
+          <Button :disabled="isGenerating || !generatePrompt.trim()" data-testid="generate-canned-submit" @click="generateResponse">
+            <Loader2 v-if="isGenerating" class="h-4 w-4 mr-2 animate-spin" /><Sparkles v-else class="h-4 w-4 mr-2" />
+            {{ isGenerating ? $t('cannedResponses.generateWithAIGenerating') : $t('cannedResponses.generateWithAI') }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <DeleteConfirmDialog v-model:open="deleteDialogOpen" :title="$t('cannedResponses.deleteTitle')" :item-name="responseToDelete?.name" :is-submitting="isDeleting" @confirm="confirmDelete" />
   </div>

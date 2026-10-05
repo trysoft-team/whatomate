@@ -40,6 +40,7 @@ type ContactResponse struct {
 	LastInboundAt      *time.Time `json:"last_inbound_at,omitempty"`
 	ServiceWindowOpen  bool       `json:"service_window_open"`
 	MarketingOptOut    bool       `json:"marketing_opt_out"`
+	BotMutedUntil      *time.Time `json:"bot_muted_until,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
@@ -63,8 +64,12 @@ type MessageResponse struct {
 	ReplyToMessage   *ReplyPreview        `json:"reply_to_message,omitempty"`
 	Reactions        []ReactionInfo       `json:"reactions,omitempty"`
 	WhatsAppAccount  string               `json:"whatsapp_account,omitempty"`
+	Transcript       string               `json:"transcript,omitempty"`
+	Translations     map[string]string    `json:"translations,omitempty"` // lowercased language name -> text
 	CreatedAt        time.Time            `json:"created_at"`
 	UpdatedAt        time.Time            `json:"updated_at"`
+	// BotMutedUntil is set when an agent send pauses chatbot automation.
+	BotMutedUntil *time.Time `json:"bot_muted_until,omitempty"`
 }
 
 // ReplyPreview contains a preview of the replied-to message
@@ -190,6 +195,7 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 			LastInboundAt:      c.LastInboundAt,
 			ServiceWindowOpen:  serviceWindowOpen,
 			MarketingOptOut:    c.MarketingOptOut,
+			BotMutedUntil:      contactBotMutedUntilPtr(&c),
 			CreatedAt:          c.CreatedAt,
 			UpdatedAt:          c.UpdatedAt,
 		}
@@ -415,6 +421,15 @@ func (a *App) buildMessagesResponse(messages []models.Message) []MessageResponse
 		}
 
 		if m.Metadata != nil {
+			msgResp.Transcript, _ = m.Metadata["transcript"].(string)
+			if raw, ok := m.Metadata["translations"].(map[string]any); ok {
+				msgResp.Translations = make(map[string]string, len(raw))
+				for lang, v := range raw {
+					if s, ok := v.(string); ok && s != "" {
+						msgResp.Translations[lang] = s
+					}
+				}
+			}
 			if reactionsRaw, ok := m.Metadata["reactions"]; ok {
 				if reactionsArray, ok := reactionsRaw.([]any); ok {
 					for _, r := range reactionsArray {
@@ -460,6 +475,121 @@ func (a *App) MarkContactRead(r *fastglue.Request) error {
 
 	a.markMessagesAsRead(orgID, contactID, &contact)
 	return r.SendEnvelope(map[string]any{"status": "ok"})
+}
+
+// SendContactTyping shows WhatsApp's typing indicator for a contact while an
+// agent is composing a reply (composer focused). Does not require account
+// typing_indicator_enabled (that flag only gates chatbot pre-reply typing).
+//
+// Meta requires a recent inbound wamid; if none exists the call is a no-op.
+func (a *App) SendContactTyping(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+	contactID, err := parsePathUUID(r, "id", "contact")
+	if err != nil {
+		return nil
+	}
+
+	var contact models.Contact
+	query := a.DB.Where("id = ? AND organization_id = ?", contactID, orgID)
+	query = a.scopeAssignedContact(query, userID, orgID)
+	if err := query.First(&contact).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Contact not found", nil, "")
+	}
+
+	accountName := contact.WhatsAppAccount
+	if q := strings.TrimSpace(string(r.RequestCtx.QueryArgs().Peek("account"))); q != "" {
+		accountName = q
+	}
+	var body struct {
+		WhatsAppAccount string `json:"whatsapp_account"`
+	}
+	if len(r.RequestCtx.PostBody()) > 0 {
+		_ = json.Unmarshal(r.RequestCtx.PostBody(), &body)
+		if strings.TrimSpace(body.WhatsAppAccount) != "" {
+			accountName = strings.TrimSpace(body.WhatsAppAccount)
+		}
+	}
+	if accountName == "" {
+		return r.SendEnvelope(map[string]any{"ok": false, "reason": "no_account"})
+	}
+
+	account, err := a.resolveWhatsAppAccount(orgID, accountName)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Failed to resolve WhatsApp account", nil, "")
+	}
+
+	inbound, ok := a.latestInboundWAMID(contactID, orgID, accountName)
+	if !ok {
+		// Fall back to any inbound on this contact (account tab may not match stored name).
+		inbound, ok = a.latestInboundWAMID(contactID, orgID, "")
+	}
+	if !ok {
+		return r.SendEnvelope(map[string]any{"ok": false, "reason": "no_inbound"})
+	}
+
+	if a.WhatsApp == nil {
+		return r.SendEnvelope(map[string]any{"ok": false, "reason": "whatsapp_unavailable"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.WhatsApp.MarkMessageReadWithTyping(ctx, a.toWhatsAppAccount(account), inbound); err != nil {
+		a.Log.Debug("Agent typing indicator failed", "error", err, "contact_id", contactID, "message_id", inbound)
+		return r.SendErrorEnvelope(fasthttp.StatusBadGateway, "Failed to send typing indicator", nil, "")
+	}
+
+	return r.SendEnvelope(map[string]any{"ok": true})
+}
+
+// latestInboundWAMID returns the newest incoming WhatsApp message ID for a contact.
+// If accountName is non-empty, results are scoped to that WhatsApp account.
+func (a *App) latestInboundWAMID(contactID, orgID uuid.UUID, accountName string) (string, bool) {
+	var inbound models.Message
+	msgQuery := a.DB.Where(
+		"contact_id = ? AND organization_id = ? AND direction = ? AND whats_app_message_id != '' AND whats_app_message_id IS NOT NULL",
+		contactID, orgID, models.DirectionIncoming,
+	)
+	if accountName != "" {
+		msgQuery = msgQuery.Where("whats_app_account = ?", accountName)
+	}
+	if err := msgQuery.Order("created_at DESC").First(&inbound).Error; err != nil {
+		return "", false
+	}
+	return inbound.WhatsAppMessageID, true
+}
+
+// CloseAgentSession clears the agent-reply mute (bot_muted_until) so chatbot
+// automation can resume before the session-timeout timer expires.
+func (a *App) CloseAgentSession(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+	contactID, err := parsePathUUID(r, "id", "contact")
+	if err != nil {
+		return nil
+	}
+
+	var contact models.Contact
+	query := a.DB.Where("id = ? AND organization_id = ?", contactID, orgID)
+	query = a.scopeAssignedContact(query, userID, orgID)
+	if err := query.First(&contact).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Contact not found", nil, "")
+	}
+
+	if err := a.clearChatbotAgentSessionMute(&contact, orgID); err != nil {
+		a.Log.Error("Failed to close agent session", "error", err, "contact_id", contactID)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to close agent session", nil, "")
+	}
+
+	a.Log.Info("Agent session closed", "contact_id", contactID, "user_id", userID)
+	return r.SendEnvelope(map[string]any{
+		"status":  "ok",
+		"message": "Agent session closed, chatbot automation resumed",
+	})
 }
 
 // markMessagesAsRead marks messages as read and sends read receipts
@@ -689,6 +819,9 @@ func (a *App) SendMessage(r *fastglue.Request) error {
 		CreatedAt:       message.CreatedAt,
 		UpdatedAt:       message.UpdatedAt,
 	}
+	if until, ok := contactBotMutedUntil(&contact); ok {
+		response.BotMutedUntil = &until
+	}
 
 	// Add reply context to response
 	if message.IsReply && message.ReplyToMessageID != nil && replyToMessage != nil {
@@ -812,6 +945,17 @@ func (a *App) SendMediaMessage(r *fastglue.Request) error {
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
+	filename := fileHeader.Filename
+
+	// WhatsApp rejects browser MediaRecorder webm; transcode to OGG/Opus when needed.
+	if mediaType == "audio" {
+		converted, newMime, newName, convErr := ensureWhatsAppAudio(fileData, mimeType, filename)
+		if convErr != nil {
+			a.Log.Error("Failed to prepare audio for WhatsApp", "error", convErr, "mime", mimeType)
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Unsupported audio format. Please try again.", nil, "")
+		}
+		fileData, mimeType, filename = converted, newMime, newName
+	}
 
 	// Get contact (users without full read permission can only message their assigned contacts)
 	var contact models.Contact
@@ -832,7 +976,7 @@ func (a *App) SendMediaMessage(r *fastglue.Request) error {
 	}
 
 	// Save file locally first
-	localPath, err := a.saveMediaLocally(fileData, mimeType, fileHeader.Filename)
+	localPath, err := a.saveMediaLocally(fileData, mimeType, filename)
 	if err != nil {
 		a.Log.Error("Failed to save media locally", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to save media", nil, "")
@@ -846,7 +990,7 @@ func (a *App) SendMediaMessage(r *fastglue.Request) error {
 		MediaData:     fileData,
 		MediaURL:      localPath,
 		MediaMimeType: mimeType,
-		MediaFilename: fileHeader.Filename,
+		MediaFilename: filename,
 		Caption:       caption,
 	}
 
@@ -874,8 +1018,66 @@ func (a *App) SendMediaMessage(r *fastglue.Request) error {
 		CreatedAt:       message.CreatedAt,
 		UpdatedAt:       message.UpdatedAt,
 	}
+	if until, ok := contactBotMutedUntil(&contact); ok {
+		response.BotMutedUntil = &until
+	}
 
 	return r.SendEnvelope(response)
+}
+
+// isWhatsAppAudioMime reports whether Meta accepts this audio MIME without
+// transcoding (Cloud API: aac, mp4, mpeg, amr, ogg+opus).
+func isWhatsAppAudioMime(mimeType string) bool {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	if i := strings.IndexByte(m, ';'); i >= 0 {
+		m = strings.TrimSpace(m[:i])
+	}
+	switch m {
+	case "audio/aac", "audio/mp4", "audio/mpeg", "audio/mp3", "audio/amr", "audio/ogg", "audio/opus":
+		return true
+	default:
+		return false
+	}
+}
+
+// ensureWhatsAppAudio returns audio bytes Meta can accept. Browser recordings
+// are usually audio/webm — transcode those to OGG/Opus via ffmpeg.
+func ensureWhatsAppAudio(data []byte, mimeType, filename string) ([]byte, string, string, error) {
+	if isWhatsAppAudioMime(mimeType) {
+		if filename == "" {
+			filename = "voice.ogg"
+		}
+		return data, mimeType, filename, nil
+	}
+
+	ext := ".webm"
+	lower := strings.ToLower(mimeType)
+	switch {
+	case strings.Contains(lower, "mp4"), strings.Contains(lower, "m4a"):
+		ext = ".mp4"
+	case strings.Contains(lower, "wav"):
+		ext = ".wav"
+	}
+
+	tmpDir, err := os.MkdirTemp("", "wa-audio-*")
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	inPath := filepath.Join(tmpDir, "in"+ext)
+	outPath := filepath.Join(tmpDir, "out.ogg")
+	if err := os.WriteFile(inPath, data, 0o600); err != nil {
+		return nil, "", "", err
+	}
+	if err := transcodeToOpus(inPath, outPath); err != nil {
+		return nil, "", "", err
+	}
+	out, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return out, "audio/ogg", "voice.ogg", nil
 }
 
 // saveMediaLocally saves media data to local storage and returns the relative path
@@ -1590,6 +1792,7 @@ func (a *App) buildContactResponse(contact *models.Contact, orgID uuid.UUID) Con
 		LastInboundAt:      contact.LastInboundAt,
 		ServiceWindowOpen:  serviceWindowOpen,
 		MarketingOptOut:    contact.MarketingOptOut,
+		BotMutedUntil:      contactBotMutedUntilPtr(contact),
 		CreatedAt:          contact.CreatedAt,
 		UpdatedAt:          contact.UpdatedAt,
 	}

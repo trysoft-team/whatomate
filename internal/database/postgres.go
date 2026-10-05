@@ -66,13 +66,16 @@ func GetMigrationModels() []MigrationModel {
 		{"APIKey", &models.APIKey{}},
 		{"SSOProvider", &models.SSOProvider{}},
 		{"Webhook", &models.Webhook{}},
+		{"WebhookDelivery", &models.WebhookDelivery{}},
 		{"CustomAction", &models.CustomAction{}},
 		{"WhatsAppAccount", &models.WhatsAppAccount{}},
+		{"SharedMetaAppCredentials", &models.SharedMetaAppCredentials{}},
 		{"Contact", &models.Contact{}},
 		{"Tag", &models.Tag{}},
 		{"ContactList", &models.ContactList{}},
 		{"ContactListMember", &models.ContactListMember{}},
 		{"GoogleCredential", &models.GoogleCredential{}},
+		{"UserPasskey", &models.UserPasskey{}},
 		{"Message", &models.Message{}},
 		{"Template", &models.Template{}},
 		{"WhatsAppFlow", &models.WhatsAppFlow{}},
@@ -94,6 +97,7 @@ func GetMigrationModels() []MigrationModel {
 		{"ChatbotSession", &models.ChatbotSession{}},
 		{"ChatbotSessionMessage", &models.ChatbotSessionMessage{}},
 		{"AIContext", &models.AIContext{}},
+		{"AIUsageLog", &models.AIUsageLog{}},
 		{"AgentTransfer", &models.AgentTransfer{}},
 
 		// User tracking
@@ -692,31 +696,66 @@ func SeedDefaultWidgets(db *gorm.DB) error {
 // SeedDefaultWidgetsForOrg creates default dashboard widgets for a single organization.
 // Used when a new organization is created at runtime.
 func SeedDefaultWidgetsForOrg(db *gorm.DB, orgID, userID uuid.UUID) error {
-	defaultWidgetsData := []struct {
+	type defaultWidget struct {
 		Name         string
 		Description  string
 		DataSource   string
+		Metric       string
+		Field        string
+		Filters      models.JSONBArray
 		DisplayType  string
 		Color        string
 		Config       models.JSONB
+		ShowChange   bool
 		DisplayOrder int
 		GridX        int
 		GridY        int
 		GridW        int
 		GridH        int
-	}{
-		{"Total Messages", "Total number of messages sent and received", "messages", "number", "blue", nil, 1, 0, 0, 3, 3},
-		{"Active Contacts", "Number of contacts with recent activity", "contacts", "number", "green", nil, 2, 3, 0, 3, 3},
-		{"Chatbot Sessions", "Active chatbot conversation sessions", "sessions", "number", "purple", nil, 3, 6, 0, 3, 3},
-		{"Total Campaigns", "Number of bulk message campaigns", "campaigns", "number", "orange", nil, 4, 9, 0, 3, 3},
-		{"Recent Messages", "Latest conversations from your contacts", "messages", "table", "", nil, 5, 0, 3, 6, 8},
-		{"Quick Actions", "Common tasks and shortcuts", "shortcuts", "shortcuts", "", models.JSONB{"shortcuts": []any{"chat", "campaigns", "templates", "chatbot"}}, 6, 6, 3, 6, 8},
+	}
+
+	defaultWidgetsData := []defaultWidget{
+		// Row 0 — core volume
+		{"Total Messages", "Total number of messages sent and received", "messages", "count", "", nil, "number", "blue", nil, true, 0, 0, 0, 3, 3},
+		{"Active Contacts", "Number of contacts with recent activity", "contacts", "count", "", nil, "number", "green", nil, true, 1, 3, 0, 3, 3},
+		{"Chatbot Sessions", "Active chatbot conversation sessions", "sessions", "count", "", nil, "number", "purple", nil, true, 2, 6, 0, 3, 3},
+		{"Total Campaigns", "Number of bulk message campaigns", "campaigns", "count", "", nil, "number", "orange", nil, true, 3, 9, 0, 3, 3},
+
+		// Row 1 — ops health
+		{"Failed Messages", "Messages that failed to send or deliver", "messages", "count", "", models.JSONBArray{map[string]any{"field": "status", "operator": "equals", "value": "failed"}}, "number", "red", nil, true, 4, 0, 3, 3, 3},
+		{"Call Volume", "Voice calls in the selected period", "calls", "count", "", nil, "number", "indigo", nil, true, 5, 3, 3, 3, 3},
+		{"AI Token Usage", "Total AI tokens used in the selected period", "ai", "sum", "total_tokens", nil, "number", "purple", nil, true, 6, 6, 3, 3, 3},
+		{"Webhooks", "Active outbound webhook configurations", "webhooks", "count", "", models.JSONBArray{map[string]any{"field": "is_active", "operator": "equals", "value": "true"}}, "number", "slate", nil, false, 7, 9, 3, 3, 3},
+
+		// Row 2 — activity + shortcuts
+		{"Recent Messages", "Latest conversations from your contacts", "messages", "count", "", nil, "table", "", nil, false, 8, 0, 6, 6, 8},
+		{"Quick Actions", "Common tasks and shortcuts", "shortcuts", "count", "", nil, "shortcuts", "", models.JSONB{"shortcuts": []any{"chat", "campaigns", "templates", "chatbot", "agentAnalytics"}}, false, 9, 6, 6, 6, 8},
+
+		// Row 3 — live ops
+		{"Live Queue", "Active transfers waiting for an agent", "transfers", "count", "", nil, "queue", "amber", nil, false, 10, 0, 14, 6, 5},
+		{"Agent Status", "Agent availability and active chats", "agents", "count", "", nil, "agent_status", "teal", nil, false, 11, 6, 14, 6, 5},
+
+		// Row 4 — alerts + trend
+		{"Ops Alerts", "Failed messages and SLA breaches", "messages", "count", "", nil, "alert_list", "rose", nil, false, 12, 0, 19, 6, 5},
+		{"Message Trend", "Daily message volume", "messages", "count", "", nil, "sparkline", "blue", nil, true, 13, 6, 19, 6, 4},
 	}
 
 	for _, wd := range defaultWidgetsData {
+		metric := wd.Metric
+		if metric == "" {
+			metric = "count"
+		}
 		displayType := wd.DisplayType
 		if displayType == "" {
 			displayType = "number"
+		}
+		filters := wd.Filters
+		if filters == nil {
+			filters = models.JSONBArray{}
+		}
+		config := wd.Config
+		if config == nil {
+			config = models.JSONB{}
 		}
 		widget := models.Widget{
 			BaseModel:      models.BaseModel{ID: uuid.New()},
@@ -725,12 +764,14 @@ func SeedDefaultWidgetsForOrg(db *gorm.DB, orgID, userID uuid.UUID) error {
 			Name:           wd.Name,
 			Description:    wd.Description,
 			DataSource:     wd.DataSource,
-			Metric:         "count",
+			Metric:         metric,
+			Field:          wd.Field,
+			Filters:        filters,
 			DisplayType:    displayType,
-			ShowChange:     displayType == "number",
+			ShowChange:     wd.ShowChange,
 			Color:          wd.Color,
 			Size:           "small",
-			Config:         wd.Config,
+			Config:         config,
 			DisplayOrder:   wd.DisplayOrder,
 			GridX:          wd.GridX,
 			GridY:          wd.GridY,

@@ -129,6 +129,12 @@ func (m *Manager) negotiateWebRTC(session *CallSession, account *models.WhatsApp
 		return
 	}
 
+	// Start welcome TTS during ICE gathering (~several seconds) so first speech
+	// is cached before media connects / Pipecat WS opens.
+	if m.PipecatEnabled() {
+		go m.warmPipecatWelcome(session)
+	}
+
 	// Wait for ICE gathering to complete
 	localDesc, err := waitForICEGathering(pc, 15*time.Second)
 	if err != nil {
@@ -170,8 +176,12 @@ func (m *Manager) negotiateWebRTC(session *CallSession, account *models.WhatsApp
 		return
 	}
 
-	// Brief delay to let the media path stabilize before sending audio
-	time.Sleep(500 * time.Millisecond)
+	// Brief delay to let the media path stabilize before sending audio.
+	// Pipecat opens the WS immediately and can play welcome while ICE/media
+	// finishes warming — skip the settle wait that only delays first speech.
+	if !m.PipecatEnabled() {
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// Sticky-routed call: skip IVR entirely and ring the originating agent
 	// directly via the existing transfer flow. initiateTransfer's
@@ -399,11 +409,20 @@ func (m *Manager) consumeAudioWithDTMF(session *CallSession, track *webrtc.Track
 					sendDTMFDigit(session, digit, m.log)
 				}
 			}
-		} else if packetCount == 1 {
-			m.log.Debug("First audio packet received",
-				"call_id", session.ID,
-				"payload_type", pkt.PayloadType,
-			)
+		} else {
+			if packetCount == 1 {
+				m.log.Debug("First audio packet received",
+					"call_id", session.ID,
+					"payload_type", pkt.PayloadType,
+				)
+			}
+			// Tee Opus audio into an active IVR recorder (voicemail / speech).
+			session.mu.Lock()
+			rec := session.IVRRecorder
+			session.mu.Unlock()
+			if rec != nil && len(pkt.Payload) > 0 {
+				rec.WritePacket(pkt.Payload)
+			}
 		}
 	}
 }

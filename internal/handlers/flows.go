@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/models"
@@ -20,6 +22,10 @@ type FlowRequest struct {
 	JSONVersion     string         `json:"json_version"`
 	FlowJSON        map[string]any `json:"flow_json"`
 	Screens         []any          `json:"screens"`
+
+	EndpointEnabled  *bool   `json:"endpoint_enabled"`
+	EndpointMode     *string `json:"endpoint_mode"`
+	EndpointProxyURL *string `json:"endpoint_proxy_url"`
 }
 
 // FlowResponse represents the response for a flow
@@ -35,8 +41,15 @@ type FlowResponse struct {
 	Screens         []any          `json:"screens"`
 	PreviewURL      string         `json:"preview_url"`
 	HasLocalChanges bool           `json:"has_local_changes"`
-	CreatedAt       string         `json:"created_at"`
-	UpdatedAt       string         `json:"updated_at"`
+
+	EndpointEnabled  bool   `json:"endpoint_enabled"`
+	EndpointMode     string `json:"endpoint_mode"`
+	EndpointProxyURL string `json:"endpoint_proxy_url"`
+	EndpointURI      string `json:"endpoint_uri"`           // registered with Meta
+	EndpointURL      string `json:"endpoint_url,omitempty"` // URL Meta should call
+
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // ListFlows returns all flows for the organization
@@ -125,6 +138,23 @@ func (a *App) CreateFlow(r *fastglue.Request) error {
 		JSONVersion:     jsonVersion,
 		FlowJSON:        models.JSONB(req.FlowJSON),
 		Screens:         models.JSONBArray(req.Screens),
+		EndpointMode:    flowEndpointModeBuiltin,
+	}
+	endpointUpdates, msg := flowEndpointUpdates(&req)
+	if msg != "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, msg, nil, "")
+	}
+	if v, ok := endpointUpdates["endpoint_enabled"].(bool); ok {
+		flow.EndpointEnabled = v
+	}
+	if v, ok := endpointUpdates["endpoint_mode"].(string); ok {
+		flow.EndpointMode = v
+	}
+	if v, ok := endpointUpdates["endpoint_proxy_url"].(string); ok {
+		flow.EndpointProxyURL = v
+	}
+	if flow.EndpointEnabled && flow.EndpointMode == flowEndpointModeProxy && flow.EndpointProxyURL == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Proxy mode needs a proxy URL", nil, "")
 	}
 
 	if err := a.DB.Create(&flow).Error; err != nil {
@@ -135,7 +165,7 @@ func (a *App) CreateFlow(r *fastglue.Request) error {
 	a.Log.Info("Flow created", "flow_id", flow.ID, "name", flow.Name)
 
 	return r.SendEnvelope(map[string]any{
-		"flow": flowToResponse(flow),
+		"flow": a.flowResponseWithURL(r, flow),
 	})
 }
 
@@ -157,7 +187,7 @@ func (a *App) GetFlow(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"flow": flowToResponse(*flow),
+		"flow": a.flowResponseWithURL(r, *flow),
 	})
 }
 
@@ -200,6 +230,28 @@ func (a *App) UpdateFlow(r *fastglue.Request) error {
 	if req.Screens != nil {
 		updates["screens"] = models.JSONBArray(req.Screens)
 	}
+	endpointUpdates, msg := flowEndpointUpdates(&req)
+	if msg != "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, msg, nil, "")
+	}
+	for k, v := range endpointUpdates {
+		updates[k] = v
+	}
+	enabled := flow.EndpointEnabled
+	if v, ok := endpointUpdates["endpoint_enabled"].(bool); ok {
+		enabled = v
+	}
+	mode := flow.EndpointMode
+	if v, ok := endpointUpdates["endpoint_mode"].(string); ok {
+		mode = v
+	}
+	proxyURL := flow.EndpointProxyURL
+	if v, ok := endpointUpdates["endpoint_proxy_url"].(string); ok {
+		proxyURL = v
+	}
+	if enabled && mode == flowEndpointModeProxy && proxyURL == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Proxy mode needs a proxy URL", nil, "")
+	}
 
 	if len(updates) > 0 {
 		// Mark as having local changes that need to be synced to Meta
@@ -216,7 +268,7 @@ func (a *App) UpdateFlow(r *fastglue.Request) error {
 	a.Log.Info("Flow updated", "flow_id", flow.ID)
 
 	return r.SendEnvelope(map[string]any{
-		"flow": flowToResponse(*flow),
+		"flow": a.flowResponseWithURL(r, *flow),
 	})
 }
 
@@ -310,19 +362,45 @@ func (a *App) SaveFlowToMeta(r *fastglue.Request) error {
 		metaFlowID = flow.MetaFlowID
 	}
 
+	// Data endpoint: endpoint_uri must be registered before the JSON declaring
+	// data_api_version is uploaded.
+	endpointURI := ""
+	if flow.EndpointEnabled {
+		if account.FlowPublicKey == "" {
+			a.DB.Model(flow).Update("meta_flow_id", metaFlowID)
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest,
+				"Set up Flow encryption on the WhatsApp account before using a data endpoint", nil, "")
+		}
+		endpointURI = a.flowEndpointURL(r, flow.ID)
+		if !strings.HasPrefix(endpointURI, "https://") {
+			a.DB.Model(flow).Update("meta_flow_id", metaFlowID)
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest,
+				"Meta needs a public HTTPS endpoint URL (got "+endpointURI+"). Open Whatomate from its public HTTPS address, or set server.public_url for local testing", nil, "")
+		}
+		if err := waClient.SetFlowEndpointURI(ctx, waAccount, metaFlowID, endpointURI); err != nil {
+			a.Log.Error("Failed to set flow endpoint_uri", "error", err, "flow_id", id, "meta_flow_id", metaFlowID)
+			a.DB.Model(flow).Update("meta_flow_id", metaFlowID)
+			return r.SendErrorEnvelope(fasthttp.StatusBadGateway, "Failed to register endpoint with Meta: "+err.Error(), nil, "")
+		}
+	}
+
 	// Step 2: Upload flow JSON if we have screens
 	if len(flow.Screens) > 0 {
 		// Validate flow structure before sending to Meta
-		if err := validateFlowStructure([]any(flow.Screens)); err != nil {
+		if err := validateFlowStructure([]any(flow.Screens), flow.EndpointEnabled); err != nil {
 			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, err.Error(), nil, "")
 		}
 
 		// Sanitize screens before sending to Meta
-		sanitizedScreens := sanitizeScreensForMeta([]any(flow.Screens))
+		sanitizedScreens := sanitizeScreensForMetaOpts([]any(flow.Screens), flow.EndpointEnabled)
 
 		flowJSON := &whatsapp.FlowJSON{
 			Version: flow.JSONVersion,
 			Screens: sanitizedScreens,
+		}
+		if flow.EndpointEnabled {
+			flowJSON.DataAPIVersion = "3.0"
+			flowJSON.RoutingModel = buildRoutingModel(sanitizedScreens)
 		}
 
 		if err := waClient.UpdateFlowJSON(ctx, waAccount, metaFlowID, flowJSON); err != nil {
@@ -331,7 +409,7 @@ func (a *App) SaveFlowToMeta(r *fastglue.Request) error {
 			a.DB.Model(flow).Updates(map[string]any{
 				"meta_flow_id": metaFlowID,
 			})
-			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update flow JSON", nil, "")
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update flow JSON: "+err.Error(), nil, "")
 		}
 	}
 
@@ -341,6 +419,7 @@ func (a *App) SaveFlowToMeta(r *fastglue.Request) error {
 		"meta_flow_id":      metaFlowID,
 		"status":            "DRAFT",
 		"has_local_changes": false,
+		"endpoint_uri":      endpointURI,
 	}).Error; err != nil {
 		a.Log.Error("Failed to update flow", "error", err, "flow_id", id)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update flow", nil, "")
@@ -352,7 +431,7 @@ func (a *App) SaveFlowToMeta(r *fastglue.Request) error {
 	a.Log.Info("Flow saved to Meta", "flow_id", flow.ID, "meta_flow_id", metaFlowID)
 
 	return r.SendEnvelope(map[string]any{
-		"flow":    flowToResponse(*flow),
+		"flow":    a.flowResponseWithURL(r, *flow),
 		"message": "Flow saved to Meta successfully",
 	})
 }
@@ -507,14 +586,17 @@ func (a *App) DuplicateFlow(r *fastglue.Request) error {
 
 	// Create a duplicate with a new name
 	newFlow := models.WhatsAppFlow{
-		OrganizationID:  orgID,
-		WhatsAppAccount: flow.WhatsAppAccount,
-		Name:            flow.Name + " (Copy)",
-		Status:          "DRAFT",
-		Category:        flow.Category,
-		JSONVersion:     flow.JSONVersion,
-		FlowJSON:        flow.FlowJSON,
-		Screens:         flow.Screens,
+		OrganizationID:   orgID,
+		WhatsAppAccount:  flow.WhatsAppAccount,
+		Name:             flow.Name + " (Copy)",
+		Status:           "DRAFT",
+		Category:         flow.Category,
+		JSONVersion:      flow.JSONVersion,
+		FlowJSON:         flow.FlowJSON,
+		Screens:          flow.Screens,
+		EndpointEnabled:  flow.EndpointEnabled,
+		EndpointMode:     flow.EndpointMode,
+		EndpointProxyURL: flow.EndpointProxyURL,
 		// MetaFlowID is intentionally left empty - this is a new flow
 	}
 
@@ -546,33 +628,84 @@ func (a *App) SyncFlows(r *fastglue.Request) error {
 		return nil
 	}
 
-	if req.WhatsAppAccount == "" {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "WhatsApp account is required", nil, "")
-	}
-
-	// Get the WhatsApp account
-	account, err := a.resolveWhatsAppAccount(orgID, req.WhatsAppAccount)
-	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "WhatsApp account not found", nil, "")
-	}
-
-	// Create WhatsApp API client
-	waClient := whatsapp.New(a.Log)
-	waAccount := a.toWhatsAppAccount(account)
-
 	ctx := context.Background()
 
-	// Fetch flows from Meta
-	metaFlows, err := waClient.ListFlows(ctx, waAccount)
-	if err != nil {
-		a.Log.Error("Failed to fetch flows from Meta", "error", err)
+	// A named account syncs just that account; empty or "all" syncs every
+	// account in the organization.
+	if name := strings.TrimSpace(req.WhatsAppAccount); name != "" && name != "all" {
+		account, err := a.resolveWhatsAppAccount(orgID, name)
+		if err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "WhatsApp account not found", nil, "")
+		}
+		res, err := a.syncFlowsForAccount(ctx, orgID, account)
+		if err != nil {
+			a.Log.Error("Failed to fetch flows from Meta", "error", err, "account", account.Name)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to fetch flows from Meta", nil, "")
+		}
+		return r.SendEnvelope(map[string]any{
+			"message": "Flows synced successfully",
+			"synced":  res.synced,
+			"created": res.created,
+			"updated": res.updated,
+		})
+	}
+
+	var accounts []models.WhatsAppAccount
+	if err := a.DB.Where("organization_id = ?", orgID).Order("name").Find(&accounts).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to load WhatsApp accounts", nil, "")
+	}
+	if len(accounts) == 0 {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "No WhatsApp account configured", nil, "")
+	}
+
+	var total flowSyncResult
+	failed := []string{}
+	for i := range accounts {
+		account := &accounts[i]
+		a.decryptAccountSecrets(account)
+		res, err := a.syncFlowsForAccount(ctx, orgID, account)
+		if err != nil {
+			a.Log.Error("Failed to fetch flows from Meta", "error", err, "account", account.Name)
+			failed = append(failed, account.Name)
+			continue
+		}
+		total.synced += res.synced
+		total.created += res.created
+		total.updated += res.updated
+	}
+	if len(failed) == len(accounts) {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to fetch flows from Meta", nil, "")
 	}
 
-	// Sync each flow
-	synced := 0
-	created := 0
-	updated := 0
+	a.Log.Info("Flows synced from Meta for all accounts", "total", total.synced, "created", total.created,
+		"updated", total.updated, "failed_accounts", failed)
+	return r.SendEnvelope(map[string]any{
+		"message":         "Flows synced successfully",
+		"synced":          total.synced,
+		"created":         total.created,
+		"updated":         total.updated,
+		"accounts":        len(accounts),
+		"failed_accounts": failed,
+	})
+}
+
+type flowSyncResult struct {
+	synced, created, updated int
+}
+
+// syncFlowsForAccount imports or refreshes every Meta flow of one account.
+func (a *App) syncFlowsForAccount(ctx context.Context, orgID uuid.UUID, account *models.WhatsAppAccount) (flowSyncResult, error) {
+	var res flowSyncResult
+	waClient := a.WhatsApp
+	if waClient == nil {
+		waClient = whatsapp.New(a.Log)
+	}
+	waAccount := a.toWhatsAppAccount(account)
+
+	metaFlows, err := waClient.ListFlows(ctx, waAccount)
+	if err != nil {
+		return res, err
+	}
 
 	for _, mf := range metaFlows {
 		var existingFlow models.WhatsAppFlow
@@ -608,7 +741,7 @@ func (a *App) SyncFlows(r *fastglue.Request) error {
 			// Flow doesn't exist locally, create it
 			newFlow := models.WhatsAppFlow{
 				OrganizationID:  orgID,
-				WhatsAppAccount: req.WhatsAppAccount,
+				WhatsAppAccount: account.Name,
 				MetaFlowID:      mf.ID,
 				Name:            mf.Name,
 				Status:          mf.Status,
@@ -622,7 +755,7 @@ func (a *App) SyncFlows(r *fastglue.Request) error {
 				a.Log.Error("Failed to create flow from Meta", "error", err, "meta_flow_id", mf.ID)
 				continue
 			}
-			created++
+			res.created++
 		} else {
 			// Flow exists, update it
 			updates := map[string]any{
@@ -641,27 +774,29 @@ func (a *App) SyncFlows(r *fastglue.Request) error {
 				a.Log.Error("Failed to update flow from Meta", "error", err, "flow_id", existingFlow.ID)
 				continue
 			}
-			updated++
+			res.updated++
 		}
-		synced++
+		res.synced++
 	}
 
-	a.Log.Info("Flows synced from Meta", "total", synced, "created", created, "updated", updated)
-
-	return r.SendEnvelope(map[string]any{
-		"message": "Flows synced successfully",
-		"synced":  synced,
-		"created": created,
-		"updated": updated,
-	})
+	a.Log.Info("Flows synced from Meta", "account", account.Name, "total", res.synced,
+		"created", res.created, "updated", res.updated)
+	return res, nil
 }
 
 // validateFlowStructure validates the flow structure before sending to Meta
 // - Ensures at least one screen has a Footer with "complete" action
 // - If multiple screens, only the last screen should have "complete" action
-func validateFlowStructure(screens []any) error {
+func validateFlowStructure(screens []any, endpoint ...bool) error {
 	if len(screens) == 0 {
 		return fmt.Errorf("flow must have at least one screen")
+	}
+	useEndpoint := len(endpoint) > 0 && endpoint[0]
+	if err := validateFlowMediaFields(screens, useEndpoint); err != nil {
+		return err
+	}
+	if useEndpoint {
+		return validateEndpointFlowStructure(screens)
 	}
 
 	// Find which screens have complete action
@@ -726,9 +861,17 @@ var componentsWithoutID = map[string]bool{
 // - Marks screens with 'complete' action as terminal screens
 // - Auto-populates the complete action's payload with all form field values
 func sanitizeScreensForMeta(screens []any) []any {
+	return sanitizeScreensForMetaOpts(screens, false)
+}
+
+// sanitizeScreensForMetaOpts is sanitizeScreensForMeta with endpoint support:
+// when endpoint is true, a data_exchange footer without next_screen also marks
+// the screen terminal (the endpoint answers it with SUCCESS).
+func sanitizeScreensForMetaOpts(screens []any, endpoint bool) []any {
 	// First pass: collect form field names per screen
 	screenFields := collectFormFieldsPerScreen(screens)
 	allFieldNames := collectFormFieldNames(screens)
+	mediaFields := collectFlowMediaFields(screens)
 
 	result := make([]any, len(screens))
 
@@ -782,11 +925,12 @@ func sanitizeScreensForMeta(screens []any) []any {
 
 			if children, ok := layout["children"].([]any); ok {
 				// Sanitize and auto-populate action payloads
-				sanitizedChildren := sanitizeComponentsWithPayload(children, allFieldNames, fieldsFromPreviousScreens)
+				sanitizedChildren := sanitizeComponentsWithPayload(children, allFieldNames, fieldsFromPreviousScreens, mediaFields, i)
 				newLayout["children"] = sanitizedChildren
 
 				// Check if any child has on-click-action with name "complete"
-				isTerminal = hasCompleteAction(sanitizedChildren)
+				isTerminal = hasCompleteAction(sanitizedChildren) ||
+					(endpoint && hasEndpointFinishAction(sanitizedChildren))
 			}
 
 			newScreen["layout"] = newLayout
@@ -799,9 +943,13 @@ func sanitizeScreensForMeta(screens []any) []any {
 
 		result[i] = newScreen
 
-		// Add this screen's fields to cumulative list for next screens
-		if fields, ok := screenFields[i]; ok {
-			fieldsFromPreviousScreens = append(fieldsFromPreviousScreens, fields...)
+		// Add this screen's fields to cumulative list for next screens. Media
+		// fields cannot travel through navigate/data; later screens use
+		// ${screen.ID.form.x} instead.
+		for _, field := range screenFields[i] {
+			if _, isMedia := mediaFields[field]; !isMedia {
+				fieldsFromPreviousScreens = append(fieldsFromPreviousScreens, field)
+			}
 		}
 	}
 
@@ -890,6 +1038,77 @@ func collectFormFieldsPerScreen(screens []any) map[int][]string {
 	return result
 }
 
+// flowMediaField is a PhotoPicker / DocumentPicker input.
+type flowMediaField struct {
+	screenIndex int
+	screenID    string // sanitized
+	compType    string
+	maxFiles    int
+}
+
+// flowMediaMaxDefault is Meta's default max-uploaded-photos/-documents.
+const flowMediaMaxDefault = 30
+
+// collectFlowMediaFields maps sanitized picker names to where they live.
+func collectFlowMediaFields(screens []any) map[string]flowMediaField {
+	out := map[string]flowMediaField{}
+	for i, screen := range screens {
+		sm, ok := screen.(map[string]any)
+		if !ok {
+			continue
+		}
+		screenID, _ := sm["id"].(string)
+		for _, child := range screenChildren(screen) {
+			comp, ok := child.(map[string]any)
+			if !ok {
+				continue
+			}
+			compType, _ := comp["type"].(string)
+			maxKey := map[string]string{
+				"PhotoPicker":    "max-uploaded-photos",
+				"DocumentPicker": "max-uploaded-documents",
+			}[compType]
+			name, _ := comp["name"].(string)
+			if maxKey == "" || name == "" {
+				continue
+			}
+			maxFiles := flowMediaMaxDefault
+			switch v := comp[maxKey].(type) {
+			case float64:
+				maxFiles = int(v)
+			case int:
+				maxFiles = v
+			case string:
+				if n, err := strconv.Atoi(v); err == nil {
+					maxFiles = n
+				}
+			}
+			out[sanitizeID(name)] = flowMediaField{
+				screenIndex: i,
+				screenID:    sanitizeID(screenID),
+				compType:    compType,
+				maxFiles:    maxFiles,
+			}
+		}
+	}
+	return out
+}
+
+// validateFlowMediaFields enforces Meta's PhotoPicker / DocumentPicker rules.
+func validateFlowMediaFields(screens []any, endpoint bool) error {
+	perScreen := map[int]int{}
+	for name, mf := range collectFlowMediaFields(screens) {
+		perScreen[mf.screenIndex]++
+		if perScreen[mf.screenIndex] > 1 {
+			return fmt.Errorf("screen %d has more than one Photo/Doc Upload: Meta allows one per screen", mf.screenIndex+1)
+		}
+		if !endpoint && mf.maxFiles > 1 {
+			return fmt.Errorf("upload %q allows %d files, but Complete Flow can only send 1: set its max to 1 or turn on the data endpoint", name, mf.maxFiles)
+		}
+	}
+	return nil
+}
+
 // hasCompleteAction checks if any component has an on-click-action with name "complete"
 func hasCompleteAction(children []any) bool {
 	for _, child := range children {
@@ -940,8 +1159,23 @@ func sanitizeID(id string) string {
 // sanitizeComponentsWithPayload sanitizes components and auto-populates action payloads
 // - For navigate actions: passes current screen's form fields using ${form.fieldName}
 // - For complete actions: uses ${data.fieldName} for previous screens, ${form.fieldName} for current
-func sanitizeComponentsWithPayload(children []any, allFieldNames []string, fieldsFromPreviousScreens []string) []any {
+func sanitizeComponentsWithPayload(children []any, allFieldNames []string, fieldsFromPreviousScreens []string, mediaFields map[string]flowMediaField, screenIndex int) []any {
 	result := make([]any, len(children))
+
+	// mediaRef is the payload reference for a picker field, or "" when Meta
+	// does not allow it here.
+	mediaRef := func(field string, mf flowMediaField, action string) string {
+		switch {
+		case mf.screenIndex > screenIndex:
+			return ""
+		case action == "complete" && mf.maxFiles > 1:
+			return ""
+		case mf.screenIndex == screenIndex:
+			return "${form." + field + "}"
+		default:
+			return "${screen." + mf.screenID + ".form." + field + "}"
+		}
+	}
 
 	// Collect this screen's field names
 	var thisScreenFields []string
@@ -1021,6 +1255,12 @@ func sanitizeComponentsWithPayload(children []any, allFieldNames []string, field
 				// - Fields on current screen: use ${form.fieldName} (form input)
 				payload := make(map[string]any)
 				for _, fieldName := range allFieldNames {
+					if mf, isMedia := mediaFields[fieldName]; isMedia {
+						if ref := mediaRef(fieldName, mf, "complete"); ref != "" {
+							payload[fieldName] = ref
+						}
+						continue
+					}
 					if thisScreenFieldSet[fieldName] {
 						// Current screen's field - use form reference
 						payload[fieldName] = "${form." + fieldName + "}"
@@ -1041,10 +1281,37 @@ func sanitizeComponentsWithPayload(children []any, allFieldNames []string, field
 					}
 					// Add current screen's form fields
 					for _, fieldName := range thisScreenFields {
+						if _, isMedia := mediaFields[fieldName]; isMedia {
+							continue
+						}
 						payload[fieldName] = "${form." + fieldName + "}"
 					}
 					newAction["payload"] = payload
 				}
+			case "data_exchange":
+				// Data exchange: send all known answers to the endpoint, keeping
+				// author keys (e.g. next_screen) that are not form fields.
+				payload := make(map[string]any)
+				if existing, ok := action["payload"].(map[string]any); ok {
+					for k, v := range existing {
+						payload[k] = v
+					}
+				}
+				if next, ok := payload[flowEndpointNextScreenKey].(string); ok && next != "" {
+					payload[flowEndpointNextScreenKey] = sanitizeID(next)
+				}
+				for _, fieldName := range fieldsFromPreviousScreens {
+					payload[fieldName] = "${data." + fieldName + "}"
+				}
+				for _, fieldName := range thisScreenFields {
+					payload[fieldName] = "${form." + fieldName + "}"
+				}
+				for fieldName, mf := range mediaFields {
+					if ref := mediaRef(fieldName, mf, "data_exchange"); ref != "" {
+						payload[fieldName] = ref
+					}
+				}
+				newAction["payload"] = payload
 			}
 
 			newComp["on-click-action"] = newAction
@@ -1059,18 +1326,217 @@ func sanitizeComponentsWithPayload(children []any, allFieldNames []string, field
 // flowToResponse converts a flow model to response
 func flowToResponse(f models.WhatsAppFlow) FlowResponse {
 	return FlowResponse{
-		ID:              f.ID,
-		WhatsAppAccount: f.WhatsAppAccount,
-		MetaFlowID:      f.MetaFlowID,
-		Name:            f.Name,
-		Status:          f.Status,
-		Category:        f.Category,
-		JSONVersion:     f.JSONVersion,
-		FlowJSON:        map[string]any(f.FlowJSON),
-		Screens:         []any(f.Screens),
-		PreviewURL:      f.PreviewURL,
-		HasLocalChanges: f.HasLocalChanges,
-		CreatedAt:       f.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:       f.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:               f.ID,
+		WhatsAppAccount:  f.WhatsAppAccount,
+		MetaFlowID:       f.MetaFlowID,
+		Name:             f.Name,
+		Status:           f.Status,
+		Category:         f.Category,
+		JSONVersion:      f.JSONVersion,
+		FlowJSON:         map[string]any(f.FlowJSON),
+		Screens:          []any(f.Screens),
+		PreviewURL:       f.PreviewURL,
+		HasLocalChanges:  f.HasLocalChanges,
+		EndpointEnabled:  f.EndpointEnabled,
+		EndpointMode:     f.EndpointMode,
+		EndpointProxyURL: f.EndpointProxyURL,
+		EndpointURI:      f.EndpointURI,
+		CreatedAt:        f.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:        f.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+}
+
+// flowResponseWithURL adds the public endpoint URL Meta should call.
+func (a *App) flowResponseWithURL(r *fastglue.Request, f models.WhatsAppFlow) FlowResponse {
+	resp := flowToResponse(f)
+	resp.EndpointURL = a.flowEndpointURL(r, f.ID)
+	return resp
+}
+
+// flowEndpointUpdates validates endpoint fields on a create/update request and
+// returns the column updates, or a user-facing error message.
+func flowEndpointUpdates(req *FlowRequest) (map[string]any, string) {
+	updates := map[string]any{}
+	if req.EndpointEnabled != nil {
+		updates["endpoint_enabled"] = *req.EndpointEnabled
+	}
+	if req.EndpointMode != nil {
+		mode := *req.EndpointMode
+		if mode == "" {
+			mode = flowEndpointModeBuiltin
+		}
+		if mode != flowEndpointModeBuiltin && mode != flowEndpointModeProxy {
+			return nil, "Endpoint mode must be builtin or proxy"
+		}
+		updates["endpoint_mode"] = mode
+	}
+	if req.EndpointProxyURL != nil {
+		u := strings.TrimSpace(*req.EndpointProxyURL)
+		if u != "" {
+			if err := validateWebhookURL(u); err != nil {
+				return nil, "Invalid proxy URL: " + err.Error()
+			}
+		}
+		updates["endpoint_proxy_url"] = u
+	}
+	return updates, ""
+}
+
+// validateEndpointFlowStructure checks flows backed by a data endpoint: at least
+// one screen must be able to finish (complete, or data_exchange without
+// next_screen), and every next_screen must name an existing screen.
+func validateEndpointFlowStructure(screens []any) error {
+	ids := map[string]bool{}
+	for _, screen := range screens {
+		if sm, ok := screen.(map[string]any); ok {
+			if id, _ := sm["id"].(string); id != "" {
+				ids[sanitizeID(id)] = true
+			}
+		}
+	}
+	finishes := false
+	for i, screen := range screens {
+		children := screenChildren(screen)
+		if hasCompleteAction(children) || hasEndpointFinishAction(children) {
+			finishes = true
+		}
+		for _, next := range screenDataExchangeTargets(children) {
+			if !ids[sanitizeID(next)] {
+				return fmt.Errorf("screen %d sends to unknown screen %q", i+1, next)
+			}
+		}
+	}
+	if !finishes {
+		return fmt.Errorf("flow must be able to finish: add a Footer with 'Complete Flow', or 'Data Exchange' without a next screen")
+	}
+	return nil
+}
+
+func screenChildren(screen any) []any {
+	sm, ok := screen.(map[string]any)
+	if !ok {
+		return nil
+	}
+	layout, ok := sm["layout"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	children, _ := layout["children"].([]any)
+	return children
+}
+
+// hasEndpointFinishAction reports a data_exchange action with no next_screen.
+func hasEndpointFinishAction(children []any) bool {
+	for _, child := range children {
+		compMap, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		action, ok := compMap["on-click-action"].(map[string]any)
+		if !ok || action["name"] != "data_exchange" {
+			continue
+		}
+		payload, _ := action["payload"].(map[string]any)
+		if next, _ := payload[flowEndpointNextScreenKey].(string); next == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// screenDataExchangeTargets returns next_screen values of data_exchange actions.
+func screenDataExchangeTargets(children []any) []string {
+	var out []string
+	for _, child := range children {
+		compMap, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		action, ok := compMap["on-click-action"].(map[string]any)
+		if !ok || action["name"] != "data_exchange" {
+			continue
+		}
+		payload, _ := action["payload"].(map[string]any)
+		if next, _ := payload[flowEndpointNextScreenKey].(string); next != "" {
+			out = append(out, next)
+		}
+	}
+	return out
+}
+
+// buildRoutingModel derives Meta's routing_model from sanitized screens:
+// navigate targets plus data_exchange next_screen, forward edges only (no self
+// or reverse edges), terminal screens route nowhere.
+func buildRoutingModel(screens []any) map[string]any {
+	var order []string
+	exists := map[string]bool{}
+	terminal := map[string]bool{}
+	for _, screen := range screens {
+		sm, ok := screen.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := sm["id"].(string)
+		if id == "" {
+			continue
+		}
+		order = append(order, id)
+		exists[id] = true
+		if t, _ := sm["terminal"].(bool); t {
+			terminal[id] = true
+		}
+	}
+
+	edges := map[string][]string{}
+	has := func(from, to string) bool {
+		for _, e := range edges[from] {
+			if e == to {
+				return true
+			}
+		}
+		return false
+	}
+	for _, screen := range screens {
+		sm, ok := screen.(map[string]any)
+		if !ok {
+			continue
+		}
+		from, _ := sm["id"].(string)
+		if from == "" || terminal[from] {
+			continue
+		}
+		children := screenChildren(screen)
+		targets := screenDataExchangeTargets(children)
+		for _, child := range children {
+			compMap, ok := child.(map[string]any)
+			if !ok {
+				continue
+			}
+			action, ok := compMap["on-click-action"].(map[string]any)
+			if !ok || action["name"] != "navigate" {
+				continue
+			}
+			if next, ok := action["next"].(map[string]any); ok {
+				if name, _ := next["name"].(string); name != "" {
+					targets = append(targets, sanitizeID(name))
+				}
+			}
+		}
+		for _, to := range targets {
+			if to == from || !exists[to] || has(from, to) || has(to, from) {
+				continue
+			}
+			edges[from] = append(edges[from], to)
+		}
+	}
+
+	model := make(map[string]any, len(order))
+	for _, id := range order {
+		routes := make([]any, 0, len(edges[id]))
+		for _, to := range edges[id] {
+			routes = append(routes, to)
+		}
+		model[id] = routes
+	}
+	return model
 }

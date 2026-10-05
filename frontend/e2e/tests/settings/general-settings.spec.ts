@@ -49,6 +49,10 @@ test.describe('General Tab', () => {
     await expect(page.getByText('Date Format', { exact: true })).toBeVisible()
   })
 
+  test('should have time format selector', async ({ page }) => {
+    await expect(page.getByText('Time Format', { exact: true })).toBeVisible()
+  })
+
   test('should have mask phone numbers toggle', async ({ page }) => {
     await expect(page.getByText('Mask Phone Numbers', { exact: true })).toBeVisible()
   })
@@ -70,6 +74,13 @@ test.describe('General Tab', () => {
     await dateFormatSelect.click()
     await expect(page.locator('[role="option"]').filter({ hasText: 'YYYY-MM-DD' })).toBeVisible()
     await expect(page.locator('[role="option"]').filter({ hasText: 'DD/MM/YYYY' })).toBeVisible()
+    await page.keyboard.press('Escape')
+  })
+
+  test('should show available time formats', async ({ page }) => {
+    await settingsPage.timeFormatSelect.click()
+    await expect(page.locator('[role="option"]').filter({ hasText: /24-hour/i })).toBeVisible()
+    await expect(page.locator('[role="option"]').filter({ hasText: /12-hour/i })).toBeVisible()
     await page.keyboard.press('Escape')
   })
 

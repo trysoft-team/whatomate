@@ -69,7 +69,7 @@ func TestRunChatGraph_GoldenPath(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "golden",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -103,7 +103,7 @@ func TestRunChatGraph_GoldenPath(t *testing.T) {
 	require.NoError(t, app.DB.Create(flow).Error)
 
 	// Run 1: trigger arrives. Entry m1 (non-blocking) → b1 (blocking, yields).
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "b1", session.CurrentStep, "should be parked at buttons node")
@@ -117,11 +117,13 @@ func TestRunChatGraph_GoldenPath(t *testing.T) {
 	assert.Equal(t, "", p1[1]["outcome"])
 
 	// Run 2: user clicks button opt_a. b1 consumes → e1 → terminal.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "opt_a", nil))
+	// KeepSessionActive leaves the session Active (vars intact) after End.
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "opt_a", nil, nil))
 
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
-	require.NotNil(t, session.CompletedAt)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
+	assert.Equal(t, "", session.CurrentStep)
+	assert.Nil(t, session.CompletedAt)
 
 	p2 := chatGraphPath(t, session)
 	require.Len(t, p2, 4)
@@ -141,7 +143,7 @@ func TestRunChatGraph_ButtonsStoreAs(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "buttons-store-as",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -164,12 +166,12 @@ func TestRunChatGraph_ButtonsStoreAs(t *testing.T) {
 	require.NoError(t, app.DB.Create(flow).Error)
 
 	// Trigger → b1 sends buttons and yields.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	require.Equal(t, "b1", session.CurrentStep)
 
 	// Click: WhatsApp delivers the title as text and the id as buttonID.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "PIS vs Non PIS Account", "opt_a", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "PIS vs Non PIS Account", "opt_a", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 
 	assert.Equal(t, "PIS vs Non PIS Account", session.SessionData["topic"],
@@ -186,7 +188,7 @@ func TestRunChatGraph_ButtonsRePromptOnText(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "buttons-only",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -208,14 +210,14 @@ func TestRunChatGraph_ButtonsRePromptOnText(t *testing.T) {
 	require.NoError(t, app.DB.Create(flow).Error)
 
 	// First inbound: trigger. Lands on b1, sends buttons, yields.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "b1", session.CurrentStep)
 	assert.Equal(t, models.SessionStatusActive, session.Status)
 
 	// Second inbound: text instead of button click. Should re-send (stays
 	// at b1, status still active, path has another b1 entry).
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "huh?", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "huh?", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "b1", session.CurrentStep)
 	assert.Equal(t, models.SessionStatusActive, session.Status)
@@ -236,7 +238,7 @@ func TestRunChatGraph_UnknownButtonEndsFlow(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "unknown-button",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -258,14 +260,14 @@ func TestRunChatGraph_UnknownButtonEndsFlow(t *testing.T) {
 	require.NoError(t, app.DB.Create(flow).Error)
 
 	// Get to b1 and yield.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	require.Equal(t, "b1", session.CurrentStep)
 
-	// Click an unknown button. No edge matches, no default → session completes.
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "opt_z", nil))
+	// Click an unknown button. No matching edge → redirect to entry (stay active).
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "opt_z", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 }
 
 // TestParseChatGraph_InvalidGraph rejects malformed graphs at parse time
@@ -309,7 +311,7 @@ func TestRunChatGraph_RunawayCycle(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "cycle",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "a",
@@ -325,7 +327,7 @@ func TestRunChatGraph_RunawayCycle(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	err := app.runChatGraph(account, contact, session, flow, "start", "", nil)
+	err := app.runChatGraph(account, contact, session, flow, "start", "", nil, nil)
 	require.ErrorIs(t, err, errChatGraphRunaway)
 }
 
@@ -349,7 +351,7 @@ func newPromptFlow(t *testing.T, app *App, org *models.Organization, account *mo
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "prompt-flow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "p1",
@@ -376,7 +378,7 @@ func newWhatsAppFlowFlow(t *testing.T, app *App, org *models.Organization, accou
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "waflow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "wa",
@@ -405,7 +407,7 @@ func TestRunChatGraph_WhatsAppFlow_SendsFormOnFirstEntry(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newWhatsAppFlowFlow(t, app, org, account)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "wa", session.CurrentStep, "should park at WA flow node")
 	assert.Equal(t, models.SessionStatusActive, session.Status)
@@ -418,16 +420,16 @@ func TestRunChatGraph_WhatsAppFlow_ConsumesResponseAndAdvances(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newWhatsAppFlowFlow(t, app, org, account)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	require.Equal(t, "wa", session.CurrentStep)
 
 	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", map[string]any{
 		"full_name": "Shri",
 		"email":     "shri@example.com",
-	}))
+	}, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "Shri", session.SessionData["full_name"])
 	assert.Equal(t, "shri@example.com", session.SessionData["email"])
 }
@@ -441,7 +443,7 @@ func TestRunChatGraph_WhatsAppFlow_MissingFlowIDAdvancesGracefully(t *testing.T)
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "wa-broken",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "wa",
@@ -456,7 +458,7 @@ func TestRunChatGraph_WhatsAppFlow_MissingFlowIDAdvancesGracefully(t *testing.T)
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 }
@@ -467,13 +469,13 @@ func TestRunChatGraph_Prompt_HappyPath(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newPromptFlow(t, app, org, account, `^[^@]+@[^@]+$`, 3)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "p1", session.CurrentStep, "should park at prompt on first inbound")
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "shri@example.com", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "shri@example.com", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "shri@example.com", session.SessionData["email"], "input should be stored under store_as")
 	assert.Equal(t, 0, session.StepRetries, "retries should reset on valid input")
 }
@@ -484,10 +486,10 @@ func TestRunChatGraph_Prompt_RetryOnInvalid(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newPromptFlow(t, app, org, account, `^[^@]+@[^@]+$`, 3)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 
 	// First invalid attempt
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "not-an-email", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "not-an-email", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "p1", session.CurrentStep, "should stay at prompt on invalid")
 	assert.Equal(t, 1, session.StepRetries)
@@ -502,18 +504,18 @@ func TestRunChatGraph_Prompt_MaxRetriesRoutesToEdge(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newPromptFlow(t, app, org, account, `^[^@]+@[^@]+$`, 2) // 2 strikes
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 
 	// First invalid → retry
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "x", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "x", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	require.Equal(t, "p1", session.CurrentStep)
 	require.Equal(t, 1, session.StepRetries)
 
 	// Second invalid → max_retries → end
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "y", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "y", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 }
 
 // newAPICallFlow builds a three-node graph (api_call → message → end)
@@ -533,8 +535,8 @@ func newAPICallFlow(t *testing.T, app *App, org *models.Organization, account *m
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
-		Name:            "api-call-flow",
-		IsEnabled:       true,
+		Name:              "api-call-flow",
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "api",
@@ -576,7 +578,7 @@ func TestRunChatGraph_APICall_MessageTemplateSendsAfter2xx(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "api-with-message",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "api",
@@ -596,9 +598,9 @@ func TestRunChatGraph_APICall_MessageTemplateSendsAfter2xx(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "cust-42", session.SessionData["customer_id"])
 
 	// Verify the rendered message was logged on the session.
@@ -630,9 +632,9 @@ func TestRunChatGraph_APICall_2xxRoutesAndMapsResponse(t *testing.T) {
 		"status":      "data.status",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "cust-42", session.SessionData["customer_id"])
 	assert.Equal(t, "active", session.SessionData["status"])
 
@@ -654,9 +656,9 @@ func TestRunChatGraph_APICall_Non2xxRoutesToErrorBranch(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newAPICallFlow(t, app, org, account, server.URL, nil)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 
 	path := chatGraphPath(t, session)
 	require.GreaterOrEqual(t, len(path), 2)
@@ -676,7 +678,7 @@ func TestRunChatGraph_APICall_NetworkErrorRoutesNon2xx(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newAPICallFlow(t, app, org, account, url, nil)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 
 	path := chatGraphPath(t, session)
@@ -692,7 +694,7 @@ func runConditionFlow(t *testing.T, app *App, account *models.WhatsAppAccount, c
 		session.SessionData = seed
 		require.NoError(t, app.DB.Save(session).Error)
 	}
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	return session
 }
@@ -706,7 +708,7 @@ func newConditionFlowExpr(t *testing.T, app *App, org *models.Organization, acco
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "condition-expr",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "c1",
@@ -835,7 +837,7 @@ func TestRunChatGraph_Timing_RoutesByCurrentTime(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "timing-flow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "t1",
@@ -859,7 +861,7 @@ func TestRunChatGraph_Timing_RoutesByCurrentTime(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 
 	path := chatGraphPath(t, session)
@@ -877,7 +879,7 @@ func newSetVariableFlow(t *testing.T, app *App, org *models.Organization, accoun
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "set-var-flow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "s1",
@@ -900,7 +902,7 @@ func TestRunChatGraph_SetVariable_Constant(t *testing.T) {
 		"tier": "premium",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "premium", session.SessionData["tier"])
 }
@@ -914,7 +916,7 @@ func TestRunChatGraph_SetVariable_TemplateReferencesExisting(t *testing.T) {
 		"greeting": "Hello {{customer_name}}!",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "Hello Shri!", session.SessionData["greeting"])
 }
@@ -927,7 +929,7 @@ func TestRunChatGraph_SetVariable_MultipleAtOnce(t *testing.T) {
 		"c": "3",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "1", session.SessionData["a"])
 	assert.Equal(t, "2", session.SessionData["b"])
@@ -938,9 +940,9 @@ func TestRunChatGraph_SetVariable_EmptyConfigNoOp(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newSetVariableFlow(t, app, org, account, map[string]any{})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 }
 
 func TestRunChatGraph_SetVariable_NonStringStoredVerbatim(t *testing.T) {
@@ -950,7 +952,7 @@ func TestRunChatGraph_SetVariable_NonStringStoredVerbatim(t *testing.T) {
 		"is_active": true,
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, float64(42), session.SessionData["count"])
 	assert.Equal(t, true, session.SessionData["is_active"])
@@ -968,7 +970,8 @@ func newAIResponseFlow(t *testing.T, app *App, org *models.Organization, account
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "ai-flow",
-		IsEnabled:       true,
+		IsEnabled:         true,
+		KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "ai",
@@ -991,7 +994,7 @@ func createChatbotSettings(t *testing.T, app *App, orgID uuid.UUID, accountName 
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  orgID,
 		WhatsAppAccount: accountName,
-		IsEnabled:       true,
+		IsEnabled: true,
 		AI:              ai,
 	}
 	require.NoError(t, app.DB.Create(&s).Error)
@@ -1004,7 +1007,7 @@ func TestRunChatGraph_AIResponse_DisabledFallsThrough(t *testing.T) {
 	createChatbotSettings(t, app, org.ID, account.Name, models.AIConfig{Enabled: false})
 	flow := newAIResponseFlow(t, app, org, account, "")
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 
@@ -1020,7 +1023,7 @@ func TestRunChatGraph_AIResponse_NoSettingsRowFallsThrough(t *testing.T) {
 	// Intentionally no createChatbotSettings call.
 	flow := newAIResponseFlow(t, app, org, account, "")
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 }
@@ -1036,7 +1039,7 @@ func TestRunChatGraph_AIResponse_MissingAPIKeyFallsThrough(t *testing.T) {
 	})
 	flow := newAIResponseFlow(t, app, org, account, "")
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 }
@@ -1050,7 +1053,7 @@ func newTransferFlow(t *testing.T, app *App, org *models.Organization, account *
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "transfer-flow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "t1",
@@ -1074,7 +1077,7 @@ func TestRunChatGraph_Transfer_ToQueueCompletesSession(t *testing.T) {
 		"notes": "context",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 	require.NotNil(t, session.CompletedAt)
@@ -1103,7 +1106,7 @@ func TestRunChatGraph_Transfer_ToSpecificTeam(t *testing.T) {
 		"team_id": team.ID.String(),
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 
@@ -1122,7 +1125,7 @@ func TestRunChatGraph_Transfer_GeneralStringRoutesToQueue(t *testing.T) {
 		"team_id": "_general",
 	})
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "help", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 
 	var transfer models.AgentTransfer
@@ -1139,7 +1142,8 @@ func newWebhookFlow(t *testing.T, app *App, org *models.Organization, account *m
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "webhook-flow",
-		IsEnabled:       true,
+		IsEnabled:         true,
+		KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "wh",
@@ -1169,7 +1173,7 @@ func TestRunChatGraph_Webhook_SuccessAdvances(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newWebhookFlow(t, app, org, account, server.URL)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 	assert.True(t, called, "webhook should fire")
@@ -1188,7 +1192,7 @@ func TestRunChatGraph_Webhook_Non2xxStillAdvances(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newWebhookFlow(t, app, org, account, server.URL)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status, "non-2xx should not block advancement")
 }
@@ -1201,7 +1205,7 @@ func TestRunChatGraph_Webhook_NetworkErrorStillAdvances(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newWebhookFlow(t, app, org, account, url)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 }
@@ -1214,8 +1218,9 @@ func newGotoTargetFlow(t *testing.T, app *App, org *models.Organization, account
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
-		Name:            name,
-		IsEnabled:       true,
+		Name:              name,
+		IsEnabled:         true,
+		KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1240,7 +1245,7 @@ func TestRunChatGraph_GotoFlow_JumpsAndRunsTarget(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "source-flow",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1252,11 +1257,11 @@ func TestRunChatGraph_GotoFlow_JumpsAndRunsTarget(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(source).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	require.NotNil(t, session.CurrentFlowID)
 	assert.Equal(t, target.ID, *session.CurrentFlowID, "should now be in target flow")
-	assert.Equal(t, models.SessionStatusCompleted, session.Status, "target's terminal message ended the run")
+	assert.Equal(t, models.SessionStatusActive, session.Status, "target's terminal message ended the run")
 
 	path := chatGraphPath(t, session)
 	// Path order: executor's direct "goto_flow" jump entry, then the
@@ -1282,7 +1287,7 @@ func TestRunChatGraph_GotoFlow_VariablesCarryForward(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "source-vars",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1294,7 +1299,7 @@ func TestRunChatGraph_GotoFlow_VariablesCarryForward(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(source).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "Shri", session.SessionData["customer_name"], "variables must survive the jump")
 }
@@ -1312,7 +1317,7 @@ func TestRunChatGraph_GotoFlow_DisabledTargetIsTerminal(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "src-disabled",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1324,7 +1329,7 @@ func TestRunChatGraph_GotoFlow_DisabledTargetIsTerminal(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(source).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status, "disabled target should terminate cleanly")
 	// CurrentFlowID stays whatever it was before runChatGraph was called
@@ -1344,7 +1349,7 @@ func TestRunChatGraph_GotoFlow_MissingFlowIDTerminates(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "src-missing",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1356,7 +1361,7 @@ func TestRunChatGraph_GotoFlow_MissingFlowIDTerminates(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(source).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, source, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 }
@@ -1372,14 +1377,14 @@ func TestRunChatGraph_GotoFlow_CycleBoundedByMaxIterations(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "flow-a",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 	}
 	flowB := &models.ChatbotFlow{
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "flow-b",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 	}
 	flowA.Graph = models.JSONB{
 		"version":    2,
@@ -1398,7 +1403,7 @@ func TestRunChatGraph_GotoFlow_CycleBoundedByMaxIterations(t *testing.T) {
 	require.NoError(t, app.DB.Create(flowA).Error)
 	require.NoError(t, app.DB.Create(flowB).Error)
 
-	err := app.runChatGraph(account, contact, session, flowA, "start", "", nil)
+	err := app.runChatGraph(account, contact, session, flowA, "start", "", nil, nil)
 	require.ErrorIs(t, err, errChatGraphRunaway)
 }
 
@@ -1408,10 +1413,10 @@ func TestRunChatGraph_Prompt_NoRegexAcceptsAnything(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := newPromptFlow(t, app, org, account, "", 3)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "literally anything", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "literally anything", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "literally anything", session.SessionData["email"])
 }
 
@@ -1427,7 +1432,7 @@ func TestRunChatGraph_SeedsBuiltinAliases(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "alias-seed",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1447,7 +1452,7 @@ func TestRunChatGraph_SeedsBuiltinAliases(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Hello there", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Hello there", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 
 	assert.Equal(t, contact.ProfileName, session.SessionData["senderName"])
@@ -1469,7 +1474,7 @@ func TestSeedChatSessionBuiltins_KeepsPriorSenderMessageWhenNoInput(t *testing.T
 		SessionData: models.JSONB{"senderMessage": "prior"},
 	}
 	contact := &models.Contact{ProfileName: "Bob", PhoneNumber: "15550001111"}
-	seedChatSessionBuiltins(session, contact, "")
+	seedChatSessionBuiltins(session, contact, "", nil)
 	assert.Equal(t, "prior", session.SessionData["senderMessage"])
 	assert.Equal(t, "Bob", session.SessionData["senderName"])
 	assert.Equal(t, "15550001111", session.SessionData["senderMobile"])
@@ -1483,7 +1488,7 @@ func TestRunChatGraph_MessageMediaByLink(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "media-link",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1504,7 +1509,7 @@ func TestRunChatGraph_MessageMediaByLink(t *testing.T) {
 		},
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, models.SessionStatusCompleted, session.Status)
 
@@ -1524,7 +1529,7 @@ func TestRunChatGraph_MessageWaitForReply(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "wait-reply",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1546,14 +1551,14 @@ func TestRunChatGraph_MessageWaitForReply(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "m1", session.CurrentStep)
 	assert.Equal(t, models.SessionStatusActive, session.Status)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "my answer", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "my answer", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "my answer", session.SessionData["reply"])
 }
 
@@ -1565,7 +1570,7 @@ func TestRunChatGraph_ListBranchesOnRowID(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "list-branch",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "l1",
@@ -1598,13 +1603,13 @@ func TestRunChatGraph_ListBranchesOnRowID(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "l1", session.CurrentStep)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Alpha", "sku_a", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "Alpha", "sku_a", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
-	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
 	assert.Equal(t, "Alpha", session.SessionData["choice"])
 }
 
@@ -1615,7 +1620,7 @@ func TestRunChatGraph_Condition_RulesNamedBranches(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "condition-rules",
-		IsEnabled:       true,
+		IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "c1",
 			"nodes": []any{
@@ -1648,7 +1653,7 @@ func TestRunChatGraph_Condition_RulesNamedBranches(t *testing.T) {
 
 	session.SessionData = models.JSONB{"senderMessage": "YES"}
 	require.NoError(t, app.DB.Save(session).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	path := chatGraphPath(t, session)
 	assert.Equal(t, "yes", path[0]["outcome"])
@@ -1656,10 +1661,10 @@ func TestRunChatGraph_Condition_RulesNamedBranches(t *testing.T) {
 	session2 := &models.ChatbotSession{
 		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, ContactID: contact.ID,
 		WhatsAppAccount: account.Name, PhoneNumber: contact.PhoneNumber, Status: models.SessionStatusActive,
-		SessionData: models.JSONB{"senderMessage": "something else"}, StartedAt: time.Now(), LastActivityAt: time.Now(),
+		SessionData: models.JSONB{"senderMessage": "zzzz"}, StartedAt: time.Now(), LastActivityAt: time.Now(),
 	}
 	require.NoError(t, app.DB.Create(session2).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session2, flow, "", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session2, flow, "", "", nil, nil))
 	require.NoError(t, app.DB.First(session2, session2.ID).Error)
 	assert.Equal(t, "else", chatGraphPath(t, session2)[0]["outcome"])
 }
@@ -1668,7 +1673,7 @@ func TestRunChatGraph_Condition_RulesNumberBetween(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := &models.ChatbotFlow{
 		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
-		Name: "num-between", IsEnabled: true,
+		Name: "num-between", IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "c1",
 			"nodes": []any{
@@ -1688,7 +1693,7 @@ func TestRunChatGraph_Condition_RulesNumberBetween(t *testing.T) {
 	require.NoError(t, app.DB.Create(flow).Error)
 	session.SessionData = models.JSONB{"score": "7"}
 	require.NoError(t, app.DB.Save(session).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "mid", chatGraphPath(t, session)[0]["outcome"])
 }
@@ -1697,7 +1702,7 @@ func TestRunChatGraph_SetVariable_PathFromInbound(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := &models.ChatbotFlow{
 		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
-		Name: "set-path", IsEnabled: true,
+		Name: "set-path", IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "s1",
 			"nodes": []any{
@@ -1714,7 +1719,7 @@ func TestRunChatGraph_SetVariable_PathFromInbound(t *testing.T) {
 		},
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hello world", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hello world", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "hello world", session.SessionData["body"])
 	assert.Equal(t, contact.ProfileName, session.SessionData["who"])
@@ -1734,7 +1739,7 @@ func TestRunChatGraph_DelayThenResume(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := &models.ChatbotFlow{
 		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
-		Name: "delay", IsEnabled: true,
+		Name: "delay", IsEnabled: true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "m1",
 			"nodes": []any{
@@ -1752,7 +1757,7 @@ func TestRunChatGraph_DelayThenResume(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
 
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	assert.Equal(t, "d1", session.CurrentStep)
 	assert.Equal(t, models.SessionStatusActive, session.Status)
@@ -1772,7 +1777,7 @@ func TestRunChatGraph_ResetSessionClearsCustomVars(t *testing.T) {
 	require.NoError(t, app.DB.Save(session).Error)
 	flow := &models.ChatbotFlow{
 		BaseModel: models.BaseModel{ID: uuid.New()}, OrganizationID: org.ID, WhatsAppAccount: account.Name,
-		Name: "reset", IsEnabled: true,
+		Name: "reset", IsEnabled: true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "r1",
 			"nodes": []any{
@@ -1783,7 +1788,7 @@ func TestRunChatGraph_ResetSessionClearsCustomVars(t *testing.T) {
 		},
 	}
 	require.NoError(t, app.DB.Create(flow).Error)
-	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil))
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
 	require.NoError(t, app.DB.First(session, session.ID).Error)
 	_, hasCustom := session.SessionData["custom"]
 	assert.False(t, hasCustom)
@@ -1826,4 +1831,122 @@ func TestExecChatSendEmail_NoSMTP(t *testing.T) {
 	out, err := app.execChatSendEmail(node, ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "error", out.outcome)
+}
+
+// TestRunChatGraph_KeepSessionActivePreservesVars: with KeepSessionActive, End
+// leaves the session active (vars intact) so a later turn can continue the flow.
+func TestRunChatGraph_KeepSessionActivePreservesVars(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		Name:              "keep-session",
+		IsEnabled: true, KeepSessionActive: true,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "s1",
+			"nodes": []any{
+				map[string]any{"id": "s1", "type": "set_variable", "config": map[string]any{
+					"set": map[string]any{"tier": "gold"},
+				}},
+				map[string]any{"id": "m1", "type": "message", "config": map[string]any{"message": "Hi {{tier}}"}},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{
+				map[string]any{"from": "s1", "to": "m1", "condition": "default"},
+				map[string]any{"from": "m1", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
+	assert.Equal(t, "", session.CurrentStep)
+	assert.Equal(t, "gold", session.SessionData["tier"])
+	require.NotNil(t, session.CurrentFlowID)
+	assert.Equal(t, flow.ID, *session.CurrentFlowID)
+}
+
+// TestRunChatGraph_KeepSessionOffClearsSession: with KeepSessionActive false,
+// End completes and clears variables / flow id so nothing is kept.
+func TestRunChatGraph_KeepSessionOffClearsSession(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		Name:              "no-keep-session",
+		IsEnabled:         true,
+		KeepSessionActive: false,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "s1",
+			"nodes": []any{
+				map[string]any{"id": "s1", "type": "set_variable", "config": map[string]any{
+					"set": map[string]any{"tier": "gold"},
+				}},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{
+				map[string]any{"from": "s1", "to": "e1", "condition": "default"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "start", "", nil, nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusCompleted, session.Status)
+	assert.Nil(t, session.SessionData["tier"])
+	assert.Nil(t, session.CurrentFlowID)
+	assert.Equal(t, "", session.CurrentStep)
+}
+
+// TestRunChatGraph_KeepSessionOffAlwaysStartsFromEntry: with Keep off, a second
+// user inbound does not resume the parked buttons node — it restarts from entry.
+func TestRunChatGraph_KeepSessionOffAlwaysStartsFromEntry(t *testing.T) {
+	app, org, account, contact, session := newGraphTestFixtures(t)
+	flow := &models.ChatbotFlow{
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		Name:              "keep-off-entry",
+		IsEnabled:         true,
+		KeepSessionActive: false,
+		Graph: models.JSONB{
+			"version": 2, "entry_node": "m1",
+			"nodes": []any{
+				map[string]any{"id": "m1", "type": "message", "config": map[string]any{"message": "Hello!"}},
+				map[string]any{
+					"id": "b1", "type": "buttons",
+					"config": map[string]any{
+						"body": "Pick one",
+						"buttons": []any{
+							map[string]any{"id": "opt_a", "title": "A"},
+						},
+					},
+				},
+				map[string]any{"id": "e1", "type": "end"},
+			},
+			"edges": []any{
+				map[string]any{"from": "m1", "to": "b1", "condition": "default"},
+				map[string]any{"from": "b1", "to": "e1", "condition": "button:opt_a"},
+			},
+		},
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "hi", "", nil, nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, "b1", session.CurrentStep)
+
+	// Second inbound must restart from entry (park at b1 again), not consume opt_a.
+	require.NoError(t, app.runChatGraph(account, contact, session, flow, "", "opt_a", nil, nil))
+	require.NoError(t, app.DB.First(session, session.ID).Error)
+	assert.Equal(t, models.SessionStatusActive, session.Status)
+	assert.Equal(t, "b1", session.CurrentStep, "Keep off: button tap must not resume mid-flow")
+	path := chatGraphPath(t, session)
+	require.GreaterOrEqual(t, len(path), 2)
+	assert.Equal(t, "m1", path[0]["node"], "second turn path starts at entry message")
 }

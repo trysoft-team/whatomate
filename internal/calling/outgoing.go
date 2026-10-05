@@ -294,6 +294,21 @@ func (m *Manager) HandleOutgoingCallWebhook(callID, event, sdpAnswer string) {
 
 	now := time.Now()
 
+	// Dial-out helper sessions have no CallLog — only deliver SDP and status.
+	if session.CallLogID == uuid.Nil {
+		switch event {
+		case "accepted", "in_call", "connect":
+			session.mu.Lock()
+			session.Status = models.CallStatusAnswered
+			session.mu.Unlock()
+		case "rejected", "timeout", "failed", "ended":
+			session.mu.Lock()
+			session.Status = models.CallStatusCompleted
+			session.mu.Unlock()
+		}
+		return
+	}
+
 	switch event {
 	case "ringing":
 		session.mu.Lock()

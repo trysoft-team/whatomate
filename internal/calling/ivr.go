@@ -492,9 +492,14 @@ func (m *Manager) executeHTTPCallback(session *CallSession, node *IVRNode, ctx *
 		return "http:non2xx"
 	}
 
+	if ctx.Variables == nil {
+		ctx.Variables = map[string]string{}
+	}
 	if responseStoreAs != "" {
 		ctx.Variables[responseStoreAs] = result.Body
 	}
+	ctx.Variables["last_http_body"] = result.Body
+	ctx.Variables["last_http_status"] = fmt.Sprintf("%d", result.StatusCode)
 
 	m.log.Info("HTTP callback completed", "call_id", session.ID, "url", url, "status", result.StatusCode)
 

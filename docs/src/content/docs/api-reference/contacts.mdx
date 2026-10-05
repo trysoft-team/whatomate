@@ -305,6 +305,31 @@ POST /api/contacts/{id}/mark-read
 }
 ```
 
+## Send Typing Indicator
+
+Show WhatsApp’s “typing…” indicator for a contact while an agent is composing a reply (typically when chatbot automation is paused). Uses the latest inbound WhatsApp message ID for the conversation.
+
+```bash
+POST /api/contacts/{id}/typing
+```
+
+Optional JSON body:
+
+```json
+{ "whatsapp_account": "main" }
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": { "ok": true }
+}
+```
+
+If there is no inbound message with a WhatsApp ID, the response is still success with `{ "ok": false, "reason": "no_inbound" }` and no Meta call is made.
+
 <Aside type="tip">
   Use the `metadata` field to store custom data like customer IDs, order numbers, or any business-specific information. Metadata is displayed automatically in the **Contact Info** panel in the chat view.
 </Aside>

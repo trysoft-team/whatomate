@@ -249,3 +249,67 @@ func TestCreateDefaultAdmin_UsesExistingOrg(t *testing.T) {
 	db.Model(&models.Organization{}).Count(&orgCount)
 	assert.Equal(t, int64(1), orgCount, "should reuse existing organization")
 }
+
+// --- SeedDefaultWidgetsForOrg ---
+
+func TestSeedDefaultWidgetsForOrg_CreatesFullDefaultSet(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+
+	orgID := uuid.New()
+	userID := uuid.New()
+	require.NoError(t, db.Create(&models.Organization{
+		BaseModel: models.BaseModel{ID: orgID},
+		Name:      "Widget Seed Org",
+		Settings:  models.JSONB{},
+	}).Error)
+	require.NoError(t, db.Create(&models.User{
+		BaseModel:      models.BaseModel{ID: userID},
+		OrganizationID: orgID,
+		Email:          "widget-seed@example.com",
+		FullName:       "Widget Seeder",
+		PasswordHash:   "x",
+	}).Error)
+
+	require.NoError(t, database.SeedDefaultWidgetsForOrg(db, orgID, userID))
+
+	var widgets []models.Widget
+	require.NoError(t, db.Where("organization_id = ?", orgID).Order("display_order").Find(&widgets).Error)
+	require.Len(t, widgets, 14)
+
+	byName := make(map[string]models.Widget, len(widgets))
+	for _, w := range widgets {
+		byName[w.Name] = w
+		assert.True(t, w.IsDefault, "widget %s should be default", w.Name)
+		assert.True(t, w.IsShared, "widget %s should be shared", w.Name)
+	}
+
+	assert.Equal(t, "messages", byName["Total Messages"].DataSource)
+	assert.Equal(t, "number", byName["Total Messages"].DisplayType)
+	assert.Equal(t, "failed", filterValue(byName["Failed Messages"], "status"))
+	assert.Equal(t, "sum", byName["AI Token Usage"].Metric)
+	assert.Equal(t, "total_tokens", byName["AI Token Usage"].Field)
+	assert.Equal(t, "calls", byName["Call Volume"].DataSource)
+	assert.Equal(t, "webhooks", byName["Webhooks"].DataSource)
+	assert.Equal(t, "queue", byName["Live Queue"].DisplayType)
+	assert.Equal(t, "agent_status", byName["Agent Status"].DisplayType)
+	assert.Equal(t, "alert_list", byName["Ops Alerts"].DisplayType)
+	assert.Equal(t, "sparkline", byName["Message Trend"].DisplayType)
+	assert.Equal(t, "shortcuts", byName["Quick Actions"].DisplayType)
+	assert.Equal(t, "table", byName["Recent Messages"].DisplayType)
+}
+
+func filterValue(w models.Widget, field string) string {
+	for _, raw := range w.Filters {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["field"] == field {
+			if v, ok := m["value"].(string); ok {
+				return v
+			}
+		}
+	}
+	return ""
+}

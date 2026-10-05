@@ -128,6 +128,56 @@ POST /api/templates
 | `add_security_recommendation` | boolean | No | AUTHENTICATION templates — appends Meta's security line |
 | `code_expiration_minutes` | integer | No | AUTHENTICATION templates — 1–90; `0` omits the expiry footer |
 
+## Generate Template with AI
+
+Draft a template from a plain-language description using the organization's AI provider. The draft is **not saved**; send it to [Create Template](#create-template) to save it locally, then [Submit Template](#submit-template) to send it to Meta. Requires `templates:write`.
+
+```bash
+POST /api/templates/generate
+```
+
+### Request Body
+
+```json
+{
+  "prompt": "Tell a customer their order has shipped, with the order number, delivery date and a tracking link button",
+  "whatsapp_account": "Main Business"
+}
+```
+
+`whatsapp_account` is optional. When set, it is copied into the draft and only that account's template names are checked for clashes.
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "whatsapp_account": "Main Business",
+    "name": "order_shipped_update",
+    "display_name": "Order Shipped Update",
+    "language": "en",
+    "category": "UTILITY",
+    "header_type": "TEXT",
+    "header_content": "Your order has shipped",
+    "body_content": "Great news! Your order *#{{1}}* is on its way. It is estimated to arrive by *{{2}}*.",
+    "footer_content": "Thank you for shopping with us!",
+    "buttons": [
+      { "type": "URL", "text": "Track order", "url": "https://your-site.example.com/track/{{1}}", "example": "https://your-site.example.com/track/10492" }
+    ],
+    "sample_values": [
+      { "component": "body", "index": 1, "value": "10492" },
+      { "component": "body", "index": 2, "value": "Friday, 24 October" }
+    ],
+    "add_security_recommendation": false,
+    "code_expiration_minutes": 0,
+    "notes": "Replace https://your-site.example.com with your real tracking domain."
+  }
+}
+```
+
+The draft follows Meta's rules. Body variables are renumbered `{{1}}`, `{{2}}`… and every variable gets a sample value. A text header can have at most one variable, and the footer has none. There are at most 3 buttons, and a URL button can only have a variable at the end of its URL. `AUTHENTICATION` drafts get a copy-code OTP button and no header. A name already used by another template gets a number appended (`_2`, `_3`). Errors: `400` when the prompt is empty, longer than 4000 characters, or AI is not configured; `429` when the provider quota is exhausted; `502` when the AI response is not a valid template.
+
 ## Update Template
 
 Update an existing template. Accepts the same body as Create.

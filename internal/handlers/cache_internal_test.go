@@ -167,6 +167,37 @@ func TestDecryptAccountSecrets_LeavesLegacyPlaintextUnchanged(t *testing.T) {
 	assert.Equal(t, "legacy-secret", acc.AppSecret)
 }
 
+// --- getChatbotSettingsCached returns usable AI keys ---
+
+func TestGetChatbotSettingsCached_DecryptsAIKeyOnDBAndCachePaths(t *testing.T) {
+	app := cacheTestApp(t)
+	app.Config.App.EncryptionKey = "this-is-a-32-character-test-key-XX"
+	org := testutil.CreateTestOrganization(t, app.DB)
+
+	encKey, err := crypto.Encrypt("sk-plain-ai-key", app.Config.App.EncryptionKey)
+	require.NoError(t, err)
+	require.NoError(t, app.DB.Create(&models.ChatbotSettings{
+		BaseModel:      models.BaseModel{ID: uuid.New()},
+		OrganizationID: org.ID,
+		AI:             models.AIConfig{Enabled: true, Provider: models.AIProviderGoogle, APIKey: encKey, Model: "m"},
+	}).Error)
+
+	cacheKey := fmt.Sprintf("%s%s:%s", settingsCachePrefix, org.ID.String(), "")
+	app.Redis.Del(context.Background(), cacheKey)
+
+	fromDB, err := app.getChatbotSettingsCached(org.ID, "")
+	require.NoError(t, err)
+	assert.Equal(t, "sk-plain-ai-key", fromDB.AI.APIKey)
+
+	cached, err := app.Redis.Get(context.Background(), cacheKey).Result()
+	require.NoError(t, err)
+	assert.NotContains(t, cached, "sk-plain-ai-key", "Redis must keep the encrypted key")
+
+	fromCache, err := app.getChatbotSettingsCached(org.ID, "")
+	require.NoError(t, err)
+	assert.Equal(t, "sk-plain-ai-key", fromCache.AI.APIKey)
+}
+
 // --- getWebhooksCached ---
 
 func TestGetWebhooksCached_OnlyActiveAndOrgScoped(t *testing.T) {

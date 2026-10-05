@@ -27,6 +27,7 @@ GET /api/org/settings
       "mask_phone_numbers": false,
       "timezone": "UTC",
       "date_format": "YYYY-MM-DD",
+      "time_format": "12h",
       "calling_enabled": false,
       "max_call_duration": 3600,
       "transfer_timeout_secs": 60,
@@ -50,9 +51,11 @@ GET /api/org/settings
 | `mask_phone_numbers` | boolean | Mask contact phone numbers (and phone-like names) across the app and exports. |
 | `timezone` | string | Display timezone (default `UTC`). |
 | `date_format` | string | Date display format (default `YYYY-MM-DD`). |
-| `meta_app_id` | string | Meta App ID for embedded signup. |
+| `time_format` | string | Time clock: `12h` or `24h` (default `12h`). |
+| `meta_app_id` | string | Meta App ID for embedded signup (org private override). |
 | `meta_config_id` | string | Meta configuration ID for embedded signup. |
 | `has_meta_app_secret` | boolean | Read-only flag; `true` when a Meta app secret is stored. The secret itself is encrypted at rest and never returned. |
+| `meta_source` | string | Read-only hint: `org` \| `shared` \| `config` — where Embedded Signup credentials resolve from for this org. |
 
 **Calling**
 
@@ -80,6 +83,7 @@ PUT /api/org/settings
   "mask_phone_numbers": true,
   "timezone": "America/New_York",
   "date_format": "MM/DD/YYYY",
+  "time_format": "24h",
   "calling_enabled": true,
   "max_call_duration": 1800,
   "transfer_timeout_secs": 45,
@@ -97,6 +101,7 @@ PUT /api/org/settings
 | `mask_phone_numbers` | boolean | Toggle phone masking. |
 | `timezone` | string | Display timezone. |
 | `date_format` | string | Date display format. |
+| `time_format` | string | `12h` or `24h`. |
 | `calling_enabled` | boolean | Enable/disable calling. |
 | `max_call_duration` | integer | Max call seconds (applied only when > 0). |
 | `transfer_timeout_secs` | integer | Transfer accept timeout (applied only when > 0). |
@@ -120,6 +125,51 @@ PUT /api/org/settings
   }
 }
 ```
+
+## Shared Meta App (super admin)
+
+Platform-level Meta App credentials that organizations can inherit when they have no private override.
+
+```bash
+GET /api/admin/meta-app
+PUT /api/admin/meta-app
+```
+
+Requires **super admin**. The secret is never returned (`has_app_secret` only).
+
+### GET response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "app_id": "",
+    "config_id": "",
+    "share_mode": "off",
+    "shared_org_ids": [],
+    "has_app_secret": false
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `share_mode` | `off` \| `global` \| `selected` |
+| `shared_org_ids` | Org UUID strings used when `share_mode` is `selected` |
+
+### PUT body
+
+```json
+{
+  "app_id": "123",
+  "config_id": "456",
+  "app_secret": "optional-new-secret",
+  "share_mode": "global",
+  "shared_org_ids": ["uuid-…"]
+}
+```
+
+Leave `app_secret` empty to keep the existing encrypted secret.
 
 ## Upload Calling Audio
 

@@ -146,13 +146,18 @@ type WebhookPayload struct {
 					EndTime   string          `json:"end_time,omitempty"`
 					Duration  int             `json:"duration,omitempty"`
 				} `json:"calls,omitempty"`
-				// Contact state sync fields (when field == "smb_app_state_sync")
-				Action             string `json:"action,omitempty"`
-				ContactName        string `json:"contact_name,omitempty"`
-				ContactFirstName   string `json:"contact_first_name,omitempty"`
-				ContactPhoneNumber string `json:"contact_phone_number,omitempty"`
+				// Contact state sync entries (when field == "smb_app_state_sync")
+				StateSync []SMBStateSyncEntry `json:"state_sync,omitempty"`
 				// Message echoes fields (when field == "smb_message_echoes")
 				MessageEchoes []IncomingTextMessage `json:"message_echoes,omitempty"`
+				// Chat history chunks (when field == "history")
+				History []HistoryChunk `json:"history,omitempty"`
+				// account_update fields (Event is shared with template status updates)
+				PhoneNumber       string `json:"phone_number,omitempty"`
+				DisconnectionInfo *struct {
+					Reason      string `json:"reason"`
+					InitiatedBy string `json:"initiated_by"`
+				} `json:"disconnection_info,omitempty"`
 			} `json:"value"`
 			Field string `json:"field"`
 		} `json:"changes"`
@@ -254,11 +259,35 @@ func (a *App) WebhookHandler(r *fastglue.Request) error {
 				phoneNumberID := change.Value.Metadata.PhoneNumberID
 				a.Log.Info("Received smb_app_state_sync event",
 					"phone_number_id", phoneNumberID,
-					"action", change.Value.Action,
-					"contact_phone_number", change.Value.ContactPhoneNumber,
-					"contact_name", change.Value.ContactName,
+					"contacts", len(change.Value.StateSync),
 				)
-				go a.processContactSync(phoneNumberID, change.Value.ContactPhoneNumber, change.Value.ContactName, change.Value.Action)
+				go a.processContactSyncBatch(phoneNumberID, change.Value.StateSync)
+				continue
+			}
+
+			// Handle chat history replay (coexistence)
+			if change.Field == "history" {
+				phoneNumberID := change.Value.Metadata.PhoneNumberID
+				a.Log.Info("Received history event",
+					"phone_number_id", phoneNumberID,
+					"chunks", len(change.Value.History),
+					"media_messages", len(change.Value.Messages),
+				)
+				go a.processHistoryWebhook(phoneNumberID, change.Value.History, change.Value.Messages)
+				continue
+			}
+
+			// Handle coexistence disconnect / reconnect
+			if change.Field == "account_update" {
+				a.Log.Info("Received account_update event",
+					"waba_id", entry.ID,
+					"event", change.Value.Event,
+				)
+				reason := ""
+				if change.Value.DisconnectionInfo != nil {
+					reason = change.Value.DisconnectionInfo.Reason
+				}
+				go a.processAccountUpdate(entry.ID, change.Value.PhoneNumber, change.Value.Event, reason)
 				continue
 			}
 
@@ -325,8 +354,18 @@ func (a *App) WebhookHandler(r *fastglue.Request) error {
 					continue
 				}
 
-				// Process message asynchronously
-				go a.processIncomingMessage(phoneNumberID, msg, profileName)
+				// Process message asynchronously with a Meta-shaped webhook
+				// envelope scoped to this message (for {{{inbound}}}).
+				rawInbound := buildMetaWebhookInboundEnvelope(
+					payload.Object,
+					entry.ID,
+					change.Value.MessagingProduct,
+					change.Value.Metadata.DisplayPhoneNumber,
+					change.Value.Metadata.PhoneNumberID,
+					change.Value.Contacts,
+					msg,
+				)
+				go a.processIncomingMessage(phoneNumberID, msg, profileName, rawInbound)
 			}
 
 			// Process status updates
@@ -345,7 +384,7 @@ func (a *App) WebhookHandler(r *fastglue.Request) error {
 	return r.SendEnvelope(map[string]string{"status": "ok"})
 }
 
-func (a *App) processIncomingMessage(phoneNumberID string, msg IncomingTextMessage, profileName string) {
+func (a *App) processIncomingMessage(phoneNumberID string, msg IncomingTextMessage, profileName string, rawInbound map[string]any) {
 	defer func() {
 		if r := recover(); r != nil {
 			a.Log.Error("Panic recovered in processIncomingMessage", "panic", r, "phone_id", phoneNumberID, "message_id", msg.ID)
@@ -362,7 +401,7 @@ func (a *App) processIncomingMessage(phoneNumberID string, msg IncomingTextMessa
 	}
 
 	// Process the message with chatbot logic
-	a.processIncomingMessageFull(phoneNumberID, msg, profileName)
+	a.processIncomingMessageFull(phoneNumberID, msg, profileName, rawInbound)
 }
 
 func (a *App) processStatusUpdate(phoneNumberID string, status WebhookStatus) {
@@ -456,6 +495,15 @@ func (a *App) updateMessageStatus(whatsappMsgID, statusValue string, errors []We
 	}
 
 	a.Log.Info("Updated message status", "message_id", message.ID, "status", statusValue)
+
+	isCampaign := false
+	if campaignID, ok := message.Metadata["campaign_id"].(string); ok && campaignID != "" {
+		isCampaign = true
+	}
+	if newStatus == models.MessageStatusFailed && message.Direction == models.DirectionOutgoing &&
+		!isCampaign && hasServiceWindowClosedStatusError(errors) {
+		a.releaseContactForClosedWindow(message.OrganizationID, message.ContactID)
+	}
 
 	// Update campaign stats and recipient status if this is a campaign message
 	if message.Metadata != nil {
@@ -766,17 +814,9 @@ func (a *App) processContactSync(phoneNumberID, contactPhone, contactName, actio
 			})
 		}
 	case "remove":
-		// Try to find the contact first using the FindContact helper
-		contact, err := contactutil.FindContact(a.DB, account.OrganizationID, contactPhone)
-		if err == nil {
-			if err := a.DB.Delete(contact).Error; err != nil {
-				a.Log.Error("Failed to delete contact on sync remove", "contact_id", contact.ID, "error", err)
-			} else {
-				a.Log.Info("Soft-deleted synced contact (remove) from mobile app", "contact_id", contact.ID, "phone", contactPhone)
-			}
-		} else {
-			a.Log.Info("Contact not found for sync remove", "phone", contactPhone)
-		}
+		// Removing someone from the phone's address book doesn't end the
+		// WhatsApp conversation, so the contact and its chat history are kept.
+		a.Log.Info("Contact removed from mobile app address book; keeping contact", "phone", contactPhone)
 	default:
 		a.Log.Warn("Unknown contact sync action", "action", action)
 	}

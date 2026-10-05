@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
 import type { ChatNode, ContactList, GoogleCredential } from '@/services/api'
-import { templatesService, flowsService, usersService, contactListsService, googleCredentialsService } from '@/services/api'
+import { templatesService, flowsService, usersService, contactListsService, googleCredentialsService, chatbotService } from '@/services/api'
 import { useTeamsStore } from '@/stores/teams'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,6 +20,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:node': [node: ChatNode]
   'delete': []
+  'duplicate': []
 }>()
 
 const teamsStore = useTeamsStore()
@@ -103,6 +104,11 @@ function updateLabel(label: string) {
 // expected response type — anything other than "none" flips the node to
 // `prompt` under the hood and exposes validation + store_as fields.
 const isTextNode = computed(() => props.node.type === 'message' || props.node.type === 'prompt')
+
+/** Palette "Message" group — optional send_to recipients apply to all of these. */
+const isMessageGroupNode = computed(() =>
+  ['message', 'prompt', 'buttons', 'list', 'wa_template', 'whatsapp_flow', 'ai_response'].includes(props.node.type),
+)
 
 const expectedResponse = computed<string>(() => {
   if (props.node.type === 'message') return 'none'
@@ -488,6 +494,34 @@ const typeLabel: Record<string, string> = {
   webhook: 'Webhook',
 }
 
+const typeDescription: Record<string, string> = {
+  start: 'Entry point and fallback hub when input does not match.',
+  message: 'Send text, media, or a location to the contact.',
+  prompt: 'Ask a question, optionally validate the reply, then continue.',
+  buttons: 'Send quick-reply buttons and branch on the choice.',
+  list: 'Send a list picker and branch on the selected row.',
+  set_variable: 'Write or map values into session variables.',
+  wa_template: 'Send an approved WhatsApp template message.',
+  delay: 'Pause the flow for a set time before continuing.',
+  reset_session: 'Clear session variables and continue on the default edge.',
+  ai_response: 'Generate a reply with the configured AI provider.',
+  set_labels: 'Add or remove contact labels.',
+  disable_bot: 'Mute the chatbot for this contact for a period.',
+  send_email: 'Send an email via the organization SMTP settings.',
+  phonebook: 'Add or update the contact on a contact list.',
+  google_service: 'Call Google Sheets, Calendar, Drive, or Docs.',
+  api_call: 'Call an HTTP API and optionally store the response.',
+  condition: 'Branch on expression rules; unmatched uses the else path.',
+  timing: 'Branch based on business hours or a custom schedule.',
+  transfer: 'Hand the conversation to an agent or team queue.',
+  end: 'Stop the flow and complete the session.',
+  goto_flow: 'Jump into another chatbot flow.',
+  whatsapp_flow: 'Open a Meta WhatsApp Flow form and wait for submission.',
+  webhook: 'POST to a URL (use {{{inbound}}} for the full Meta webhook JSON), then continue.',
+}
+
+const nodeTypeDescription = computed(() => typeDescription[props.node.type] || '')
+
 // Built-in session variables seeded every chatbot turn. Shown on the Start
 // node so authors know what they can interpolate ({{x}} or {{{x}}}).
 const builtinVariables: { name: string; description: string }[] = [
@@ -495,8 +529,66 @@ const builtinVariables: { name: string; description: string }[] = [
   { name: 'phone_number', description: 'Contact phone number (alias: senderMobile)' },
   { name: 'senderName', description: 'Same as contact_name (whatsCRM alias)' },
   { name: 'senderMobile', description: 'Same as phone_number (whatsCRM alias)' },
-  { name: 'senderMessage', description: 'Latest inbound message text this turn' },
+  { name: 'senderMessage', description: 'Latest inbound message text/caption this turn' },
+  { name: 'inbound', description: 'Full Meta webhook body (use {{{inbound}}}); text via {{senderMessage}} or inbound.entry[0].changes[0].value.messages[0].text.body' },
+  { name: 'inbound.type', description: 'Inbound WhatsApp type (text, image, interactive, …)' },
+  { name: 'inbound.text.body', description: 'Text body when type is text' },
+  { name: 'inbound_message_type', description: 'Inbound type alias (button_reply, image, …)' },
+  { name: 'senderMessageType', description: 'Alias of inbound_message_type' },
+  { name: 'inbound_media_url', description: 'Local path of inbound media (when present)' },
+  { name: 'inbound_media_mime', description: 'MIME type of inbound media' },
+  { name: 'inbound_media_filename', description: 'Filename for inbound documents' },
+  { name: 'inbound_latitude', description: 'Latitude when inbound is location' },
+  { name: 'inbound_longitude', description: 'Longitude when inbound is location' },
 ]
+
+const mediaUploading = ref(false)
+const mediaFileInput = ref<HTMLInputElement | null>(null)
+
+const mediaAccept = computed(() => {
+  switch (config.value.media_type) {
+    case 'image': return 'image/jpeg,image/png,image/webp,image/gif'
+    case 'audio': return 'audio/mpeg,audio/mp4,audio/aac,audio/ogg,audio/opus'
+    case 'video': return 'video/mp4,video/3gpp'
+    case 'document': return '.pdf,.doc,.docx,.xls,.xlsx,.txt,application/pdf'
+    default: return '*/*'
+  }
+})
+
+async function onMediaFileSelected(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  mediaUploading.value = true
+  try {
+    const res = await chatbotService.uploadMedia(file)
+    const data = (res.data as any)?.data || res.data
+    const url = data?.url
+    if (!url) throw new Error('No URL returned')
+    updateConfig('media_url', url)
+    if (config.value.media_type === 'document' && file.name) {
+      updateConfig('filename', file.name)
+    }
+  } catch (e: any) {
+    console.error('Media upload failed', e)
+    alert(e?.response?.data?.message || e?.message || 'Upload failed')
+  } finally {
+    mediaUploading.value = false
+    if (input) input.value = ''
+  }
+}
+
+const escapeKeywordsStr = computed({
+  get: () => {
+    const raw = config.value.escape_keywords
+    if (Array.isArray(raw)) return raw.join(', ')
+    return typeof raw === 'string' ? raw : ''
+  },
+  set: (v: string) => {
+    const list = v.split(',').map((s) => s.trim()).filter(Boolean)
+    updateConfig('escape_keywords', list)
+  },
+})
 
 const copiedVar = ref<string | null>(null)
 
@@ -524,16 +616,63 @@ const varExampleHint = '{{contact_name}}, {{{senderMessage}}}'
   <div class="space-y-4 p-4">
     <div class="flex items-center justify-between">
       <h3 class="font-semibold text-sm">{{ typeLabel[node.type] || node.type }}</h3>
-      <Button v-if="node.type !== 'start'" variant="ghost" size="icon" class="h-7 w-7" @click="emit('delete')">
-        <Trash2 class="h-3.5 w-3.5 text-destructive" />
-      </Button>
+      <div class="flex items-center gap-1">
+        <Button
+          v-if="node.type !== 'start'"
+          variant="ghost"
+          size="icon"
+          class="h-7 w-7"
+          :title="'Duplicate'"
+          @click="emit('duplicate')"
+        >
+          <Copy class="h-3.5 w-3.5" />
+        </Button>
+        <Button v-if="node.type !== 'start'" variant="ghost" size="icon" class="h-7 w-7" @click="emit('delete')">
+          <Trash2 class="h-3.5 w-3.5 text-destructive" />
+        </Button>
+      </div>
+    </div>
+    <p v-if="nodeTypeDescription" class="text-xs text-muted-foreground -mt-2">
+      {{ nodeTypeDescription }}
+    </p>
+
+    <!-- Optional override recipients (Message palette group).
+         Empty → {{senderMobile}}; otherwise use the entered value(s). -->
+    <div v-if="isMessageGroupNode" class="space-y-1.5">
+      <Label class="text-xs">Send to <span class="text-muted-foreground font-normal">(optional)</span></Label>
+      <Input
+        :model-value="(config.send_to as string) || ''"
+        @update:model-value="(v: string) => updateConfig('send_to', v)"
+        :placeholder="'{{senderMobile}}'"
+        class="h-8 text-xs font-mono"
+      />
+      <p class="text-[10px] text-muted-foreground">
+        Leave empty to send to <code v-pre>{{senderMobile}}</code>.
+        Or enter one or more numbers (comma-separated). Supports session variables.
+      </p>
     </div>
 
     <!-- Start: entry point + available builtin variables. -->
     <template v-if="node.type === 'start'">
-      <p class="text-xs text-muted-foreground">
-        Flow entry point. Wire its output to the first node that should run.
-      </p>
+      <div class="space-y-1.5 pt-1">
+        <Label class="text-xs">Fallback message</Label>
+        <Textarea
+          :model-value="(config.fallback_message as string) || ''"
+          @update:model-value="(v: string) => updateConfig('fallback_message', v)"
+          placeholder="Optional — sent when returning to entry (e.g. Please choose from the menu)"
+          class="min-h-[60px] text-xs"
+        />
+      </div>
+      <div class="space-y-1.5">
+        <Label class="text-xs">Escape keywords</Label>
+        <Input
+          :model-value="escapeKeywordsStr"
+          @update:model-value="(v: string) => (escapeKeywordsStr = String(v ?? ''))"
+          placeholder="menu, hi, 0"
+          class="h-8 text-xs"
+        />
+        <p class="text-[10px] text-muted-foreground">Comma-separated. Exact match jumps back to this entry.</p>
+      </div>
       <div class="space-y-1.5 pt-1">
         <Label class="text-xs">Available variables</Label>
         <p class="text-[10px] text-muted-foreground">
@@ -617,7 +756,28 @@ const varExampleHint = '{{contact_name}}, {{{senderMessage}}}'
             placeholder="https://example.com/file.jpg"
             class="h-8 text-xs font-mono"
           />
-          <p class="text-[10px] text-muted-foreground">Public HTTPS link — Meta downloads the file.</p>
+          <div class="flex items-center gap-2">
+            <input
+              ref="mediaFileInput"
+              type="file"
+              class="hidden"
+              :accept="mediaAccept"
+              @change="onMediaFileSelected"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              class="h-7 text-xs"
+              :disabled="mediaUploading"
+              @click="mediaFileInput?.click()"
+            >
+              {{ mediaUploading ? 'Uploading…' : 'Upload file' }}
+            </Button>
+            <p class="text-[10px] text-muted-foreground flex-1">
+              Paste a public HTTPS link, or upload — served from this app’s public URL (same origin as the webhook).
+            </p>
+          </div>
         </div>
         <div v-if="config.media_type !== 'audio'" class="space-y-1.5">
           <Label class="text-xs">Caption</Label>
@@ -1468,7 +1628,7 @@ const varExampleHint = '{{contact_name}}, {{{senderMessage}}}'
             <SelectItem v-for="c in googleCreds" :key="c.id" :value="c.id">{{ c.label }}</SelectItem>
           </SelectContent>
         </Select>
-        <p class="text-[10px] text-muted-foreground">Add service accounts under Settings → Google.</p>
+        <p class="text-[10px] text-muted-foreground">Add service accounts under Settings → Google. Share calendars/files with the client_email.</p>
       </div>
       <div class="space-y-1.5">
         <Label class="text-xs">Action</Label>
@@ -1478,32 +1638,122 @@ const varExampleHint = '{{contact_name}}, {{{senderMessage}}}'
             <SelectItem value="sheets_append">Sheets append</SelectItem>
             <SelectItem value="sheets_read">Sheets read</SelectItem>
             <SelectItem value="sheets_update">Sheets update</SelectItem>
+            <SelectItem value="calendar_create_event">Calendar create event</SelectItem>
+            <SelectItem value="calendar_list_events">Calendar list events</SelectItem>
+            <SelectItem value="calendar_get_event">Calendar get event</SelectItem>
+            <SelectItem value="calendar_delete_event">Calendar delete event</SelectItem>
+            <SelectItem value="drive_list_files">Drive list files</SelectItem>
+            <SelectItem value="drive_create_folder">Drive create folder</SelectItem>
+            <SelectItem value="drive_upload_file">Drive upload text file</SelectItem>
+            <SelectItem value="docs_create">Docs create</SelectItem>
+            <SelectItem value="docs_append">Docs append</SelectItem>
+            <SelectItem value="docs_read">Docs read</SelectItem>
           </SelectContent>
         </Select>
       </div>
-      <div class="space-y-1.5">
-        <Label class="text-xs">Spreadsheet ID</Label>
-        <Input :model-value="config.spreadsheet_id || ''" @update:model-value="(v: string) => updateConfig('spreadsheet_id', v)" class="h-8 text-xs" />
-      </div>
-      <div v-if="(config.action || 'sheets_append') === 'sheets_append'" class="space-y-1.5">
-        <Label class="text-xs">Sheet name</Label>
-        <Input :model-value="config.sheet_name || 'Sheet1'" @update:model-value="(v: string) => updateConfig('sheet_name', v)" class="h-8 text-xs" />
-      </div>
-      <div v-if="config.action === 'sheets_read' || config.action === 'sheets_update'" class="space-y-1.5">
-        <Label class="text-xs">Range (A1)</Label>
-        <Input :model-value="config.range || ''" @update:model-value="(v: string) => updateConfig('range', v)" placeholder="Sheet1!A1:D10" class="h-8 text-xs" />
-      </div>
-      <div v-if="config.action === 'sheets_read'" class="space-y-1.5">
+
+      <!-- Sheets fields -->
+      <template v-if="(config.action || 'sheets_append').startsWith('sheets_') || !config.action">
+        <div class="space-y-1.5">
+          <Label class="text-xs">Spreadsheet ID</Label>
+          <Input :model-value="config.spreadsheet_id || ''" @update:model-value="(v: string) => updateConfig('spreadsheet_id', v)" class="h-8 text-xs" />
+        </div>
+        <div v-if="(config.action || 'sheets_append') === 'sheets_append'" class="space-y-1.5">
+          <Label class="text-xs">Sheet name</Label>
+          <Input :model-value="config.sheet_name || 'Sheet1'" @update:model-value="(v: string) => updateConfig('sheet_name', v)" class="h-8 text-xs" />
+        </div>
+        <div v-if="config.action === 'sheets_read' || config.action === 'sheets_update'" class="space-y-1.5">
+          <Label class="text-xs">Range (A1)</Label>
+          <Input :model-value="config.range || ''" @update:model-value="(v: string) => updateConfig('range', v)" placeholder="Sheet1!A1:D10" class="h-8 text-xs" />
+        </div>
+        <div v-if="config.action === 'sheets_append' || config.action === 'sheets_update' || !config.action" class="space-y-1.5">
+          <Label class="text-xs">Values JSON (array of rows)</Label>
+          <Textarea
+            :model-value="typeof config.values === 'string' ? config.values : JSON.stringify(config.values || [['{{contact_name}}','{{phone_number}}']], null, 2)"
+            @update:model-value="(v: string) => { try { updateConfig('values', JSON.parse(v)) } catch { updateConfig('values', v) } }"
+            class="min-h-[70px] text-xs font-mono"
+          />
+        </div>
+      </template>
+
+      <!-- Calendar fields -->
+      <template v-if="(config.action || '').startsWith('calendar_')">
+        <div class="space-y-1.5">
+          <Label class="text-xs">Calendar ID</Label>
+          <Input :model-value="config.calendar_id || ''" @update:model-value="(v: string) => updateConfig('calendar_id', v)" placeholder="primary or email" class="h-8 text-xs" />
+        </div>
+        <template v-if="config.action === 'calendar_create_event'">
+          <div class="space-y-1.5">
+            <Label class="text-xs">Summary</Label>
+            <Input :model-value="config.event_summary || ''" @update:model-value="(v: string) => updateConfig('event_summary', v)" class="h-8 text-xs" />
+          </div>
+          <div class="space-y-1.5">
+            <Label class="text-xs">Description</Label>
+            <Textarea :model-value="config.event_description || ''" @update:model-value="(v: string) => updateConfig('event_description', v)" class="min-h-[50px] text-xs" />
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="space-y-1.5">
+              <Label class="text-xs">Start (ISO)</Label>
+              <Input :model-value="config.start || ''" @update:model-value="(v: string) => updateConfig('start', v)" placeholder="2026-09-21T10:00:00Z" class="h-8 text-xs" />
+            </div>
+            <div class="space-y-1.5">
+              <Label class="text-xs">End (ISO)</Label>
+              <Input :model-value="config.end || ''" @update:model-value="(v: string) => updateConfig('end', v)" class="h-8 text-xs" />
+            </div>
+          </div>
+          <div class="space-y-1.5">
+            <Label class="text-xs">Timezone</Label>
+            <Input :model-value="config.timezone || 'UTC'" @update:model-value="(v: string) => updateConfig('timezone', v)" class="h-8 text-xs" />
+          </div>
+          <div class="space-y-1.5">
+            <Label class="text-xs">Attendees (comma-separated)</Label>
+            <Input :model-value="config.attendees || ''" @update:model-value="(v: string) => updateConfig('attendees', v)" class="h-8 text-xs" />
+          </div>
+        </template>
+        <div v-if="config.action === 'calendar_get_event' || config.action === 'calendar_delete_event'" class="space-y-1.5">
+          <Label class="text-xs">Event ID</Label>
+          <Input :model-value="config.event_id || ''" @update:model-value="(v: string) => updateConfig('event_id', v)" class="h-8 text-xs" />
+        </div>
+      </template>
+
+      <!-- Drive fields -->
+      <template v-if="(config.action || '').startsWith('drive_')">
+        <div v-if="config.action !== 'drive_list_files'" class="space-y-1.5">
+          <Label class="text-xs">Name</Label>
+          <Input :model-value="config.name || ''" @update:model-value="(v: string) => updateConfig('name', v)" class="h-8 text-xs" />
+        </div>
+        <div class="space-y-1.5">
+          <Label class="text-xs">Parent folder ID (optional)</Label>
+          <Input :model-value="config.parent_id || ''" @update:model-value="(v: string) => updateConfig('parent_id', v)" class="h-8 text-xs" />
+        </div>
+        <div v-if="config.action === 'drive_upload_file'" class="space-y-1.5">
+          <Label class="text-xs">File content</Label>
+          <Textarea :model-value="config.content || ''" @update:model-value="(v: string) => updateConfig('content', v)" class="min-h-[60px] text-xs" />
+        </div>
+      </template>
+
+      <!-- Docs fields -->
+      <template v-if="(config.action || '').startsWith('docs_')">
+        <div v-if="config.action === 'docs_create'" class="space-y-1.5">
+          <Label class="text-xs">Title</Label>
+          <Input :model-value="config.title || ''" @update:model-value="(v: string) => updateConfig('title', v)" class="h-8 text-xs" />
+        </div>
+        <div v-if="config.action === 'docs_append' || config.action === 'docs_read'" class="space-y-1.5">
+          <Label class="text-xs">Document ID</Label>
+          <Input :model-value="config.document_id || ''" @update:model-value="(v: string) => updateConfig('document_id', v)" class="h-8 text-xs" />
+        </div>
+        <div v-if="config.action === 'docs_append'" class="space-y-1.5">
+          <Label class="text-xs">Text</Label>
+          <Textarea :model-value="config.text || ''" @update:model-value="(v: string) => updateConfig('text', v)" class="min-h-[60px] text-xs" />
+        </div>
+      </template>
+
+      <div
+        v-if="['sheets_read','calendar_create_event','calendar_list_events','calendar_get_event','drive_list_files','drive_create_folder','drive_upload_file','docs_create','docs_read'].includes(config.action)"
+        class="space-y-1.5"
+      >
         <Label class="text-xs">Output variable</Label>
-        <Input :model-value="config.output_variable || 'sheetData'" @update:model-value="(v: string) => updateConfig('output_variable', v)" class="h-8 text-xs" />
-      </div>
-      <div v-if="(config.action || 'sheets_append') !== 'sheets_read'" class="space-y-1.5">
-        <Label class="text-xs">Values JSON (array of rows)</Label>
-        <Textarea
-          :model-value="typeof config.values === 'string' ? config.values : JSON.stringify(config.values || [['{{contact_name}}','{{phone_number}}']], null, 2)"
-          @update:model-value="(v: string) => { try { updateConfig('values', JSON.parse(v)) } catch { updateConfig('values', v) } }"
-          class="min-h-[70px] text-xs font-mono"
-        />
+        <Input :model-value="config.output_variable || ''" @update:model-value="(v: string) => updateConfig('output_variable', v)" placeholder="auto" class="h-8 text-xs" />
       </div>
     </template>
 
@@ -1640,10 +1890,13 @@ const varExampleHint = '{{contact_name}}, {{{senderMessage}}}'
         <Textarea
           :model-value="config.body || ''"
           @update:model-value="(v: string) => updateConfig('body', v)"
+          placeholder='{{{inbound}}}'
           class="min-h-[50px] text-xs font-mono"
         />
       </div>
-      <p class="text-[10px] text-muted-foreground">Fires and continues — response is ignored (no 2xx/non2xx branching).</p>
+      <p class="text-[10px] text-muted-foreground">
+        Fires and continues — response ignored. Use <code v-pre>{{{inbound}}}</code> for the full Meta webhook JSON (<code>object</code>/<code>entry</code>/<code>changes</code>), or <code v-pre>{{senderMessage}}</code> for the text body.
+      </p>
     </template>
 
     <!-- Skip condition. Evaluated by the runner before executing the

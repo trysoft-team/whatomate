@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useCallingStore } from '@/stores/calling'
-import { accountsService, type IVRFlow, type IVRFlowData } from '@/services/api'
+import { accountsService, ivrFlowsService, type IVRFlow, type IVRFlowData } from '@/services/api'
+import { getErrorMessage } from '@/lib/api-utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -13,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { Plus, Pencil, Trash2, Phone, RefreshCw } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, Phone, RefreshCw, Sparkles } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
 import DeleteConfirmDialog from '@/components/shared/DeleteConfirmDialog.vue'
@@ -31,6 +32,17 @@ const deletingFlow = ref<IVRFlow | null>(null)
 const deleting = ref(false)
 const saving = ref(false)
 const fetchError = ref(false)
+
+const generateAIDialogOpen = ref(false)
+const generateAIPrompt = ref('')
+const generateAIAccount = ref('')
+const isGeneratingAI = ref(false)
+
+const generateAISuggestions = computed(() => [
+  t('calling.generateWithAISuggestion1', 'Greet the caller, press 1 for sales or 2 for support, then transfer to the general queue'),
+  t('calling.generateWithAISuggestion2', 'Ask for an account number with gather, confirm it, then hang up with a goodbye'),
+  t('calling.generateWithAISuggestion3', 'Outside business hours play a closed message and hang up; during hours transfer to support'),
+])
 
 // Toggle confirmation state
 const showToggleActiveConfirm = ref(false)
@@ -55,6 +67,69 @@ function resetCreateForm() {
 function openCreate() {
   resetCreateForm()
   showCreateDialog.value = true
+}
+
+function openGenerateAI() {
+  generateAIPrompt.value = ''
+  generateAIAccount.value = accounts.value[0]?.name || ''
+  generateAIDialogOpen.value = true
+}
+
+function applyGenerateAISuggestion(suggestion: string) {
+  generateAIPrompt.value = suggestion
+}
+
+async function confirmGenerateAI() {
+  const prompt = generateAIPrompt.value.trim()
+  if (!prompt) {
+    toast.error(t('calling.generateWithAIPromptRequired', 'Describe the flow you want to generate'))
+    return
+  }
+  if (!generateAIAccount.value) {
+    toast.error(t('calling.accountRequired'))
+    return
+  }
+  isGeneratingAI.value = true
+  try {
+    const response = await ivrFlowsService.generateFlow({
+      prompt,
+      whatsapp_account: generateAIAccount.value,
+    })
+    const data = (response.data as any)?.data || response.data
+    if (!data?.menu || data.menu.version !== 2) {
+      throw new Error('Invalid menu returned')
+    }
+    sessionStorage.setItem(
+      'whatomate:ai-ivr-flow-draft',
+      JSON.stringify({
+        name: data.name || '',
+        description: data.description || '',
+        menu: data.menu,
+      }),
+    )
+    const emptyFlow: IVRFlowData = {
+      version: 2,
+      nodes: [],
+      edges: [],
+      entry_node: '',
+    }
+    const flow = await store.createIVRFlow({
+      name: data.name || 'AI call flow',
+      description: data.description || '',
+      whatsapp_account: generateAIAccount.value,
+      menu: emptyFlow,
+    })
+    generateAIDialogOpen.value = false
+    const created = (flow as any)?.data?.data || (flow as any)?.data || flow
+    if (created?.id) {
+      router.push({ name: 'ivr-flow-editor', params: { id: created.id }, query: { ai: '1' } })
+    }
+    toast.success(t('calling.flowCreated'))
+  } catch (err: unknown) {
+    toast.error(getErrorMessage(err, t('calling.generateWithAIFailed', 'Failed to generate flow. Check AI settings and try again.')))
+  } finally {
+    isGeneratingAI.value = false
+  }
 }
 
 function openEdit(flow: IVRFlow) {
@@ -199,6 +274,16 @@ onMounted(async () => {
           <RefreshCw class="h-4 w-4 mr-2" />
           {{ t('common.refresh') }}
         </Button>
+        <button
+          type="button"
+          class="btn-press relative inline-flex h-9 items-center overflow-hidden rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 p-px text-sm font-medium shadow-[0_0_16px_rgba(34,211,238,0.35),0_0_28px_rgba(168,85,247,0.35)] transition-shadow duration-200 hover:shadow-[0_0_20px_rgba(34,211,238,0.45),0_0_34px_rgba(168,85,247,0.45)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50"
+          @click="openGenerateAI"
+        >
+          <span class="inline-flex h-full items-center gap-2 rounded-full bg-[#12121a] px-4 text-sm text-violet-300 light:bg-violet-50 light:text-violet-600">
+            <Sparkles class="h-4 w-4 shrink-0" />
+            {{ t('calling.generateWithAI', 'Generate with AI') }}
+          </span>
+        </button>
         <Button @click="openCreate">
           <Plus class="h-4 w-4 mr-2" />
           {{ t('calling.createFlow') }}
@@ -348,6 +433,76 @@ onMounted(async () => {
           <Button :disabled="saving" @click="createFlow">
             <span v-if="saving" class="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
             {{ t('common.create') }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="generateAIDialogOpen">
+      <DialogContent class="sm:max-w-lg">
+        <DialogHeader>
+          <div class="flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+              <Sparkles class="h-5 w-5 text-primary" />
+            </div>
+            <div class="min-w-0 space-y-1">
+              <DialogTitle>{{ t('calling.generateWithAI', 'Generate with AI') }}</DialogTitle>
+              <DialogDescription>
+                {{ t('calling.generateWithAISubtitle', 'Describe your call flow in plain language') }}
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <div class="space-y-3">
+          <div class="space-y-2">
+            <Label>{{ t('calling.account') }}</Label>
+            <Select v-model="generateAIAccount">
+              <SelectTrigger>
+                <SelectValue :placeholder="t('calling.selectAccount')" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="acc in accounts" :key="acc.name" :value="acc.name">
+                  {{ acc.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Textarea
+            v-model="generateAIPrompt"
+            rows="5"
+            class="min-h-[120px] resize-y"
+            :placeholder="t('calling.generateWithAIPlaceholder', 'e.g. Greet the caller, offer Sales or Support with a menu, then transfer to the general queue.')"
+          />
+
+          <div class="flex flex-col gap-2">
+            <button
+              v-for="(suggestion, index) in generateAISuggestions"
+              :key="index"
+              type="button"
+              class="rounded-full border border-border bg-background px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted/40 hover:text-foreground"
+              @click="applyGenerateAISuggestion(suggestion)"
+            >
+              {{ suggestion }}
+            </button>
+          </div>
+
+          <p class="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            <Sparkles class="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
+            <span>{{ t('calling.generateWithAIHint', 'AI builds a draft on the canvas. Review each step and Save before activating.') }}</span>
+          </p>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" :disabled="isGeneratingAI" @click="generateAIDialogOpen = false">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button :disabled="isGeneratingAI || !generateAIPrompt.trim()" @click="confirmGenerateAI">
+            <Sparkles v-if="!isGeneratingAI" class="h-4 w-4 mr-2" />
+            <span v-if="isGeneratingAI" class="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            {{ isGeneratingAI
+              ? t('calling.generateWithAIGenerating', 'Generating…')
+              : t('calling.generateWithAI', 'Generate with AI') }}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -98,12 +98,14 @@ test.describe('Message Templates - Detail Page', () => {
     await page.goto('/templates/new')
     await page.waitForLoadState('networkidle')
 
-    // Name input should be visible
+    // Name input and account select are on the Details step
     await expect(page.locator('input').first()).toBeVisible()
-    // Body textarea should be visible
-    await expect(page.locator('textarea').first()).toBeVisible()
-    // Account select should be visible
     await expect(page.locator('button[role="combobox"]').first()).toBeVisible()
+    // Body textarea is on the Content step
+    await page.getByTestId('template-step-content').click()
+    await expect(page.locator('textarea').first()).toBeVisible()
+    // Live preview is always shown beside the form
+    await expect(page.getByTestId('template-live-preview')).toBeVisible()
   })
 
   test('should show metadata on existing template', async ({ page }) => {
@@ -286,6 +288,7 @@ test.describe('Message Templates - Detail Page Form', () => {
   test('should have body textarea on create page', async ({ page }) => {
     await page.goto('/templates/new')
     await page.waitForLoadState('networkidle')
+    await page.getByTestId('template-step-content').click()
 
     await expect(page.locator('textarea').first()).toBeVisible()
   })
@@ -293,13 +296,24 @@ test.describe('Message Templates - Detail Page Form', () => {
   test('should have add button option on create page', async ({ page }) => {
     await page.goto('/templates/new')
     await page.waitForLoadState('networkidle')
+    await page.getByTestId('template-step-buttons').click()
 
     await expect(page.getByRole('button', { name: /Add/i })).toBeVisible()
+  })
+
+  test('should block Next on the Details step until required fields are filled', async ({ page }) => {
+    await page.goto('/templates/new')
+    await page.waitForLoadState('networkidle')
+
+    await page.getByTestId('template-step-next').click()
+    await expect(page.locator('[data-sonner-toast]').filter({ hasText: /account/i })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('template-step-details')).toHaveAttribute('aria-current', 'step')
   })
 
   test('should show footer textarea on create page', async ({ page }) => {
     await page.goto('/templates/new')
     await page.waitForLoadState('networkidle')
+    await page.getByTestId('template-step-content').click()
 
     // Footer textarea is the second textarea
     const textareas = page.locator('textarea')

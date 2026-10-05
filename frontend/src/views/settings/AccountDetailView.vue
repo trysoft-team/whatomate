@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
-import { api, chatbotService } from '@/services/api'
+import { api, chatbotService, accountsService, type FlowEncryptionStatus } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { getErrorMessage } from '@/lib/api-utils'
 import { getQualityBadgeClass, getQualityRatingLabel, getVerificationBadgeClass, getVerificationStatusLabel, formatLimitTier } from '@/lib/utils'
@@ -46,6 +46,7 @@ import {
   TestTube2,
   Check,
   X,
+  KeyRound,
 } from 'lucide-vue-next'
 
 interface WhatsAppAccount {
@@ -60,6 +61,8 @@ interface WhatsAppAccount {
   is_default_outgoing: boolean
   auto_read_receipt: boolean
   business_calling_enabled?: boolean
+  ai_responses_enabled?: boolean
+  typing_indicator_enabled?: boolean
   default_chatbot_flow_id?: string
   status: string
   has_access_token: boolean
@@ -110,6 +113,16 @@ const testResult = ref<TestResult | null>(null)
 const testingConnection = ref(false)
 const subscribing = ref(false)
 const isProfileDialogOpen = ref(false)
+const flowEncryption = ref<FlowEncryptionStatus | null>(null)
+const flowEncryptionLoading = ref(false)
+const flowEncryptionBusy = ref(false)
+const rotateKeyDialogOpen = ref(false)
+
+const flowKeyOnMeta = computed(() =>
+  !!flowEncryption.value?.configured &&
+  flowEncryption.value.meta_key_matches &&
+  flowEncryption.value.meta_status !== 'MISMATCH',
+)
 
 const { showLeaveDialog, confirmLeave, cancelLeave } = useUnsavedChangesGuard(hasChanges)
 
@@ -129,6 +142,8 @@ const form = ref({
   is_default_outgoing: false,
   auto_read_receipt: false,
   business_calling_enabled: false,
+  ai_responses_enabled: false,
+  typing_indicator_enabled: false,
   default_chatbot_flow_id: '',
 })
 
@@ -178,13 +193,19 @@ function syncForm() {
     is_default_outgoing: account.value.is_default_outgoing,
     auto_read_receipt: account.value.auto_read_receipt,
     business_calling_enabled: account.value.business_calling_enabled ?? false,
+    ai_responses_enabled: account.value.ai_responses_enabled ?? false,
+    typing_indicator_enabled: account.value.typing_indicator_enabled ?? false,
     default_chatbot_flow_id: account.value.default_chatbot_flow_id || '',
   }
 }
 
 async function loadChatbotFlows() {
   try {
-    const response = await chatbotService.listFlows({ limit: 200 })
+    const accountName = account.value?.name || form.value.name
+    const response = await chatbotService.listFlows({
+      limit: 200,
+      whatsapp_account: accountName || undefined,
+    })
     const data = (response.data as any).data || response.data
     chatbotFlows.value = data.flows || []
   } catch {
@@ -284,6 +305,37 @@ async function copyToClipboard(text: string) {
   }
 }
 
+async function loadFlowEncryption() {
+  if (!account.value) return
+  flowEncryptionLoading.value = true
+  try {
+    const response = await accountsService.getFlowEncryption(account.value.id)
+    flowEncryption.value = response.data.data
+  } catch {
+    flowEncryption.value = null
+  } finally {
+    flowEncryptionLoading.value = false
+  }
+}
+
+async function setupFlowEncryption(rotate: boolean) {
+  if (!account.value) return
+  rotateKeyDialogOpen.value = false
+  flowEncryptionBusy.value = true
+  try {
+    const response = await accountsService.setupFlowEncryption(account.value.id, rotate)
+    flowEncryption.value = response.data.data
+    toast.success(rotate
+      ? t('accounts.flowKeyRotated', 'New key generated and uploaded to Meta')
+      : t('accounts.flowKeyUploaded', 'Public key uploaded to Meta'))
+  } catch (e) {
+    toast.error(getErrorMessage(e, t('accounts.flowKeyFailed', 'Failed to set up Flow encryption')))
+    await loadFlowEncryption()
+  } finally {
+    flowEncryptionBusy.value = false
+  }
+}
+
 function setDefaultChatbotFlow(value: unknown) {
   const selected = String(value ?? '')
   form.value.default_chatbot_flow_id = selected === NONE_CHAT_FLOW ? '' : selected
@@ -295,7 +347,8 @@ onMounted(async () => {
     isLoading.value = false
     hasChanges.value = false
   } else {
-    await Promise.all([loadChatbotFlows(), loadAccount()])
+    await loadAccount()
+    await Promise.all([loadChatbotFlows(), loadFlowEncryption()])
   }
 })
 </script>
@@ -500,6 +553,24 @@ onMounted(async () => {
           </div>
           <div class="flex items-start justify-between gap-3">
             <div class="space-y-0.5">
+              <Label class="text-xs">{{ $t('accounts.aiResponsesEnabled', 'AI Responses') }}</Label>
+              <p class="text-[11px] text-muted-foreground">
+                {{ $t('accounts.aiResponsesEnabledDesc', 'Use AI to reply when no keyword or flow matches. Requires AI to be configured under Settings → AI.') }}
+              </p>
+            </div>
+            <Switch :checked="form.ai_responses_enabled" @update:checked="form.ai_responses_enabled = $event" :disabled="!canWrite" />
+          </div>
+          <div class="flex items-start justify-between gap-3">
+            <div class="space-y-0.5">
+              <Label class="text-xs">{{ $t('accounts.typingIndicatorEnabled', 'Typing indicator') }}</Label>
+              <p class="text-[11px] text-muted-foreground">
+                {{ $t('accounts.typingIndicatorEnabledDesc', 'Show typing in WhatsApp before chatbot replies.') }}
+              </p>
+            </div>
+            <Switch :checked="form.typing_indicator_enabled" @update:checked="form.typing_indicator_enabled = $event" :disabled="!canWrite" />
+          </div>
+          <div class="flex items-start justify-between gap-3">
+            <div class="space-y-0.5">
               <Label class="text-xs">{{ $t('accounts.businessCallingEnabled', 'Business Calling enabled') }}</Label>
               <p class="text-[11px] text-muted-foreground">
                 {{ $t('accounts.businessCallingEnabledDesc', 'Enable only after Meta enrolls this number in the WhatsApp Business Calling API. Required for click-to-call buttons in canned responses.') }}
@@ -530,6 +601,89 @@ onMounted(async () => {
             <code class="px-2 py-1 bg-muted rounded text-xs font-mono flex-1 truncate">{{ account?.webhook_verify_token }}</code>
             <IconButton :icon="Copy" label="Copy" @click="copyToClipboard(account?.webhook_verify_token || '')" />
           </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Flow Endpoint Encryption Card -->
+    <Card v-if="!isNew && account">
+      <CardHeader class="pb-3">
+        <div class="flex items-center justify-between gap-2">
+          <CardTitle class="text-sm font-medium flex items-center gap-2">
+            <KeyRound class="h-4 w-4" />
+            {{ $t('accounts.flowEncryption', 'Flow endpoint encryption') }}
+          </CardTitle>
+          <Loader2 v-if="flowEncryptionLoading" class="h-4 w-4 animate-spin text-muted-foreground" />
+          <template v-else-if="flowEncryption">
+            <Badge v-if="!flowEncryption.configured" variant="secondary">
+              {{ $t('accounts.flowKeyNotSetUp', 'Not set up') }}
+            </Badge>
+            <Badge v-else-if="flowKeyOnMeta" variant="outline" class="border-green-600 text-green-600">
+              <Check class="h-3 w-3 mr-1" /> {{ $t('accounts.flowKeyOnMeta', 'Uploaded to Meta') }}
+            </Badge>
+            <Badge v-else variant="outline" class="border-amber-600 text-amber-600">
+              <AlertCircle class="h-3 w-3 mr-1" /> {{ $t('accounts.flowKeyNotOnMeta', 'Not on Meta') }}
+            </Badge>
+          </template>
+        </div>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <p class="text-[11px] text-muted-foreground">
+          {{ $t('accounts.flowEncryptionDesc', 'WhatsApp Flows with a data endpoint encrypt their traffic with this key pair. The private key stays on this server; the public key is uploaded to Meta for this phone number.') }}
+        </p>
+
+        <div
+          v-if="flowEncryption?.configured && !flowKeyOnMeta"
+          class="flex items-start gap-2 p-2 rounded-lg bg-amber-950/50 light:bg-amber-50 border border-amber-800 light:border-amber-200"
+        >
+          <AlertCircle class="h-4 w-4 text-amber-400 light:text-amber-600 mt-0.5 shrink-0" />
+          <span class="text-xs text-amber-300 light:text-amber-700">
+            {{ flowEncryption.meta_status_error
+              ? $t('accounts.flowKeyMetaCheckFailed', { error: flowEncryption.meta_status_error })
+              : $t('accounts.flowKeyMismatch', 'Meta has a different public key for this number, so endpoint requests will fail. Upload the key again.') }}
+          </span>
+        </div>
+
+        <details v-if="flowEncryption?.public_key" class="text-xs">
+          <summary class="cursor-pointer text-muted-foreground">{{ $t('accounts.flowPublicKey', 'Public key') }}</summary>
+          <div class="mt-2 flex items-start gap-2">
+            <pre class="px-2 py-1 bg-muted rounded text-[10px] font-mono flex-1 overflow-x-auto whitespace-pre">{{ flowEncryption.public_key }}</pre>
+            <IconButton :icon="Copy" label="Copy" @click="copyToClipboard(flowEncryption.public_key || '')" />
+          </div>
+        </details>
+
+        <div v-if="canWrite" class="flex flex-wrap gap-2">
+          <Button
+            v-if="!flowEncryption?.configured"
+            size="sm"
+            :disabled="flowEncryptionBusy || flowEncryptionLoading"
+            @click="setupFlowEncryption(false)"
+          >
+            <Loader2 v-if="flowEncryptionBusy" class="h-4 w-4 animate-spin mr-1" />
+            <KeyRound v-else class="h-4 w-4 mr-1" />
+            {{ $t('accounts.flowKeyGenerate', 'Generate & upload to Meta') }}
+          </Button>
+          <template v-else>
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="flowEncryptionBusy"
+              @click="setupFlowEncryption(false)"
+            >
+              <Loader2 v-if="flowEncryptionBusy" class="h-4 w-4 animate-spin mr-1" />
+              <RefreshCw v-else class="h-4 w-4 mr-1" />
+              {{ $t('accounts.flowKeyReupload', 'Upload to Meta again') }}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="flowEncryptionBusy"
+              @click="rotateKeyDialogOpen = true"
+            >
+              <KeyRound class="h-4 w-4 mr-1" />
+              {{ $t('accounts.flowKeyRotate', 'Rotate key') }}
+            </Button>
+          </template>
         </div>
       </CardContent>
     </Card>
@@ -582,6 +736,22 @@ onMounted(async () => {
       <AlertDialogFooter>
         <AlertDialogCancel>{{ $t('common.cancel') }}</AlertDialogCancel>
         <AlertDialogAction @click="deleteAccount">{{ $t('common.delete') }}</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
+
+  <!-- Rotate Flow Key Confirmation -->
+  <AlertDialog v-model:open="rotateKeyDialogOpen">
+    <AlertDialogContent>
+      <AlertDialogHeader>
+        <AlertDialogTitle>{{ $t('accounts.flowKeyRotateTitle', 'Rotate Flow encryption key?') }}</AlertDialogTitle>
+        <AlertDialogDescription>
+          {{ $t('accounts.flowKeyRotateConfirm', 'A new key pair replaces the current one and is uploaded to Meta. Flows already open on customers’ phones may fail until they restart.') }}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel>{{ $t('common.cancel') }}</AlertDialogCancel>
+        <AlertDialogAction @click="setupFlowEncryption(true)">{{ $t('accounts.flowKeyRotate', 'Rotate key') }}</AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>

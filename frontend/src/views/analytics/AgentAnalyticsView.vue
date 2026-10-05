@@ -73,9 +73,9 @@ interface AgentAnalyticsResponse {
 const { t } = useI18n()
 const authStore = useAuthStore()
 const usersStore = useUsersStore()
-// Permission-driven (analytics.agents:read), not role-name based — custom
-// roles with the right permission should get the same view.
-const isAdminOrManager = computed(() => authStore.hasPermission('analytics.agents', 'read'))
+// Org-wide agent list/filter requires analytics:read (managers/admins).
+// Agents only have analytics.agents:read and must see their own metrics.
+const canViewAllAgents = computed(() => authStore.hasPermission('analytics', 'read'))
 
 const analytics = ref<AgentAnalyticsResponse | null>(null)
 const isLoading = ref(true)
@@ -116,7 +116,7 @@ const formatMinutes = (mins: number): string => {
 }
 
 const fetchAgents = async () => {
-  if (!isAdminOrManager.value) return
+  if (!canViewAllAgents.value) return
   try {
     await usersStore.fetchUsers()
     agents.value = usersStore.users
@@ -132,7 +132,7 @@ const fetchAnalytics = async () => {
   try {
     const { from, to } = dateRange.value
     const params: { from: string; to: string; agent_id?: string } = { from, to }
-    if (isAdminOrManager.value && selectedAgentId.value !== 'all') {
+    if (canViewAllAgents.value && selectedAgentId.value !== 'all') {
       params.agent_id = selectedAgentId.value
     }
     const response = await agentAnalyticsService.getSummary(params)
@@ -293,7 +293,7 @@ const comparisonChartOptions = {
 
 // Stats to display based on role (reserved for future use)
 const _displayStats = computed(() => {
-  if (isAdminOrManager.value) {
+  if (canViewAllAgents.value) {
     return analytics.value?.summary
   }
   return analytics.value?.my_stats
@@ -305,13 +305,13 @@ void _displayStats.value // Suppress unused warning
   <div class="flex flex-col h-full">
     <PageHeader
       :title="$t('agentAnalytics.title')"
-      :description="isAdminOrManager ? $t('agentAnalytics.subtitle') : $t('agentAnalytics.myMetrics')"
+      :description="canViewAllAgents ? $t('agentAnalytics.subtitle') : $t('agentAnalytics.myMetrics')"
       :icon="BarChart3"
       icon-gradient="bg-gradient-to-br from-blue-500 to-indigo-600 shadow-blue-500/20"
     >
       <template #actions>
         <!-- Agent Filter (Admin/Manager only) -->
-        <div v-if="isAdminOrManager" class="flex items-center gap-2 mr-4">
+        <div v-if="canViewAllAgents" class="flex items-center gap-2 mr-4">
           <Popover v-model:open="agentComboboxOpen">
             <PopoverTrigger as-child>
               <Button variant="outline" role="combobox" :aria-expanded="agentComboboxOpen" class="w-[200px] justify-between">
@@ -443,7 +443,7 @@ void _displayStats.value // Suppress unused warning
             </div>
 
             <!-- Messages Sent (for specific agent) or Queue Time (for all agents) -->
-            <div v-if="isAdminOrManager && selectedAgentId === 'all'" class="card-depth rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 light:bg-white light:border-gray-200">
+            <div v-if="canViewAllAgents && selectedAgentId === 'all'" class="card-depth rounded-xl border border-white/[0.08] bg-white/[0.04] p-6 light:bg-white light:border-gray-200">
               <div class="flex flex-row items-center justify-between space-y-0 pb-2">
                 <span class="text-sm font-medium text-white/50 light:text-gray-500">{{ $t('agentAnalytics.avgQueueTime') }}</span>
                 <div class="h-10 w-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
@@ -542,7 +542,7 @@ void _displayStats.value // Suppress unused warning
         </div>
 
         <!-- Agent Comparison (Admin/Manager only, when viewing all agents) -->
-        <template v-if="!error && isAdminOrManager && selectedAgentId === 'all'">
+        <template v-if="!error && canViewAllAgents && selectedAgentId === 'all'">
           <Card>
             <CardHeader>
               <CardTitle>{{ $t('agentAnalytics.agentComparison') }}</CardTitle>

@@ -80,16 +80,80 @@ type TableRow struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// LeaderboardEntry is a ranked row for leaderboard widgets.
+type LeaderboardEntry struct {
+	Rank  int     `json:"rank"`
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+}
+
+// HeatmapData is an hour×weekday matrix.
+type HeatmapData struct {
+	XLabels []string    `json:"x_labels"`
+	YLabels []string    `json:"y_labels"`
+	Cells   [][]float64 `json:"cells"`
+}
+
+// FunnelStage is one stage in a funnel widget.
+type FunnelStage struct {
+	Stage string  `json:"stage"`
+	Value float64 `json:"value"`
+}
+
+// KPIItem is one KPI in a kpi_strip widget.
+type KPIItem struct {
+	Label  string   `json:"label"`
+	Value  float64  `json:"value"`
+	Change *float64 `json:"change,omitempty"`
+	Unit   string   `json:"unit,omitempty"` // "%" for rate KPIs; change is then in percentage points
+}
+
+// AlertItem is one row in an alert_list widget.
+type AlertItem struct {
+	Severity  string `json:"severity"`
+	Title     string `json:"title"`
+	Subtitle  string `json:"subtitle"`
+	At        string `json:"at"`
+	Href      string `json:"href,omitempty"`
+}
+
+// QueueItem is one waiting transfer in a queue widget.
+type QueueItem struct {
+	ID           string  `json:"id"`
+	ContactID    string  `json:"contact_id"`
+	Label        string  `json:"label"`
+	Source       string  `json:"source"`
+	WaitMins     float64 `json:"wait_mins"`
+	TransferredAt string `json:"transferred_at"`
+}
+
+// AgentStatusItem is one agent presence row.
+type AgentStatusItem struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	IsAvailable      bool   `json:"is_available"`
+	ActiveTransfers  int64  `json:"active_transfers"`
+}
+
 // WidgetDataResponse represents the computed data for a widget
 type WidgetDataResponse struct {
-	WidgetID      uuid.UUID          `json:"widget_id"`
-	Value         float64            `json:"value"`
-	Change        float64            `json:"change"`         // Percentage change from previous period
-	ChartData     []ChartPoint       `json:"chart_data"`     // For chart display type
-	PrevValue     float64            `json:"prev_value"`     // Previous period value
-	DataPoints    []DataPoint        `json:"data_points"`    // Breakdown data
-	GroupedSeries *GroupedSeriesData `json:"grouped_series"` // For grouped time-series (line charts with group_by)
-	TableRows     []TableRow         `json:"table_rows"`     // For table display type
+	WidgetID      uuid.UUID           `json:"widget_id"`
+	Value         float64             `json:"value"`
+	Change        float64             `json:"change"`
+	ChartData     []ChartPoint        `json:"chart_data"`
+	PrevValue     float64             `json:"prev_value"`
+	DataPoints    []DataPoint         `json:"data_points"`
+	GroupedSeries *GroupedSeriesData  `json:"grouped_series,omitempty"`
+	TableRows     []TableRow          `json:"table_rows,omitempty"`
+	Leaderboard   []LeaderboardEntry  `json:"leaderboard,omitempty"`
+	Heatmap       *HeatmapData        `json:"heatmap,omitempty"`
+	Funnel        []FunnelStage       `json:"funnel,omitempty"`
+	KPIs          []KPIItem           `json:"kpis,omitempty"`
+	Alerts        []AlertItem         `json:"alerts,omitempty"`
+	QueueItems    []QueueItem         `json:"queue_items,omitempty"`
+	Agents        []AgentStatusItem   `json:"agents,omitempty"`
+	Stub          bool                `json:"stub,omitempty"`
+	Live          bool                `json:"live,omitempty"`
 }
 
 // GroupedSeriesData represents multiple datasets for grouped time-series charts
@@ -115,26 +179,6 @@ type DataPoint struct {
 	Label string  `json:"label"`
 	Value float64 `json:"value"`
 	Color string  `json:"color,omitempty"`
-}
-
-// Available data sources and their filterable fields
-var widgetDataSources = map[string][]string{
-	"messages":  {"status", "direction", "message_type", "whatsapp_account"},
-	"contacts":  {"whatsapp_account", "is_read"},
-	"campaigns": {"status", "message_status"},
-	"transfers": {"status", "source"},
-	"sessions":  {"status"},
-}
-
-// Available metrics
-var widgetMetrics = []string{"count", "sum", "avg"}
-
-// Available display types
-var widgetDisplayTypes = []string{"number", "percentage", "chart", "table", "shortcuts"}
-
-// Static display types that don't need a data source
-var staticDisplayTypes = map[string]bool{
-	"shortcuts": true,
 }
 
 // ListWidgets returns all widgets for the user (their own + shared)
@@ -229,7 +273,7 @@ func (a *App) CreateWidget(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid display type", nil, "")
 	}
 
-	// For static display types (e.g. shortcuts), auto-set data_source and metric
+	// For static display types (e.g. shortcuts, iframe), auto-set data_source and metric
 	if staticDisplayTypes[displayType] {
 		req.DataSource = displayType
 		req.Metric = "count"
@@ -249,6 +293,15 @@ func (a *App) CreateWidget(r *fastglue.Request) error {
 		// Validate metric
 		if !contains(widgetMetrics, req.Metric) {
 			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid metric", nil, "")
+		}
+	}
+
+	if req.Color != "" && !isValidWidgetColor(req.Color) {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid color", nil, "")
+	}
+	if displayType == "iframe" {
+		if errMsg := validateIframeConfig(req.Config); errMsg != "" {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, errMsg, nil, "")
 		}
 	}
 
@@ -581,15 +634,9 @@ func (a *App) GetWidgetDataSources(r *fastglue.Request) error {
 		"data_sources":  sources,
 		"metrics":       widgetMetrics,
 		"display_types": widgetDisplayTypes,
-		"operators": []map[string]string{
-			{"value": "equals", "label": "Equals"},
-			{"value": "not_equals", "label": "Not Equals"},
-			{"value": "contains", "label": "Contains"},
-			{"value": "gt", "label": "Greater Than"},
-			{"value": "lt", "label": "Less Than"},
-			{"value": "gte", "label": "Greater Than or Equal"},
-			{"value": "lte", "label": "Less Than or Equal"},
-		},
+		"colors":        namedWidgetColorList(),
+		"live_display_types": []string{"queue", "agent_status", "alert_list"},
+		"operators":     widgetOperatorDefs,
 	})
 }
 
@@ -751,29 +798,26 @@ func (a *App) executeWidgetQuery(orgID uuid.UUID, widget models.Widget, fromStr,
 		var errMsg string
 		periodStart, periodEnd, errMsg = parseDateRange(fromStr, toStr)
 		if errMsg != "" {
-			// Fall back to current month on parse error
 			periodStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 			periodEnd = now
 		}
 	} else {
-		// Default to current month
 		periodStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		periodEnd = now
 	}
 
-	// Calculate previous period for comparison
 	periodDuration := periodEnd.Sub(periodStart)
 	previousPeriodStart := periodStart.Add(-periodDuration - time.Nanosecond)
 	previousPeriodEnd := periodStart.Add(-time.Nanosecond)
 
-	response := WidgetDataResponse{}
+	response := WidgetDataResponse{
+		Live: liveDisplayTypes[widget.DisplayType],
+	}
 
-	// Early return for static display types (no data query needed)
 	if staticDisplayTypes[widget.DisplayType] {
 		return response, nil
 	}
 
-	// Parse filters
 	filters := make([]FilterInput, 0)
 	for _, f := range widget.Filters {
 		if filterMap, ok := f.(map[string]any); ok {
@@ -785,56 +829,67 @@ func (a *App) executeWidgetQuery(orgID uuid.UUID, widget models.Widget, fromStr,
 		}
 	}
 
-	// Handle table display type
-	if widget.DisplayType == "table" {
+	// Specialized live / rich displays
+	switch widget.DisplayType {
+	case "table":
 		if widget.GroupByField != "" {
-			// Grouped table: reuse existing getGroupedData to populate DataPoints
 			response.DataPoints = a.getGroupedData(orgID, widget, filters, periodStart, periodEnd)
 		} else {
-			// Table rows: query last 10 records
 			response.TableRows = a.getTableRows(orgID, widget, filters, periodStart, periodEnd)
+		}
+		return response, nil
+	case "queue":
+		response.QueueItems = a.getQueueItems(orgID, filters)
+		response.Value = float64(len(response.QueueItems))
+		return response, nil
+	case "agent_status":
+		response.Agents = a.getAgentStatusItems(orgID, filters)
+		response.Value = float64(len(response.Agents))
+		return response, nil
+	case "alert_list":
+		response.Alerts = a.getAlertItems(orgID, periodStart, periodEnd)
+		response.Value = float64(len(response.Alerts))
+		return response, nil
+	case "leaderboard":
+		response.Leaderboard = a.getLeaderboard(orgID, widget, filters, periodStart, periodEnd)
+		if len(response.Leaderboard) > 0 {
+			response.Value = response.Leaderboard[0].Value
+		}
+		return response, nil
+	case "heatmap":
+		hm := a.getHeatmapData(orgID, widget, filters, periodStart, periodEnd)
+		response.Heatmap = &hm
+		return response, nil
+	case "funnel":
+		response.Funnel = a.getFunnelData(orgID, widget, filters, periodStart, periodEnd)
+		if len(response.Funnel) > 0 {
+			response.Value = response.Funnel[0].Value
+		}
+		return response, nil
+	case "kpi_strip":
+		response.KPIs = a.getKPIStrip(orgID, widget, filters, periodStart, periodEnd, previousPeriodStart, previousPeriodEnd)
+		if len(response.KPIs) > 0 {
+			response.Value = response.KPIs[0].Value
 		}
 		return response, nil
 	}
 
-	// Get the model and execute query based on data source
-	var currentValue, previousValue float64
-
-	switch widget.DataSource {
-	case "messages":
-		currentValue = a.queryMessages(orgID, widget.Metric, widget.Field, filters, periodStart, periodEnd)
-		previousValue = a.queryMessages(orgID, widget.Metric, widget.Field, filters, previousPeriodStart, previousPeriodEnd)
-
-	case "contacts":
-		currentValue = a.queryContacts(orgID, widget.Metric, filters, periodStart, periodEnd)
-		previousValue = a.queryContacts(orgID, widget.Metric, filters, previousPeriodStart, previousPeriodEnd)
-
-	case "campaigns":
-		currentValue = a.queryCampaigns(orgID, widget.Metric, filters, periodStart, periodEnd)
-		previousValue = a.queryCampaigns(orgID, widget.Metric, filters, previousPeriodStart, previousPeriodEnd)
-
-	case "transfers":
-		currentValue = a.queryTransfers(orgID, widget.Metric, widget.Field, filters, periodStart, periodEnd)
-		previousValue = a.queryTransfers(orgID, widget.Metric, widget.Field, filters, previousPeriodStart, previousPeriodEnd)
-
-	case "sessions":
-		currentValue = a.querySessions(orgID, widget.Metric, filters, periodStart, periodEnd)
-		previousValue = a.querySessions(orgID, widget.Metric, filters, previousPeriodStart, previousPeriodEnd)
-	}
-
+	currentValue, previousValue, stub := a.queryWidgetMetric(orgID, widget, filters, periodStart, periodEnd, previousPeriodStart, previousPeriodEnd)
 	response.Value = currentValue
 	response.PrevValue = previousValue
-	response.Change = calculatePercentageChange(int64(previousValue), int64(currentValue))
+	response.Stub = stub
+	if widget.Metric == "delta" {
+		response.Change = currentValue - previousValue
+	} else {
+		response.Change = calculatePercentageChange(int64(previousValue), int64(currentValue))
+	}
 
-	// Get chart data if display type is chart
-	if widget.DisplayType == "chart" {
-		if widget.GroupByField != "" {
+	if widget.DisplayType == "chart" || widget.DisplayType == "sparkline" {
+		if widget.GroupByField != "" && widget.DisplayType == "chart" {
 			if widget.ChartType == "line" {
-				// Line chart with group by → grouped time-series
 				groupedSeries := a.getGroupedTimeSeriesData(orgID, widget, filters, periodStart, periodEnd)
 				response.GroupedSeries = &groupedSeries
 			} else {
-				// Bar/Pie chart with group by → data points (group → count)
 				response.DataPoints = a.getGroupedData(orgID, widget, filters, periodStart, periodEnd)
 			}
 		} else {
@@ -842,101 +897,11 @@ func (a *App) executeWidgetQuery(orgID uuid.UUID, widget models.Widget, fromStr,
 		}
 	}
 
+	if widget.DisplayType == "gauge" {
+		// value already set; target comes from config on the client
+	}
+
 	return response, nil
-}
-
-// Query helper functions for each data source
-func (a *App) queryMessages(orgID uuid.UUID, metric, field string, filters []FilterInput, start, end time.Time) float64 {
-	query := a.DB.Model(&models.Message{}).Where("organization_id = ? AND created_at >= ? AND created_at <= ?", orgID, start, end)
-
-	// Apply filters
-	for _, f := range filters {
-		query = applyFilter("messages", query, f)
-	}
-
-	var result float64
-	switch metric {
-	case "count":
-		var count int64
-		query.Count(&count)
-		result = float64(count)
-	case "sum", "avg":
-		// For messages, sum/avg might be on a numeric field. The field name
-		// flows directly into SQL, so reject anything not in the whitelist
-		// (allowedAggregateFields["messages"]) to block injection.
-		if field != "" && allowedAggregateFields["messages"][field] {
-			var val float64
-			if metric == "sum" {
-				query.Select("COALESCE(SUM(" + field + "), 0)").Scan(&val)
-			} else {
-				query.Select("COALESCE(AVG(" + field + "), 0)").Scan(&val)
-			}
-			result = val
-		}
-	}
-	return result
-}
-
-func (a *App) queryContacts(orgID uuid.UUID, _ string, filters []FilterInput, start, end time.Time) float64 {
-	// Filter by last_message_at to get "active" contacts with recent activity
-	query := a.DB.Model(&models.Contact{}).Where("organization_id = ? AND last_message_at >= ? AND last_message_at <= ?", orgID, start, end)
-
-	for _, f := range filters {
-		query = applyFilter("contacts", query, f)
-	}
-
-	var count int64
-	query.Count(&count)
-	return float64(count)
-}
-
-func (a *App) queryCampaigns(orgID uuid.UUID, _ string, filters []FilterInput, start, end time.Time) float64 {
-	query := a.DB.Model(&models.BulkMessageCampaign{}).Where("organization_id = ? AND created_at >= ? AND created_at <= ?", orgID, start, end)
-
-	for _, f := range filters {
-		query = applyFilter("campaigns", query, f)
-	}
-
-	var count int64
-	query.Count(&count)
-	return float64(count)
-}
-
-func (a *App) queryTransfers(orgID uuid.UUID, metric, field string, filters []FilterInput, start, end time.Time) float64 {
-	query := a.DB.Model(&models.AgentTransfer{}).Where("organization_id = ? AND transferred_at >= ? AND transferred_at <= ?", orgID, start, end)
-
-	for _, f := range filters {
-		query = applyFilter("transfers", query, f)
-	}
-
-	var result float64
-	switch metric {
-	case "count":
-		var count int64
-		query.Count(&count)
-		result = float64(count)
-	case "avg":
-		if field == "resolution_time" {
-			var val float64
-			query.Where("status = ? AND resumed_at IS NOT NULL", models.TransferStatusResumed).
-				Select("COALESCE(AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60), 0)").
-				Scan(&val)
-			result = val
-		}
-	}
-	return result
-}
-
-func (a *App) querySessions(orgID uuid.UUID, _ string, filters []FilterInput, start, end time.Time) float64 {
-	query := a.DB.Model(&models.ChatbotSession{}).Where("organization_id = ? AND created_at >= ? AND created_at <= ?", orgID, start, end)
-
-	for _, f := range filters {
-		query = applyFilter("sessions", query, f)
-	}
-
-	var count int64
-	query.Count(&count)
-	return float64(count)
 }
 
 func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []FilterInput, start, end time.Time) []ChartPoint {
@@ -956,6 +921,19 @@ func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []Filt
 
 	args := []any{orgID, start, end}
 	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+
+	switch widget.DataSource {
+	case "media":
+		query += ` AND (message_type IN ('image','audio','video','document','sticker','voice') OR (media_url IS NOT NULL AND media_url != ''))`
+	case "opt_outs":
+		query += ` AND marketing_opt_out = true`
+	case "agents":
+		// agents chart uses users table; restrict to team agents
+		query = strings.Replace(query, "FROM users", `FROM users
+			JOIN team_members ON team_members.user_id = users.id
+			JOIN teams ON teams.id = team_members.team_id`, 1)
+		query += fmt.Sprintf(` AND team_members.role = '%s'`, models.TeamRoleAgent)
+	}
 
 	query += fmt.Sprintf(" GROUP BY DATE_TRUNC('day', %s) ORDER BY date ASC", dateField)
 
@@ -978,88 +956,48 @@ func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []Filt
 }
 
 // resolveDataSourceTable returns the table name and date field for a data source
-// allowedFilterFields enumerates the columns each data source is allowed
-// to be filtered on. Filter column names get interpolated directly into
-// raw SQL (column identifiers can't be parameterized), so anything not
-// in this whitelist is rejected — otherwise an authenticated user with
-// widget-write permission can craft a malicious filter and inject SQL.
-//
-// Frontends should keep their filter pickers in sync with this list; any
-// filter whose `field` is not allowed will be silently dropped at query
-// time.
-var allowedFilterFields = map[string]map[string]bool{
-	"messages": {
-		"status":           true,
-		"direction":        true,
-		"message_type":     true,
-		"contact_id":       true,
-		"sent_by_user_id":  true,
-		"whatsapp_account": true,
-		"conversation_id":  true,
-		"template_name":    true,
-	},
-	"contacts": {
-		"status":           true,
-		"assigned_user_id": true,
-		"whatsapp_account": true,
-	},
-	"campaigns": {
-		"status":           true,
-		"template_name":    true,
-		"created_by_id":    true,
-		"whatsapp_account": true,
-	},
-	"transfers": {
-		"status":    true,
-		"team_id":   true,
-		"agent_id":  true,
-		"from_team": true,
-		"to_team":   true,
-	},
-	"sessions": {
-		"status":  true,
-		"flow_id": true,
-	},
-}
-
-// allowedAggregateFields enumerates the columns each data source is
-// allowed to be summed/averaged over (the `field` argument to metric
-// types "sum" / "avg"). Same threat model as allowedFilterFields — the
-// column name flows into raw SQL.
-var allowedAggregateFields = map[string]map[string]bool{
-	// Messages have no obvious numeric column to aggregate on today;
-	// leaving empty until a use case appears.
-	"messages": {},
-}
-
 func resolveDataSourceTable(dataSource string) (tableName, dateField string, ok bool) {
 	switch dataSource {
-	case "messages":
+	case "messages", "media":
 		return "messages", "created_at", true
 	case "contacts":
 		return "contacts", "last_message_at", true
+	case "opt_outs":
+		return "contacts", "updated_at", true
 	case "campaigns":
 		return "bulk_message_campaigns", "created_at", true
-	case "transfers":
+	case "transfers", "sla":
 		return "agent_transfers", "transferred_at", true
 	case "sessions":
 		return "chatbot_sessions", "created_at", true
+	case "calls":
+		return "call_logs", "created_at", true
+	case "templates":
+		return "templates", "created_at", true
+	case "flows":
+		return "chatbot_flows", "created_at", true
+	case "tags":
+		return "tags", "created_at", true
+	case "ai":
+		return "ai_usage_logs", "created_at", true
+	case "webhooks":
+		return "webhook_deliveries", "created_at", true
+	case "agents":
+		return "users", "created_at", true
 	default:
 		return "", "", false
 	}
 }
 
 // appendFilterSQL appends filter conditions to a raw SQL query string and args slice.
-// Filters whose field is not in allowedFilterFields[dataSource] are silently dropped —
-// they would otherwise be a SQL injection vector since column names interpolate raw.
 func appendFilterSQL(dataSource string, query string, args []any, filters []FilterInput) (string, []any) {
 	for _, f := range filters {
-		condition, value, ok := buildFilterSQL(dataSource, f)
+		condition, values, ok := buildFilterSQL(dataSource, f)
 		if !ok {
 			continue
 		}
 		query += " AND " + condition
-		args = append(args, value)
+		args = append(args, values...)
 	}
 	return query, args
 }
@@ -1079,14 +1017,8 @@ func (a *App) getGroupedData(orgID uuid.UUID, widget models.Widget, filters []Fi
 	}
 
 	// Validate GroupByField against whitelist to prevent SQL injection
-	allowedGroupByFields := map[string]bool{
-		"status": true, "message_status": true, "direction": true,
-		"message_type": true, "assigned_user_id": true, "channel": true,
-		"is_active": true, "priority": true, "category": true,
-		"type": true, "action_type": true, "provider": true,
-	}
-	if !allowedGroupByFields[widget.GroupByField] {
-		a.Log.Error("Invalid GroupByField", "field", widget.GroupByField)
+	if !isAllowedGroupByField(widget.DataSource, widget.GroupByField) {
+		a.Log.Error("Invalid GroupByField", "field", widget.GroupByField, "source", widget.DataSource)
 		return dataPoints
 	}
 
@@ -1308,19 +1240,15 @@ func (a *App) getCampaignMessageStatusTimeSeries(orgID uuid.UUID, filters []Filt
 // filters whose field isn't in the data-source whitelist — that's the SQL
 // injection guard. The query is unchanged in that case.
 func applyFilter(dataSource string, query *gorm.DB, filter FilterInput) *gorm.DB {
-	condition, value, ok := buildFilterSQL(dataSource, filter)
+	condition, values, ok := buildFilterSQL(dataSource, filter)
 	if !ok {
 		return query
 	}
-	return query.Where(condition, value)
+	return query.Where(condition, values...)
 }
 
-// buildFilterSQL turns a user-supplied filter into a parameterized SQL
-// fragment. The value is always parameterized (`?`); the column name is
-// interpolated raw, which is why we whitelist the field against
-// allowedFilterFields[dataSource]. Returns ok=false (no condition, nil
-// value) for any field that isn't in the whitelist for this data source.
-func buildFilterSQL(dataSource string, filter FilterInput) (string, any, bool) {
+// buildFilterSQL turns a user-supplied filter into a parameterized SQL fragment.
+func buildFilterSQL(dataSource string, filter FilterInput) (string, []any, bool) {
 	if !allowedFilterFields[dataSource][filter.Field] {
 		return "", nil, false
 	}
@@ -1328,22 +1256,58 @@ func buildFilterSQL(dataSource string, filter FilterInput) (string, any, bool) {
 	value := filter.Value
 
 	switch filter.Operator {
-	case "equals":
-		return fmt.Sprintf("%s = ?", field), value, true
+	case "equals", "":
+		return fmt.Sprintf("%s = ?", field), []any{value}, true
 	case "not_equals":
-		return fmt.Sprintf("%s != ?", field), value, true
+		return fmt.Sprintf("%s != ?", field), []any{value}, true
 	case "contains":
-		return fmt.Sprintf("%s ILIKE ?", field), "%" + value + "%", true
+		return fmt.Sprintf("%s ILIKE ?", field), []any{"%" + value + "%"}, true
+	case "starts_with":
+		return fmt.Sprintf("%s ILIKE ?", field), []any{value + "%"}, true
 	case "gt":
-		return fmt.Sprintf("%s > ?", field), value, true
+		return fmt.Sprintf("%s > ?", field), []any{value}, true
 	case "lt":
-		return fmt.Sprintf("%s < ?", field), value, true
+		return fmt.Sprintf("%s < ?", field), []any{value}, true
 	case "gte":
-		return fmt.Sprintf("%s >= ?", field), value, true
+		return fmt.Sprintf("%s >= ?", field), []any{value}, true
 	case "lte":
-		return fmt.Sprintf("%s <= ?", field), value, true
+		return fmt.Sprintf("%s <= ?", field), []any{value}, true
+	case "is_null":
+		return fmt.Sprintf("%s IS NULL", field), nil, true
+	case "is_not_null":
+		return fmt.Sprintf("%s IS NOT NULL", field), nil, true
+	case "in":
+		vals := parseCSVValues(value)
+		if len(vals) == 0 {
+			return "", nil, false
+		}
+		placeholders := make([]string, len(vals))
+		args := make([]any, len(vals))
+		for i, v := range vals {
+			placeholders[i] = "?"
+			args[i] = v
+		}
+		return fmt.Sprintf("%s IN (%s)", field, strings.Join(placeholders, ",")), args, true
+	case "not_in":
+		vals := parseCSVValues(value)
+		if len(vals) == 0 {
+			return "", nil, false
+		}
+		placeholders := make([]string, len(vals))
+		args := make([]any, len(vals))
+		for i, v := range vals {
+			placeholders[i] = "?"
+			args[i] = v
+		}
+		return fmt.Sprintf("%s NOT IN (%s)", field, strings.Join(placeholders, ",")), args, true
+	case "between":
+		vals := parseCSVValues(value)
+		if len(vals) != 2 {
+			return "", nil, false
+		}
+		return fmt.Sprintf("%s BETWEEN ? AND ?", field), []any{vals[0], vals[1]}, true
 	default:
-		return fmt.Sprintf("%s = ?", field), value, true
+		return fmt.Sprintf("%s = ?", field), []any{value}, true
 	}
 }
 

@@ -32,7 +32,9 @@ type MockWhatsAppClient struct {
 	SendTemplateMessageFunc    func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, template, lang string, components []map[string]any) (string, error)
 	SendImageMessageFunc       func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, caption string) (string, error)
 	SendDocumentMessageFunc    func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, filename, caption string) (string, error)
-	MarkMessageReadFunc        func(ctx context.Context, account *whatsapp.Account, messageID string) error
+	MarkMessageReadFunc             func(ctx context.Context, account *whatsapp.Account, messageID string) error
+	MarkMessageReadWithTypingFunc   func(ctx context.Context, account *whatsapp.Account, messageID string) error
+	TypingIndicatorsSent            []string
 	GetMediaURLFunc            func(ctx context.Context, mediaID string, account *whatsapp.Account) (string, error)
 	DownloadMediaFunc          func(ctx context.Context, mediaURL, accessToken string) ([]byte, error)
 	UploadMediaFunc            func(ctx context.Context, account *whatsapp.Account, data []byte, mimeType, filename string) (string, error)
@@ -192,6 +194,23 @@ func (m *MockWhatsAppClient) MarkMessageRead(ctx context.Context, account *whats
 	return nil
 }
 
+// MarkMessageReadWithTyping mocks read + typing indicator.
+func (m *MockWhatsAppClient) MarkMessageReadWithTyping(ctx context.Context, account *whatsapp.Account, messageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.Error != nil {
+		return m.Error
+	}
+
+	m.TypingIndicatorsSent = append(m.TypingIndicatorsSent, messageID)
+
+	if m.MarkMessageReadWithTypingFunc != nil {
+		return m.MarkMessageReadWithTypingFunc(ctx, account, messageID)
+	}
+	return nil
+}
+
 // GetMediaURL mocks getting a media URL.
 func (m *MockWhatsAppClient) GetMediaURL(ctx context.Context, mediaID string, account *whatsapp.Account) (string, error) {
 	if m.Error != nil {
@@ -230,6 +249,7 @@ func (m *MockWhatsAppClient) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.SentMessages = m.SentMessages[:0]
+	m.TypingIndicatorsSent = m.TypingIndicatorsSent[:0]
 	m.Error = nil
 	m.messageCounter = 0
 }

@@ -978,6 +978,8 @@ func (a *App) UpdateAvailability(r *fastglue.Request) error {
 		}
 	}
 
+	a.NotifyWidgetLiveUpdate(orgID, "agents", "transfers")
+
 	return r.SendEnvelope(map[string]any{
 		"message":            "Availability updated successfully",
 		"is_available":       user.IsAvailable,

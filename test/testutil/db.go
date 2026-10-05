@@ -90,6 +90,7 @@ func runMigrations(db *gorm.DB) error {
 		&models.APIKey{},
 		&models.SSOProvider{},
 		&models.Webhook{},
+		&models.WebhookDelivery{},
 		&models.CustomAction{},
 		&models.UserAvailabilityLog{},
 		// WhatsApp models
@@ -99,6 +100,7 @@ func runMigrations(db *gorm.DB) error {
 		&models.ContactList{},
 		&models.ContactListMember{},
 		&models.GoogleCredential{},
+		&models.UserPasskey{},
 		&models.Message{},
 		&models.Template{},
 		&models.WhatsAppFlow{},
@@ -131,6 +133,9 @@ func runMigrations(db *gorm.DB) error {
 		&models.CallPermission{},
 		// Audit
 		&models.AuditLog{},
+		// AI usage & shared Meta app
+		&models.AIUsageLog{},
+		&models.SharedMetaAppCredentials{},
 	)
 }
 
@@ -138,6 +143,8 @@ func runMigrations(db *gorm.DB) error {
 // Uses TRUNCATE CASCADE to handle foreign key constraints properly.
 func cleanupTables(db *gorm.DB) {
 	tables := []string{
+		"ai_usage_logs",
+		"shared_meta_app_credentials",
 		// Dashboard tables
 		"widgets",
 		// Catalog tables
@@ -177,6 +184,7 @@ func cleanupTables(db *gorm.DB) {
 		"teams",
 		"api_keys",
 		"sso_providers",
+		"webhook_deliveries",
 		"webhooks",
 		"custom_actions",
 		"user_availability_logs",
@@ -221,6 +229,7 @@ func TruncateTables(db *gorm.DB) {
 		"teams",
 		"api_keys",
 		"sso_providers",
+		"webhook_deliveries",
 		"webhooks",
 		"custom_actions",
 		"user_availability_logs",

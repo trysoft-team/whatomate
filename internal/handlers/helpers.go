@@ -131,3 +131,14 @@ func parseDateRange(startStr, endStr string) (start, end time.Time, errMsg strin
 	end = endOfDay(end)
 	return start, end, ""
 }
+
+// uuidPtrEqual reports whether two optional UUIDs are equal (both nil or same value).
+func uuidPtrEqual(a, b *uuid.UUID) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}

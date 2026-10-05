@@ -11,7 +11,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { ArrowLeft, Save, Volume2, Grid3X3, Hash, Globe, Users, ExternalLink, Clock, PhoneOff } from 'lucide-vue-next'
+import { Card } from '@/components/ui/card'
+import { ArrowLeft, Save, Volume2, Grid3X3, Hash, Globe, Users, ExternalLink, Clock, PhoneOff, GitBranch, Variable, CheckCircle2, Timer, Tag, MessageSquare, Zap, Languages, Mic, AudioLines, Bot, PhoneForwarded, Sparkles, Code2 } from 'lucide-vue-next'
 import AuditLogPanel from '@/components/shared/AuditLogPanel.vue'
 import MetadataPanel from '@/components/shared/MetadataPanel.vue'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -27,6 +28,21 @@ import TransferNode from '@/components/calling/nodes/TransferNode.vue'
 import GotoFlowNode from '@/components/calling/nodes/GotoFlowNode.vue'
 import TimingNode from '@/components/calling/nodes/TimingNode.vue'
 import HangupNode from '@/components/calling/nodes/HangupNode.vue'
+import ConditionNode from '@/components/calling/nodes/ConditionNode.vue'
+import SetVariableNode from '@/components/calling/nodes/SetVariableNode.vue'
+import ConfirmNode from '@/components/calling/nodes/ConfirmNode.vue'
+import DelayNode from '@/components/calling/nodes/DelayNode.vue'
+import SetLabelsNode from '@/components/calling/nodes/SetLabelsNode.vue'
+import SendMessageNode from '@/components/calling/nodes/SendMessageNode.vue'
+import WebhookNode from '@/components/calling/nodes/WebhookNode.vue'
+import LanguageNode from '@/components/calling/nodes/LanguageNode.vue'
+import VoicemailNode from '@/components/calling/nodes/VoicemailNode.vue'
+import SpeechInputNode from '@/components/calling/nodes/SpeechInputNode.vue'
+import AIVoiceNode from '@/components/calling/nodes/AIVoiceNode.vue'
+import AICallNode from '@/components/calling/nodes/AICallNode.vue'
+import ExecuteFunctionNode from '@/components/calling/nodes/ExecuteFunctionNode.vue'
+import DialOutNode from '@/components/calling/nodes/DialOutNode.vue'
+import StartNode from '@/components/calling/nodes/StartNode.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -52,7 +68,9 @@ const loadError = ref(false)
 const showDeleteNodeConfirm = ref(false)
 
 // Vue Flow custom node types — cast to any to avoid strict NodeComponent type checks
+const START_NODE_ID = '__start__'
 const nodeTypes: any = {
+  start: markRaw(StartNode),
   greeting: markRaw(GreetingNode),
   menu: markRaw(MenuNode),
   gather: markRaw(GatherNode),
@@ -61,19 +79,62 @@ const nodeTypes: any = {
   goto_flow: markRaw(GotoFlowNode),
   timing: markRaw(TimingNode),
   hangup: markRaw(HangupNode),
+  condition: markRaw(ConditionNode),
+  set_variable: markRaw(SetVariableNode),
+  confirm: markRaw(ConfirmNode),
+  delay: markRaw(DelayNode),
+  set_labels: markRaw(SetLabelsNode),
+  send_message: markRaw(SendMessageNode),
+  webhook: markRaw(WebhookNode),
+  language: markRaw(LanguageNode),
+  voicemail: markRaw(VoicemailNode),
+  speech_input: markRaw(SpeechInputNode),
+  ai_voice: markRaw(AIVoiceNode),
+  ai_call: markRaw(AICallNode),
+  execute_function: markRaw(ExecuteFunctionNode),
+  dial_out: markRaw(DialOutNode),
 }
 
-// Node palette
-const palette: { type: IVRNodeType; label: string; icon: any; color: string }[] = [
-  { type: 'greeting', label: 'Greeting', icon: Volume2, color: 'bg-green-600' },
-  { type: 'menu', label: 'Menu', icon: Grid3X3, color: 'bg-purple-600' },
-  { type: 'gather', label: 'Gather', icon: Hash, color: 'bg-blue-600' },
-  { type: 'http_callback', label: 'HTTP', icon: Globe, color: 'bg-orange-600' },
-  { type: 'transfer', label: 'Transfer', icon: Users, color: 'bg-amber-600' },
-  { type: 'goto_flow', label: 'Goto Flow', icon: ExternalLink, color: 'bg-teal-600' },
-  { type: 'timing', label: 'Timing', icon: Clock, color: 'bg-cyan-600' },
-  { type: 'hangup', label: 'Hangup', icon: PhoneOff, color: 'bg-red-600' },
+// Node palette — categorized like the chatbot flow builder
+type PaletteItem = { type: IVRNodeType; label: string; icon: any; color: string; category: string }
+const palette: PaletteItem[] = [
+  { type: 'greeting', label: 'Greeting', icon: Volume2, color: 'bg-green-600', category: 'Prompt' },
+  { type: 'menu', label: 'Menu', icon: Grid3X3, color: 'bg-purple-600', category: 'Prompt' },
+  { type: 'gather', label: 'Gather', icon: Hash, color: 'bg-blue-600', category: 'Prompt' },
+  { type: 'confirm', label: 'Confirm', icon: CheckCircle2, color: 'bg-emerald-600', category: 'Prompt' },
+  { type: 'http_callback', label: 'HTTP', icon: Globe, color: 'bg-orange-600', category: 'Request' },
+  { type: 'execute_function', label: 'Execute Function', icon: Code2, color: 'bg-orange-700', category: 'Request' },
+  { type: 'webhook', label: 'Webhook', icon: Zap, color: 'bg-orange-800', category: 'Request' },
+  { type: 'send_message', label: 'Send Message', icon: MessageSquare, color: 'bg-green-700', category: 'Request' },
+  { type: 'set_variable', label: 'Set Variable', icon: Variable, color: 'bg-fuchsia-600', category: 'Input' },
+  { type: 'set_labels', label: 'Labels', icon: Tag, color: 'bg-pink-600', category: 'Input' },
+  { type: 'language', label: 'Language', icon: Languages, color: 'bg-violet-600', category: 'Input' },
+  { type: 'speech_input', label: 'Speech', icon: AudioLines, color: 'bg-blue-800', category: 'Input' },
+  { type: 'voicemail', label: 'Voicemail', icon: Mic, color: 'bg-rose-700', category: 'Prompt' },
+  { type: 'ai_voice', label: 'AI Voice', icon: Bot, color: 'bg-emerald-800', category: 'Prompt' },
+  { type: 'ai_call', label: 'AI Call', icon: Sparkles, color: 'bg-violet-700', category: 'Prompt' },
+  { type: 'condition', label: 'Condition', icon: GitBranch, color: 'bg-indigo-600', category: 'Logic' },
+  { type: 'delay', label: 'Delay', icon: Timer, color: 'bg-sky-600', category: 'Logic' },
+  { type: 'timing', label: 'Timing', icon: Clock, color: 'bg-cyan-600', category: 'Logic' },
+  { type: 'transfer', label: 'Transfer', icon: Users, color: 'bg-amber-600', category: 'Logic' },
+  { type: 'dial_out', label: 'Dial Out', icon: PhoneForwarded, color: 'bg-amber-800', category: 'Logic' },
+  { type: 'goto_flow', label: 'Go to Flow', icon: ExternalLink, color: 'bg-teal-600', category: 'Logic' },
+  { type: 'hangup', label: 'Hangup', icon: PhoneOff, color: 'bg-red-600', category: 'Logic' },
 ]
+
+const paletteCategories = ['All', 'Prompt', 'Request', 'Input', 'Logic'] as const
+const paletteCategory = ref<(typeof paletteCategories)[number]>('All')
+const paletteSearch = ref('')
+
+const filteredPalette = computed(() => {
+  const q = paletteSearch.value.trim().toLowerCase()
+  return palette.filter((p) => {
+    if (paletteCategory.value !== 'All' && p.category !== paletteCategory.value) return false
+    if (!q) return true
+    return p.label.toLowerCase().includes(q) || p.type.includes(q) || p.category.toLowerCase().includes(q)
+  })
+})
+
 
 // Vue Flow instance
 const { nodes, edges, addNodes, addEdges, removeNodes, removeEdges, onConnect, project, fitView } = useVueFlow({
@@ -109,14 +170,60 @@ function addNodeFromPalette(type: IVRNodeType) {
   // Place node at center of viewport
   const pos = project({ x: window.innerWidth / 2 - 100, y: window.innerHeight / 2 - 50 })
   const id = `node_${Date.now()}_${nodeCounter++}`
-  const isFirst = nodes.value.length === 0
 
-  const defaultConfigs: Record<IVRNodeType, Record<string, any>> = {
+  const defaultConfigs: Partial<Record<IVRNodeType, Record<string, any>>> = {
+    start: {},
     greeting: { audio_file: '', interruptible: false },
     menu: { audio_file: '', timeout_seconds: 10, max_retries: 3, options: {} },
     gather: { audio_file: '', max_digits: 10, terminator: '#', timeout_seconds: 10, max_retries: 3, store_as: '' },
+    confirm: {
+      variable: '',
+      prompt_template: 'You entered {{value}}. Press {{confirm_digit}} to confirm, or {{retry_digit}} to re-enter.',
+      confirm_digit: '1',
+      retry_digit: '2',
+      timeout_seconds: 10,
+      max_retries: 3,
+    },
+    condition: { field: '', operator: 'equals', value: '', case_sensitive: false },
+    set_variable: { assignments: [{ name: '', value: '' }] },
+    delay: { seconds: 3, mode: 'silence' },
+    set_labels: { add: [], remove: [] },
+    send_message: { body: '', to: '' },
+    webhook: { url: '', method: 'POST', headers: {}, body_template: '', timeout_seconds: 10 },
+    language: { locale: 'en' },
+    voicemail: { max_seconds: 60, terminator: '#', store_as: 'voicemail_key', beep: true },
+    speech_input: { max_seconds: 10, store_as: 'speech_text', language: '' },
+    ai_voice: { input_variable: 'speech_text', store_as: 'ai_reply', listen_seconds: 0, interruptible: true, system_prompt: '' },
+    ai_call: {
+      welcome_message: 'Hello! How can I help you today?',
+      system_instructions: '',
+      voice_provider: 'gemini',
+      openai_voice: 'alloy',
+      voice_id: 'Puck',
+      listen_seconds: 8,
+      max_turns: 8,
+      exit_digit: '',
+      transfer_team_id: '',
+      recording_enabled: false,
+      record_user: true,
+      record_assistant: true,
+      record_stereo: true,
+      transcription_enabled: false,
+      tools: [],
+    },
+    execute_function: {
+      name: '',
+      url: '',
+      method: 'POST',
+      headers: {},
+      body_template: '',
+      timeout_seconds: 15,
+      response_store_as: 'function_result',
+      response_path: '',
+    },
+    dial_out: { phone: '', ring_seconds: 45, max_talk_seconds: 300 },
     http_callback: { url: '', method: 'GET', headers: {}, body_template: '', timeout_seconds: 10 },
-    transfer: { team_id: '' },
+    transfer: { team_id: '', agent_id: '', overflow_team_id: '', announce_queue: false, queue_announce_text: '' },
     goto_flow: { flow_id: '' },
     timing: { schedule: [
       { day: 'monday', enabled: true, start_time: '09:00', end_time: '17:00' },
@@ -137,11 +244,39 @@ function addNodeFromPalette(type: IVRNodeType) {
     data: {
       label: type.replace('_', ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
       config: defaultConfigs[type] || {},
-      isEntryNode: isFirst,
+      isEntryNode: false,
     },
   }])
 
-  if (isFirst) entryNodeId.value = id
+  // First action node → auto-wire Start → it (parity with chatbot builder).
+  const startHasOutgoing = edges.value.some((e) => e.source === START_NODE_ID)
+  if (!startHasOutgoing && nodes.value.some((n) => n.id === START_NODE_ID)) {
+    addEdges([{
+      id: `edge_start_${id}`,
+      source: START_NODE_ID,
+      target: id,
+      sourceHandle: undefined,
+      type: 'default',
+      animated: true,
+      markerEnd: MarkerType.ArrowClosed,
+      label: '',
+    }])
+  }
+  selectedNodeId.value = id
+}
+
+function ensureStartNode() {
+  if (nodes.value.some((n) => n.type === 'start')) return
+  addNodes([
+    {
+      id: START_NODE_ID,
+      type: 'start',
+      position: { x: 100, y: 100 },
+      data: { label: 'Start', config: {}, isEntryNode: true },
+      deletable: false,
+    },
+  ])
+  entryNodeId.value = START_NODE_ID
 }
 
 // Handle new connections — one edge per output handle
@@ -223,13 +358,13 @@ function onUpdateNode(updatedIVRNode: IVRNode) {
 
 // Delete selected node — show confirmation first
 function requestDeleteSelectedNode() {
-  if (!selectedNode.value) return
+  if (!selectedNode.value || selectedNode.value.type === 'start') return
   showDeleteNodeConfirm.value = true
 }
 
 function confirmDeleteSelectedNode() {
   const node = selectedNode.value
-  if (!node) return
+  if (!node || node.type === 'start') return
   const nodeId = node.id
 
   // Remove connected edges first
@@ -241,13 +376,6 @@ function confirmDeleteSelectedNode() {
   removeNodes([nodeId])
   selectedNodeId.value = null
   showDeleteNodeConfirm.value = false
-
-  // If the deleted node was the entry, pick another
-  if (entryNodeId.value === nodeId && nodes.value.length > 0) {
-    const newEntry = nodes.value[0]
-    entryNodeId.value = newEntry.id
-    newEntry.data = { ...newEntry.data, isEntryNode: true }
-  }
 }
 
 // Convert Vue Flow state to IVRFlowData for saving
@@ -266,9 +394,15 @@ function toFlowData(): IVRFlowData {
     condition: e.sourceHandle || (e as any).label || 'default',
   }))
 
-  // Find entry node: first node or the one without incoming edges
-  const nodesWithIncoming = new Set(ivrEdges.map(e => e.to))
-  const entryNode = ivrNodes.find(n => !nodesWithIncoming.has(n.id))?.id || ivrNodes[0]?.id || ''
+  // Entry is always the Start sentinel when present (parity with chatbot).
+  const start = ivrNodes.find(n => n.type === 'start')
+  let entryNode = ''
+  if (start) {
+    entryNode = start.id
+  } else {
+    const nodesWithIncoming = new Set(ivrEdges.map(e => e.to))
+    entryNode = ivrNodes.find(n => !nodesWithIncoming.has(n.id))?.id || ivrNodes[0]?.id || ''
+  }
 
   return {
     version: 2,
@@ -280,7 +414,10 @@ function toFlowData(): IVRFlowData {
 
 // Load flow data into Vue Flow
 function loadFlowData(data: IVRFlowData) {
-  entryNodeId.value = data.entry_node || ''
+  // Legacy graphs may lack an explicit Start — inject and rewire like chatbot.
+  const hasStart = data.nodes.some(n => n.type === 'start')
+  const originalEntry = data.entry_node || data.nodes[0]?.id || ''
+  const effectiveEntry = hasStart ? data.entry_node : START_NODE_ID
 
   const vfNodes = data.nodes.map(n => ({
     id: n.id,
@@ -289,20 +426,50 @@ function loadFlowData(data: IVRFlowData) {
     data: {
       label: n.label,
       config: n.config,
-      isEntryNode: n.id === data.entry_node,
+      isEntryNode: n.id === effectiveEntry,
     },
+    deletable: n.type !== 'start',
   }))
 
   const vfEdges = data.edges.map((e, idx) => ({
     id: `edge_${idx}`,
     source: e.from,
     target: e.to,
-    sourceHandle: e.condition,
+    sourceHandle: e.condition !== 'default' ? e.condition : undefined,
     type: 'default' as const,
     animated: true,
     markerEnd: MarkerType.ArrowClosed,
     label: e.condition !== 'default' ? e.condition : '',
   }))
+
+  if (!hasStart) {
+    const entry = data.nodes.find(n => n.id === originalEntry)
+    const startPos = entry
+      ? { x: entry.position?.x ?? 100, y: (entry.position?.y ?? 100) - 140 }
+      : { x: 100, y: 100 }
+    vfNodes.unshift({
+      id: START_NODE_ID,
+      type: 'start',
+      position: startPos,
+      data: { label: 'Start', config: {}, isEntryNode: true },
+      deletable: false,
+    })
+    if (originalEntry) {
+      vfEdges.unshift({
+        id: 'edge_start',
+        source: START_NODE_ID,
+        target: originalEntry,
+        sourceHandle: undefined,
+        type: 'default' as const,
+        animated: true,
+        markerEnd: MarkerType.ArrowClosed,
+        label: '',
+      })
+    }
+    entryNodeId.value = START_NODE_ID
+  } else {
+    entryNodeId.value = data.entry_node || START_NODE_ID
+  }
 
   addNodes(vfNodes)
   addEdges(vfEdges)
@@ -369,6 +536,29 @@ const selectedIVRNode = computed<IVRNode | null>(() => {
 })
 
 // Load flow data from server
+const AI_IVR_FLOW_DRAFT_KEY = 'whatomate:ai-ivr-flow-draft'
+
+function hydrateAIGeneratedDraft(): boolean {
+  try {
+    const raw = sessionStorage.getItem(AI_IVR_FLOW_DRAFT_KEY)
+    if (!raw) return false
+    sessionStorage.removeItem(AI_IVR_FLOW_DRAFT_KEY)
+    const draft = JSON.parse(raw) as {
+      name?: string
+      description?: string
+      menu?: IVRFlowData
+    }
+    if (!draft.menu || draft.menu.version !== 2 || !Array.isArray(draft.menu.nodes)) {
+      return false
+    }
+    if (draft.name) flowName.value = draft.name
+    loadFlowData(draft.menu)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function loadFlow() {
   loading.value = true
   loadError.value = false
@@ -385,8 +575,12 @@ async function loadFlow() {
     flowCreatedByName.value = flow.created_by?.full_name || ''
     flowUpdatedByName.value = flow.updated_by?.full_name || ''
 
-    if (flow.menu && flow.menu.version === 2) {
+    if (route.query.ai === '1' && hydrateAIGeneratedDraft()) {
+      // AI draft replaces empty menu from create
+    } else if (flow.menu && flow.menu.version === 2) {
       loadFlowData(flow.menu)
+    } else {
+      ensureStartNode()
     }
   } catch {
     loadError.value = true
@@ -402,46 +596,87 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col">
-    <!-- Toolbar -->
-    <div class="flex items-center gap-3 px-4 py-2 border-b bg-background shrink-0">
-      <Button variant="ghost" size="icon" class="h-8 w-8" :aria-label="t('calling.backToFlows')" @click="router.push({ name: 'ivr-flows' })">
-        <ArrowLeft class="h-4 w-4" />
-      </Button>
-      <Input v-model="flowName" placeholder="Flow Name" class="h-8 text-sm max-w-[250px]" />
-      <div class="flex items-center gap-2 ml-4">
-        <Switch v-model:checked="isActive" />
-        <Label class="text-xs whitespace-nowrap">Active</Label>
-      </div>
-      <div class="flex items-center gap-2 ml-2">
-        <Switch v-model:checked="isCallStart" :disabled="!isActive" />
-        <Label class="text-xs whitespace-nowrap">Incoming Call Start</Label>
-      </div>
-      <div class="flex items-center gap-2 ml-2">
-        <Switch v-model:checked="isOutgoingEnd" :disabled="!isActive" />
-        <Label class="text-xs whitespace-nowrap">Outgoing Post-Call</Label>
-      </div>
-      <div class="flex-1" />
-      <Button :disabled="saving" size="sm" @click="saveFlow">
-        <Save class="h-4 w-4 mr-1" />
-        {{ saving ? t('calling.flowSaving') : t('calling.flowSave') }}
-      </Button>
-    </div>
+  <div class="flex flex-col h-screen bg-muted/30">
+    <!-- Header (mirrors chatbot flow builder) -->
+    <header class="border-b bg-background px-4 py-3 flex-shrink-0 space-y-2">
+      <div class="flex items-center gap-4">
+        <Button variant="ghost" size="icon" class="shrink-0" :aria-label="t('calling.backToFlows')" @click="router.push({ name: 'ivr-flows' })">
+          <ArrowLeft class="h-5 w-5" />
+        </Button>
 
-    <!-- Node Palette -->
-    <div class="flex items-center gap-2 px-4 py-2 border-b bg-muted/30 overflow-x-auto shrink-0">
-      <Button
-        v-for="p in palette"
-        :key="p.type"
-        variant="outline"
-        size="sm"
-        class="h-7 text-xs gap-1.5 shrink-0"
-        @click="addNodeFromPalette(p.type)"
-      >
-        <div :class="['w-2 h-2 rounded-full', p.color]" />
-        <component :is="p.icon" class="w-3 h-3" />
-        {{ p.label }}
-      </Button>
+        <div class="flex-1 flex items-center gap-4 min-w-0 flex-wrap">
+          <div class="flex items-center gap-2">
+            <Label class="text-sm text-muted-foreground whitespace-nowrap">Name</Label>
+            <Input v-model="flowName" placeholder="Flow name" class="w-48 font-medium" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between gap-3 pl-12 flex-wrap">
+        <div class="flex items-center gap-4 flex-wrap">
+          <div class="flex items-center gap-2">
+            <Switch v-model:checked="isActive" />
+            <span class="text-sm">{{ isActive ? 'Active' : 'Inactive' }}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <Switch v-model:checked="isCallStart" :disabled="!isActive" />
+            <span class="text-sm whitespace-nowrap">Incoming Call Start</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <Switch v-model:checked="isOutgoingEnd" :disabled="!isActive" />
+            <span class="text-sm whitespace-nowrap">Outgoing Post-Call</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <Button variant="outline" size="sm" @click="router.push({ name: 'ivr-flows' })">
+            Cancel
+          </Button>
+          <Button size="sm" :disabled="saving" @click="saveFlow">
+            <Save class="h-4 w-4 mr-2" />
+            {{ saving ? t('calling.flowSaving') : t('calling.flowSave') }}
+          </Button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Node palette: categorized + searchable -->
+    <div class="px-4 py-2 border-b bg-muted/30 shrink-0 space-y-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-muted-foreground shrink-0">Add node:</span>
+        <Input
+          v-model="paletteSearch"
+          placeholder="Search nodes…"
+          class="h-7 text-xs w-44"
+        />
+        <div class="flex gap-1 flex-wrap">
+          <Button
+            v-for="cat in paletteCategories"
+            :key="cat"
+            :variant="paletteCategory === cat ? 'default' : 'outline'"
+            size="sm"
+            class="h-7 text-xs"
+            @click="paletteCategory = cat"
+          >
+            {{ cat }}
+          </Button>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 content-start">
+        <Button
+          v-for="p in filteredPalette"
+          :key="p.type"
+          variant="outline"
+          size="sm"
+          class="h-7 text-xs gap-1.5"
+          @click="addNodeFromPalette(p.type)"
+        >
+          <div :class="['w-2 h-2 rounded-full', p.color]" />
+          <component :is="p.icon" class="w-3 h-3" />
+          {{ p.label }}
+        </Button>
+        <span v-if="filteredPalette.length === 0" class="text-xs text-muted-foreground">No nodes match</span>
+      </div>
     </div>
 
     <!-- Main content -->
@@ -480,7 +715,7 @@ onMounted(() => {
       </div>
 
       <!-- Right Panel -->
-      <div class="w-[420px] min-w-0 border-l bg-background shrink-0 flex flex-col overflow-hidden">
+      <Card class="w-[420px] min-w-0 border-y-0 border-r-0 rounded-none shrink-0 flex flex-col">
         <!-- Node Properties (when a node is selected) -->
         <div v-if="selectedIVRNode" class="flex-1 overflow-y-auto">
           <IVRNodeProperties
@@ -492,8 +727,8 @@ onMounted(() => {
         </div>
 
         <!-- Metadata + Activity Log (when no node is selected) -->
-        <ScrollArea v-else class="flex-1 [&>div>div]:!overflow-x-hidden">
-          <div class="p-4 space-y-4 overflow-hidden">
+        <ScrollArea v-else orientation="vertical" class="flex-1">
+          <div class="p-4 space-y-4 min-w-0">
             <MetadataPanel
               :created-at="flowCreatedAt"
               :updated-at="flowUpdatedAt"
@@ -503,7 +738,7 @@ onMounted(() => {
             <AuditLogPanel :key="auditRefreshKey" resource-type="ivr_flow" :resource-id="flowId" />
           </div>
         </ScrollArea>
-      </div>
+      </Card>
     </div>
 
     <!-- Node Delete Confirmation -->

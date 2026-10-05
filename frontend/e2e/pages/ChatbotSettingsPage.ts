@@ -10,7 +10,6 @@ export class ChatbotSettingsPage extends BasePage {
   readonly agentsTab: Locator
   readonly hoursTab: Locator
   readonly slaTab: Locator
-  readonly aiTab: Locator
   readonly saveButton: Locator
 
   constructor(page: Page) {
@@ -20,12 +19,16 @@ export class ChatbotSettingsPage extends BasePage {
     this.agentsTab = page.getByRole('tab', { name: /Agents/i })
     this.hoursTab = page.getByRole('tab', { name: /Hours/i })
     this.slaTab = page.getByRole('tab', { name: /SLA/i })
-    this.aiTab = page.getByRole('tab', { name: /AI/i })
     this.saveButton = page.getByRole('button', { name: /Save Changes/i })
   }
 
   async goto() {
     await this.page.goto('/settings/chatbot')
+    await this.page.waitForLoadState('networkidle')
+  }
+
+  async gotoAISettings() {
+    await this.page.goto('/settings/ai')
     await this.page.waitForLoadState('networkidle')
   }
 
@@ -44,10 +47,6 @@ export class ChatbotSettingsPage extends BasePage {
 
   async switchToSLATab() {
     await this.slaTab.click()
-  }
-
-  async switchToAITab() {
-    await this.aiTab.click()
   }
 
   // Messages tab helpers
@@ -233,7 +232,7 @@ export class ChatbotSettingsPage extends BasePage {
     await expect(this.page.getByText('Enable SLA Tracking')).toBeVisible()
   }
 
-  async expectAITabVisible() {
-    await expect(this.page.getByText('Enable AI Responses')).toBeVisible()
+  async expectAISettingsVisible() {
+    await expect(this.page.getByText('Enable AI')).toBeVisible()
   }
 }

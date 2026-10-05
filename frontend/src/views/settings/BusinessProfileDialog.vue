@@ -9,6 +9,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Loader2,
   Globe,
@@ -16,7 +18,9 @@ import {
   MapPin,
   Image as ImageIcon,
   AlertTriangle,
-  Pencil
+  Pencil,
+  BadgeCheck,
+  ExternalLink
 } from 'lucide-vue-next'
 
 interface Props {
@@ -88,9 +92,121 @@ const selectedVerticalLabel = computed(() => {
   return found?.label || ''
 })
 
+interface DisplayNameInfo {
+  verified_name: string
+  name_status: string
+  new_display_name: string
+  new_name_status: string
+  can_reregister: boolean
+  has_stored_pin: boolean
+}
+
+const displayName = ref<DisplayNameInfo | null>(null)
+const displayNameLoading = ref(false)
+const displayNameError = ref(false)
+const newDisplayName = ref('')
+const confirmingDisplayName = ref(false)
+const isRequestingDisplayName = ref(false)
+const reregisterPin = ref('')
+const isApplyingDisplayName = ref(false)
+
+const hasPendingDisplayName = computed(() =>
+  !!displayName.value?.new_display_name &&
+  !!displayName.value.new_name_status &&
+  displayName.value.new_name_status !== 'NONE'
+)
+
+const trimmedNewDisplayName = computed(() => newDisplayName.value.trim())
+
+function displayNameStatusLabel(status: string) {
+  const key = `businessProfile.displayNameStatus.${status}`
+  const label = t(key)
+  return label === key ? status : label
+}
+
+function displayNameStatusClass(status: string) {
+  switch (status) {
+    case 'APPROVED':
+    case 'AVAILABLE_WITHOUT_REVIEW':
+      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+    case 'PENDING_REVIEW':
+      return 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+    case 'DECLINED':
+    case 'EXPIRED':
+      return 'border-destructive/40 bg-destructive/10 text-destructive'
+    default:
+      return 'text-muted-foreground'
+  }
+}
+
+async function fetchDisplayName() {
+  if (!props.accountId) return
+  displayNameLoading.value = true
+  displayNameError.value = false
+  try {
+    const response = await api.get(`/accounts/${props.accountId}/display_name`)
+    displayName.value = response.data.data
+  } catch (error) {
+    console.error('Failed to fetch display name:', error)
+    displayName.value = null
+    displayNameError.value = true
+  } finally {
+    displayNameLoading.value = false
+  }
+}
+
+function startDisplayNameRequest() {
+  const name = trimmedNewDisplayName.value
+  if (!name) return
+  if (name === displayName.value?.verified_name) {
+    toast.error(t('businessProfile.displayNameSame'))
+    return
+  }
+  confirmingDisplayName.value = true
+}
+
+async function submitDisplayNameRequest() {
+  if (!props.accountId || !trimmedNewDisplayName.value) return
+  isRequestingDisplayName.value = true
+  try {
+    const response = await api.post(`/accounts/${props.accountId}/display_name`, {
+      display_name: trimmedNewDisplayName.value
+    })
+    const data = response.data.data
+    displayName.value = displayName.value ? { ...displayName.value, ...data } : data
+    newDisplayName.value = ''
+    confirmingDisplayName.value = false
+    toast.success(t('businessProfile.displayNameSubmitted'))
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || t('common.failedUpdate', { resource: t('businessProfile.displayName') }))
+  } finally {
+    isRequestingDisplayName.value = false
+  }
+}
+
+async function applyDisplayName() {
+  if (!props.accountId) return
+  isApplyingDisplayName.value = true
+  try {
+    await api.post(`/accounts/${props.accountId}/display_name/apply`, {
+      pin: reregisterPin.value.trim()
+    })
+    reregisterPin.value = ''
+    toast.success(t('businessProfile.displayNameApplied'))
+    await fetchDisplayName()
+  } catch (error: any) {
+    toast.error(error.response?.data?.message || t('common.failedUpdate', { resource: t('businessProfile.displayName') }))
+  } finally {
+    isApplyingDisplayName.value = false
+  }
+}
+
 watch(() => props.open, async (isOpen) => {
   if (isOpen && props.accountId) {
-    await fetchProfile()
+    newDisplayName.value = ''
+    reregisterPin.value = ''
+    confirmingDisplayName.value = false
+    await Promise.all([fetchProfile(), fetchDisplayName()])
   }
 })
 
@@ -264,6 +380,135 @@ async function handleFileChange(event: Event) {
             <p class="text-xs text-muted-foreground mt-1">
               {{ $t('businessProfile.profilePictureHint') }}
             </p>
+          </div>
+        </div>
+
+        <!-- Display Name -->
+        <div class="md:col-span-2 space-y-3 rounded-lg border border-border p-4" data-testid="display-name-section">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <Label>{{ $t('businessProfile.displayName') }}</Label>
+              <p class="text-xs text-muted-foreground mt-1">
+                {{ $t('businessProfile.displayNameHint') }}
+                <a
+                  href="https://www.facebook.com/business/help/757569725593362"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center gap-0.5 underline underline-offset-2 hover:text-foreground"
+                >
+                  {{ $t('businessProfile.displayNameGuidelines') }}
+                  <ExternalLink class="h-3 w-3" />
+                </a>
+              </p>
+            </div>
+            <Loader2 v-if="displayNameLoading" class="h-4 w-4 animate-spin text-muted-foreground shrink-0" />
+          </div>
+
+          <p v-if="displayNameError" class="text-xs text-destructive">
+            {{ $t('businessProfile.displayNameLoadFailed') }}
+          </p>
+
+          <template v-if="displayName">
+            <div class="flex flex-wrap items-center gap-2 text-sm">
+              <span class="text-muted-foreground">{{ $t('businessProfile.displayNameCurrent') }}:</span>
+              <span class="font-medium" data-testid="display-name-current">{{ displayName.verified_name || '—' }}</span>
+              <Badge v-if="displayName.name_status" variant="outline" :class="displayNameStatusClass(displayName.name_status)">
+                {{ displayNameStatusLabel(displayName.name_status) }}
+              </Badge>
+            </div>
+
+            <div v-if="hasPendingDisplayName" class="space-y-2" data-testid="display-name-pending">
+              <div class="flex flex-wrap items-center gap-2 text-sm">
+                <span class="text-muted-foreground">{{ $t('businessProfile.displayNameRequested') }}:</span>
+                <span class="font-medium">{{ displayName.new_display_name }}</span>
+                <Badge variant="outline" :class="displayNameStatusClass(displayName.new_name_status)">
+                  {{ displayNameStatusLabel(displayName.new_name_status) }}
+                </Badge>
+              </div>
+
+              <p v-if="displayName.new_name_status === 'DECLINED'" class="text-xs text-destructive">
+                {{ $t('businessProfile.displayNameDeclined') }}
+              </p>
+
+              <template v-if="displayName.new_name_status === 'APPROVED'">
+                <div v-if="displayName.can_reregister" class="rounded-md bg-emerald-500/5 border border-emerald-500/30 p-3 space-y-2">
+                  <p class="text-xs flex items-start gap-1.5">
+                    <BadgeCheck class="h-4 w-4 text-emerald-600 shrink-0" />
+                    {{ $t('businessProfile.displayNameApproved') }}
+                  </p>
+                  <div class="flex flex-wrap items-end gap-2">
+                    <div class="space-y-1">
+                      <Label for="reregister-pin" class="text-xs">{{ $t('businessProfile.displayNamePin') }}</Label>
+                      <Input
+                        id="reregister-pin"
+                        v-model="reregisterPin"
+                        class="w-44"
+                        inputmode="numeric"
+                        maxlength="6"
+                        autocomplete="off"
+                        :placeholder="displayName.has_stored_pin ? $t('businessProfile.displayNamePinStored') : $t('businessProfile.displayNamePinRequired')"
+                        @keydown.enter.prevent="applyDisplayName"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      :disabled="isApplyingDisplayName || (!displayName.has_stored_pin && reregisterPin.trim().length !== 6)"
+                      data-testid="display-name-apply"
+                      @click="applyDisplayName"
+                    >
+                      <Loader2 v-if="isApplyingDisplayName" class="h-4 w-4 mr-1 animate-spin" />
+                      {{ $t('businessProfile.displayNameApply') }}
+                    </Button>
+                  </div>
+                </div>
+                <p v-else class="text-xs text-muted-foreground">
+                  {{ $t('businessProfile.displayNameApprovedSmb') }}
+                </p>
+              </template>
+            </div>
+          </template>
+
+          <div class="space-y-2">
+            <Label for="new-display-name" class="text-xs">{{ $t('businessProfile.displayNameNew') }}</Label>
+            <div class="flex gap-2">
+              <Input
+                id="new-display-name"
+                v-model="newDisplayName"
+                :placeholder="$t('businessProfile.displayNamePlaceholder')"
+                maxlength="100"
+                :disabled="isRequestingDisplayName"
+                data-testid="display-name-input"
+                @input="confirmingDisplayName = false"
+                @keydown.enter.prevent="startDisplayNameRequest"
+              />
+              <Button
+                v-if="!confirmingDisplayName"
+                type="button"
+                variant="outline"
+                :disabled="!trimmedNewDisplayName"
+                data-testid="display-name-request"
+                @click="startDisplayNameRequest"
+              >
+                {{ $t('businessProfile.displayNameRequest') }}
+              </Button>
+            </div>
+            <div
+              v-if="confirmingDisplayName"
+              class="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 space-y-2"
+              data-testid="display-name-confirm"
+            >
+              <p class="text-xs">{{ $t('businessProfile.displayNameConfirm', { name: trimmedNewDisplayName }) }}</p>
+              <div class="flex justify-end gap-2">
+                <Button type="button" variant="ghost" size="sm" :disabled="isRequestingDisplayName" @click="confirmingDisplayName = false">
+                  {{ $t('businessProfile.displayNameCancel') }}
+                </Button>
+                <Button type="button" size="sm" :disabled="isRequestingDisplayName" data-testid="display-name-submit" @click="submitDisplayNameRequest">
+                  <Loader2 v-if="isRequestingDisplayName" class="h-4 w-4 mr-1 animate-spin" />
+                  {{ $t('businessProfile.displayNameSubmit') }}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
 

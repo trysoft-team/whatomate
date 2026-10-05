@@ -48,7 +48,13 @@ config_id = ""   # WhatsApp Config ID for frontend login
 See [Configuration](/whatomate/getting-started/configuration) for the full `[whatsapp]` block and environment-variable overrides.
 
 <Aside type="note">
-  These can also be set **per organization** — if an org's settings carry `meta_app_id`, `meta_config_id`, and an encrypted `meta_app_secret_encrypted`, those override the global `config.toml` values for that org. This lets different tenants onboard against different Meta apps.
+  Credential resolution order for Embedded Signup:
+
+  1. **Organization private override** — `meta_app_id` / `meta_config_id` / encrypted secret in org settings (Settings → General, requires `accounts:write`).
+  2. **Shared Meta App pool** — platform credentials managed by **super admins** (`GET`/`PUT /api/admin/meta-app`) with share mode `global` or `selected` orgs.
+  3. **`config.toml` `[whatsapp]`** — server defaults.
+
+  Orgs without a private override inherit the shared pool when sharing applies; otherwise they use `config.toml`.
 </Aside>
 
 The frontend fetches the resolved (non-secret) values before launching the dialog:
@@ -117,7 +123,11 @@ If you omit the PIN, the server generates a secure random one. On success the ac
 During exchange-token, Whatomate inspects the phone number info from Meta and flags the account **`IsSMB`** when the number is on the Business App (`is_on_biz_app`) or its platform type is `SMB` / `SMB_CLOUD_API`. For these numbers:
 
 - **Registration is skipped.** SMB numbers are already registered through the Business App and don't support the two-step registration API — so both auto-registration and the manual `POST /api/accounts/{id}/register` set the account straight to `active` with **no PIN**.
-- **Messages mirror from the mobile app.** Conversations the owner has in the WhatsApp Business app appear in Whatomate, and vice versa.
+- **Contacts and chat history are imported.** Right after connecting, Whatomate asks Meta to replay the app's contacts and up to 180 days of chat history (`POST /{phone_id}/smb_app_data`). Meta accepts each request only once, and only within 24 hours of onboarding. If it fails, the connect response includes a warning, and the business must disconnect and go through signup again to retry. Imported messages keep their original time and status. They don't trigger chatbots or outbound webhooks. Media older than 14 days shows as `[media]`, and group chats aren't included.
+- **Messages sent from the phone appear in the inbox** (`smb_message_echoes`). Contacts added or renamed in the app update in Whatomate (`smb_app_state_sync`). Removing someone from the phone's address book keeps the contact and its chats.
+- **Disconnects are tracked.** If the business unlinks the number in the app, or Meta drops it because the phone wasn't opened for about 14 days, the account status becomes `disconnected`. It returns to `active` if the business reconnects.
+
+In the Meta App Dashboard (**WhatsApp → Configuration → Webhook fields**), subscribe the app to `history`, `smb_app_state_sync`, `smb_message_echoes` and `account_update`, in addition to `messages`. Coexistence numbers have a fixed throughput of 20 messages per second.
 
 <Aside type="note">
   Coexistence applies only when the connected number is on the WhatsApp Business app. A number provisioned directly on the Cloud API (not SMB) goes through normal registration with a PIN.

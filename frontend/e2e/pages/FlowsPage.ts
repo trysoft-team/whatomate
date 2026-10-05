@@ -6,9 +6,9 @@ export class FlowsPage extends BasePage {
   readonly createButton: Locator
   readonly syncButton: Locator
   readonly accountFilter: Locator
-  readonly createDialog: Locator
-  readonly editDialog: Locator
   readonly alertDialog: Locator
+  readonly backButton: Locator
+  readonly saveButton: Locator
 
   constructor(page: Page) {
     super(page)
@@ -16,10 +16,9 @@ export class FlowsPage extends BasePage {
     this.createButton = page.getByRole('button', { name: /Create Flow/i }).first()
     this.syncButton = page.getByRole('button', { name: /Sync from Meta/i }).first()
     this.accountFilter = page.locator('button[role="combobox"]').first()
-    // Distinguish dialogs by their title content
-    this.createDialog = page.locator('[role="dialog"][data-state="open"]').filter({ hasText: 'Create WhatsApp Flow' })
-    this.editDialog = page.locator('[role="dialog"][data-state="open"]').filter({ hasText: 'Edit WhatsApp Flow' })
     this.alertDialog = page.locator('[role="alertdialog"]')
+    this.backButton = page.locator('button').filter({ has: page.locator('.lucide-arrow-left') }).first()
+    this.saveButton = page.getByRole('button', { name: /Create Flow|Save Changes/i }).last()
   }
 
   async goto() {
@@ -27,19 +26,18 @@ export class FlowsPage extends BasePage {
     await this.page.waitForLoadState('networkidle')
   }
 
-  async openCreateDialog() {
+  async openCreatePage() {
     await this.createButton.click()
-    await this.createDialog.waitFor({ state: 'visible' })
+    await expect(this.page).toHaveURL(/\/flows\/new/)
   }
 
-  // Flow card actions
-  getFlowCard(index = 0): Locator {
-    return this.page.locator('.rounded-lg.border').nth(index)
+  async gotoNew() {
+    await this.page.goto('/flows/new')
+    await this.page.waitForLoadState('networkidle')
   }
 
   getEditButton(card?: Locator): Locator {
     const container = card || this.page
-    // Use lucide class without svg prefix for broader compatibility
     return container.locator('button').filter({ has: this.page.locator('.lucide-pencil') }).first()
   }
 
@@ -68,12 +66,11 @@ export class FlowsPage extends BasePage {
     return container.getByRole('button', { name: /Publish/i }).first()
   }
 
-  // Dialog interactions
   async clickEditButton() {
     const btn = this.getEditButton()
     if (await btn.isVisible()) {
       await btn.click()
-      await this.editDialog.waitFor({ state: 'visible' })
+      await expect(this.page).toHaveURL(/\/flows\/[^/]+\/edit/)
       return true
     }
     return false
@@ -98,7 +95,6 @@ export class FlowsPage extends BasePage {
     return false
   }
 
-  // Alert dialog actions
   async confirmDelete() {
     await this.alertDialog.getByRole('button', { name: /Delete/i }).click()
     await this.alertDialog.waitFor({ state: 'hidden' })
@@ -109,45 +105,38 @@ export class FlowsPage extends BasePage {
     await this.alertDialog.waitFor({ state: 'hidden' })
   }
 
-  // Form helpers
   async fillFlowName(name: string) {
-    await this.createDialog.locator('input').filter({ hasText: '' }).first().fill(name)
+    await this.page.getByPlaceholder(/Flow name/i).fill(name)
   }
 
   async selectAccount(accountName: string) {
-    const accountTrigger = this.createDialog.locator('button[role="combobox"]').first()
+    const accountTrigger = this.page.locator('button[role="combobox"]').first()
     await accountTrigger.click()
     await this.page.locator('[role="option"]').filter({ hasText: accountName }).click()
   }
 
   async selectCategory(category: string) {
-    const categoryTriggers = this.createDialog.locator('button[role="combobox"]')
+    const categoryTriggers = this.page.locator('button[role="combobox"]')
     await categoryTriggers.nth(1).click()
     await this.page.locator('[role="option"]').filter({ hasText: category }).click()
   }
 
-  // Filter by account
   async filterByAccount(accountName: string) {
     await this.accountFilter.click()
     await this.page.locator('[role="option"]').filter({ hasText: accountName }).click()
   }
 
-  // Sync flows
   async syncFlows() {
     await this.syncButton.click()
   }
 
-  // Assertions
   async expectPageVisible() {
     await expect(this.heading).toBeVisible()
   }
 
-  async expectDialogVisible() {
-    await expect(this.createDialog).toBeVisible()
-  }
-
-  async expectDialogHidden() {
-    await expect(this.createDialog).not.toBeVisible()
+  async expectEditorVisible() {
+    await expect(this.page.getByRole('heading', { name: /WhatsApp Flow/i })).toBeVisible()
+    await expect(this.page.getByText(/Screens/i).first()).toBeVisible()
   }
 
   async expectAlertDialogVisible() {
@@ -158,15 +147,10 @@ export class FlowsPage extends BasePage {
     await expect(this.alertDialog).not.toBeVisible()
   }
 
-  async expectDialogTitle(title: string | RegExp) {
-    await expect(this.createDialog).toContainText(title)
-  }
-
   async expectAlertDialogTitle(title: string | RegExp) {
     await expect(this.alertDialog).toContainText(title)
   }
 
-  // Check if button exists
   async hasEditButton(): Promise<boolean> {
     return this.getEditButton().isVisible()
   }
@@ -217,7 +201,6 @@ export class ChatbotFlowsPage extends BasePage {
     await expect(this.page).toHaveURL(/\/chatbot\/flows\/new/)
   }
 
-  // Flow card actions
   getFlowCard(index = 0): Locator {
     return this.page.locator('.rounded-lg.border').nth(index)
   }
@@ -237,7 +220,6 @@ export class ChatbotFlowsPage extends BasePage {
     return container.getByRole('button', { name: /Enable|Disable/i }).first()
   }
 
-  // Card interactions
   async clickEditButton() {
     const btn = this.getEditButton()
     if (await btn.isVisible()) {
@@ -266,7 +248,6 @@ export class ChatbotFlowsPage extends BasePage {
     return false
   }
 
-  // Alert dialog actions
   async confirmDelete() {
     await this.alertDialog.getByRole('button', { name: /Delete/i }).click()
     await this.alertDialog.waitFor({ state: 'hidden' })
@@ -277,7 +258,6 @@ export class ChatbotFlowsPage extends BasePage {
     await this.alertDialog.waitFor({ state: 'hidden' })
   }
 
-  // Assertions
   async expectPageVisible() {
     await expect(this.heading).toBeVisible()
   }
@@ -294,12 +274,10 @@ export class ChatbotFlowsPage extends BasePage {
     await expect(this.alertDialog).toContainText(title)
   }
 
-  // Check for flow builder elements
   async expectFlowBuilderVisible() {
     await expect(this.page.getByRole('heading', { name: 'Flow Settings' })).toBeVisible()
   }
 
-  // Check if button exists
   async hasEditButton(): Promise<boolean> {
     return this.getEditButton().isVisible()
   }

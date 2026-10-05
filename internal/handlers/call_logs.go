@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -152,13 +153,13 @@ func (a *App) GetCallLog(r *fastglue.Request) error {
 // authenticated same-origin URL served by ServeCallRecordingFile.
 // Users without call_logs:read permission can only access recordings for their own calls.
 func (a *App) GetCallRecording(r *fastglue.Request) error {
-	callLog, err := a.loadCallLogForRecording(r)
+	callLog, key, err := a.loadCallLogForRecording(r)
 	if err != nil {
 		return nil
 	}
 
 	if a.S3Client != nil {
-		url, err := a.S3Client.GetPresignedURL(r.RequestCtx, callLog.RecordingS3Key, 15*time.Minute)
+		url, err := a.S3Client.GetPresignedURL(r.RequestCtx, key, 15*time.Minute)
 		if err != nil {
 			a.Log.Error("Failed to generate presigned URL", "error", err, "call_log_id", callLog.ID)
 			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate recording URL", nil, "")
@@ -166,26 +167,33 @@ func (a *App) GetCallRecording(r *fastglue.Request) error {
 		return r.SendEnvelope(map[string]any{
 			"url":      url,
 			"duration": callLog.RecordingDuration,
+			"kind":     recordingKindParam(r),
 		})
 	}
 
 	base := strings.TrimSuffix(a.Config.Server.BasePath, "/")
+	kind := recordingKindParam(r)
+	fileURL := base + "/api/call-logs/" + callLog.ID.String() + "/recording/file"
+	if kind != "" && kind != "main" {
+		fileURL += "?kind=" + kind
+	}
 	return r.SendEnvelope(map[string]any{
-		"url":      base + "/api/call-logs/" + callLog.ID.String() + "/recording/file",
+		"url":      fileURL,
 		"duration": callLog.RecordingDuration,
+		"kind":     kind,
 	})
 }
 
 // ServeCallRecordingFile streams a locally stored recording. Used when storage
 // type is local (or S3 is not configured). Same permission rules as GetCallRecording.
 func (a *App) ServeCallRecordingFile(r *fastglue.Request) error {
-	callLog, err := a.loadCallLogForRecording(r)
+	_, key, err := a.loadCallLogForRecording(r)
 	if err != nil {
 		return nil
 	}
 
 	fs := storage.NewLocalFS(a.Config.Storage.LocalPath)
-	fullPath, err := fs.Resolve(callLog.RecordingS3Key)
+	fullPath, err := fs.Resolve(key)
 	if err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
 	}
@@ -204,23 +212,39 @@ func (a *App) ServeCallRecordingFile(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to read recording", nil, "")
 	}
 
+	ct := "audio/ogg"
+	if strings.HasSuffix(strings.ToLower(key), ".wav") {
+		ct = "audio/wav"
+	}
 	r.RequestCtx.Response.Header.Set("Cache-Control", "private, max-age=3600")
-	r.RequestCtx.SetContentType("audio/ogg")
+	r.RequestCtx.SetContentType(ct)
 	r.RequestCtx.SetBody(data)
 	r.RequestCtx.SetStatusCode(fasthttp.StatusOK)
 	return nil
 }
 
-func (a *App) loadCallLogForRecording(r *fastglue.Request) (*models.CallLog, error) {
+func recordingKindParam(r *fastglue.Request) string {
+	kind := strings.ToLower(strings.TrimSpace(string(r.RequestCtx.QueryArgs().Peek("kind"))))
+	switch kind {
+	case "user", "assistant", "stereo", "ai_user", "ai_assistant", "ai_stereo":
+		return strings.TrimPrefix(kind, "ai_")
+	case "main", "":
+		return "main"
+	default:
+		return "main"
+	}
+}
+
+func (a *App) loadCallLogForRecording(r *fastglue.Request) (*models.CallLog, string, error) {
 	orgID, userID, err := a.getOrgAndUserID(r)
 	if err != nil {
 		_ = r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-		return nil, errEnvelopeSent
+		return nil, "", errEnvelopeSent
 	}
 
 	logID, err := parsePathUUID(r, "id", "call log")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	query := a.DB.Where("id = ? AND organization_id = ?", logID, orgID)
@@ -231,13 +255,30 @@ func (a *App) loadCallLogForRecording(r *fastglue.Request) (*models.CallLog, err
 	var callLog models.CallLog
 	if err := query.First(&callLog).Error; err != nil {
 		_ = r.SendErrorEnvelope(fasthttp.StatusNotFound, "Call log not found", nil, "")
-		return nil, errEnvelopeSent
+		return nil, "", errEnvelopeSent
 	}
 
-	if callLog.RecordingS3Key == "" {
+	kind := recordingKindParam(r)
+	key := callLog.RecordingS3Key
+	if kind != "main" {
+		key = ""
+		if callLog.AICallArtifacts != nil {
+			if raw, err := json.Marshal(callLog.AICallArtifacts); err == nil {
+				var arts map[string]any
+				if json.Unmarshal(raw, &arts) == nil {
+					if recs, ok := arts["recordings"].(map[string]any); ok {
+						if v, ok := recs[kind].(string); ok {
+							key = strings.TrimSpace(v)
+						}
+					}
+				}
+			}
+		}
+	}
+	if key == "" {
 		_ = r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
-		return nil, errEnvelopeSent
+		return nil, "", errEnvelopeSent
 	}
 
-	return &callLog, nil
+	return &callLog, key, nil
 }

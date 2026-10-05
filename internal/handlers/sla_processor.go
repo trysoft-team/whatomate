@@ -234,6 +234,11 @@ func (p *SLAProcessor) escalateTransfers(orgID uuid.UUID, settings models.Chatbo
 
 		// Broadcast update
 		p.broadcastTransferUpdate(transfer, websocket.TypeTransferEscalated)
+		if updates["sla_breached"] == true {
+			p.app.NotifyWidgetLiveUpdate(transfer.OrganizationID, "sla", "transfers")
+		} else {
+			p.app.NotifyWidgetLiveUpdate(transfer.OrganizationID, "transfers", "sla")
+		}
 
 		// Send warning message to customer if configured
 		if newLevel == 1 && settings.SLA.WarningMessage != "" {

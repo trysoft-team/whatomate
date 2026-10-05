@@ -57,6 +57,7 @@ func createTestChatbotFlow(t *testing.T, app *handlers.App, orgID uuid.UUID, nam
 	flow := &models.ChatbotFlow{
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  orgID,
+		WhatsAppAccount: "test-account",
 		Name:            name,
 		Description:     "Test flow",
 		TriggerKeywords: models.StringArray{"hello", "start"},
@@ -583,6 +584,7 @@ func TestApp_CreateChatbotFlow(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		app := newTestApp(t)
 		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
 		perms := getChatbotFlowPermissions(t, app)
 		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
 		user := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -593,6 +595,7 @@ func TestApp_CreateChatbotFlow(t *testing.T) {
 		req := testutil.NewJSONRequest(t, map[string]any{
 			"name":               "Onboarding Flow",
 			"description":        "Collects user info",
+			"whatsapp_account":   account.Name,
 			"trigger_keywords":   []string{"onboard", "start"},
 			"initial_message":    "Welcome! Let us get you set up.",
 			"completion_message": "All done! Thank you.",
@@ -642,6 +645,7 @@ func TestApp_CreateChatbotFlow(t *testing.T) {
 		var flow models.ChatbotFlow
 		require.NoError(t, app.DB.First(&flow, "id = ?", parsedID).Error)
 		assert.Equal(t, "Onboarding Flow", flow.Name)
+		assert.Equal(t, account.Name, flow.WhatsAppAccount)
 		assert.True(t, flow.IsEnabled)
 	})
 }
@@ -750,6 +754,141 @@ func TestApp_UpdateChatbotFlow(t *testing.T) {
 		assert.Equal(t, updatedName, updated.Name)
 		assert.Equal(t, updatedDesc, updated.Description)
 		assert.False(t, updated.IsEnabled)
+	})
+
+	t.Run("set and clear account default", func(t *testing.T) {
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
+		perms := getChatbotFlowPermissions(t, app)
+		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
+		user := testutil.CreateTestUser(t, app.DB, org.ID,
+			testutil.WithEmail(testutil.UniqueEmail("update-flow-default")),
+			testutil.WithRoleID(&role.ID),
+		)
+		flow := &models.ChatbotFlow{
+			BaseModel:       models.BaseModel{ID: uuid.New()},
+			OrganizationID:  org.ID,
+			WhatsAppAccount: account.Name,
+			Name:            "Default Candidate",
+			IsEnabled:       true,
+		}
+		require.NoError(t, app.DB.Create(flow).Error)
+
+		setReq := testutil.NewJSONRequest(t, map[string]any{"is_default": true})
+		testutil.SetAuthContext(setReq, org.ID, user.ID)
+		testutil.SetPathParam(setReq, "id", flow.ID.String())
+		require.NoError(t, app.UpdateChatbotFlow(setReq))
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(setReq))
+
+		var updatedAccount models.WhatsAppAccount
+		require.NoError(t, app.DB.First(&updatedAccount, "id = ?", account.ID).Error)
+		require.NotNil(t, updatedAccount.DefaultChatbotFlowID)
+		assert.Equal(t, flow.ID, *updatedAccount.DefaultChatbotFlowID)
+
+		clearReq := testutil.NewJSONRequest(t, map[string]any{"is_default": false})
+		testutil.SetAuthContext(clearReq, org.ID, user.ID)
+		testutil.SetPathParam(clearReq, "id", flow.ID.String())
+		require.NoError(t, app.UpdateChatbotFlow(clearReq))
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(clearReq))
+
+		var clearedAccount models.WhatsAppAccount
+		require.NoError(t, app.DB.First(&clearedAccount, "id = ?", account.ID).Error)
+		assert.Nil(t, clearedAccount.DefaultChatbotFlowID)
+	})
+
+	t.Run("changing default cancels active sessions", func(t *testing.T) {
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
+		perms := getChatbotFlowPermissions(t, app)
+		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
+		user := testutil.CreateTestUser(t, app.DB, org.ID,
+			testutil.WithEmail(testutil.UniqueEmail("update-flow-default-sessions")),
+			testutil.WithRoleID(&role.ID),
+		)
+		contact := testutil.CreateTestContact(t, app.DB, org.ID)
+		flow := &models.ChatbotFlow{
+			BaseModel:       models.BaseModel{ID: uuid.New()},
+			OrganizationID:  org.ID,
+			WhatsAppAccount: account.Name,
+			Name:            "New Default",
+			IsEnabled:       true,
+		}
+		require.NoError(t, app.DB.Create(flow).Error)
+		session := &models.ChatbotSession{
+			BaseModel:       models.BaseModel{ID: uuid.New()},
+			OrganizationID:  org.ID,
+			ContactID:       contact.ID,
+			WhatsAppAccount: account.Name,
+			PhoneNumber:     contact.PhoneNumber,
+			Status:          models.SessionStatusActive,
+			StartedAt:       time.Now(),
+			LastActivityAt:  time.Now(),
+		}
+		require.NoError(t, app.DB.Create(session).Error)
+
+		req := testutil.NewJSONRequest(t, map[string]any{"is_default": true})
+		testutil.SetAuthContext(req, org.ID, user.ID)
+		testutil.SetPathParam(req, "id", flow.ID.String())
+		require.NoError(t, app.UpdateChatbotFlow(req))
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+		var updated models.ChatbotSession
+		require.NoError(t, app.DB.First(&updated, "id = ?", session.ID).Error)
+		assert.Equal(t, models.SessionStatusCancelled, updated.Status)
+		require.NotNil(t, updated.CompletedAt)
+	})
+
+	t.Run("save graph updates draft only until publish", func(t *testing.T) {
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
+		perms := getChatbotFlowPermissions(t, app)
+		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
+		user := testutil.CreateTestUser(t, app.DB, org.ID,
+			testutil.WithEmail(testutil.UniqueEmail("publish-flow")),
+			testutil.WithRoleID(&role.ID),
+		)
+		liveGraph := models.JSONB{"version": 2, "entry_node": "a", "nodes": []any{map[string]any{"id": "a"}}, "edges": []any{}}
+		flow := &models.ChatbotFlow{
+			BaseModel:             models.BaseModel{ID: uuid.New()},
+			OrganizationID:        org.ID,
+			WhatsAppAccount:       account.Name,
+			Name:                  "Publish Me",
+			IsEnabled:             true,
+			Graph:                 liveGraph,
+			DraftGraph:            liveGraph,
+			HasUnpublishedChanges: false,
+		}
+		require.NoError(t, app.DB.Create(flow).Error)
+
+		draftGraph := map[string]any{
+			"version": 2, "entry_node": "b",
+			"nodes": []any{map[string]any{"id": "b"}}, "edges": []any{},
+		}
+		upd := testutil.NewJSONRequest(t, map[string]any{"graph": draftGraph})
+		testutil.SetAuthContext(upd, org.ID, user.ID)
+		testutil.SetPathParam(upd, "id", flow.ID.String())
+		require.NoError(t, app.UpdateChatbotFlow(upd))
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(upd))
+
+		var after models.ChatbotFlow
+		require.NoError(t, app.DB.First(&after, "id = ?", flow.ID).Error)
+		assert.True(t, after.HasUnpublishedChanges)
+		assert.Equal(t, "a", after.Graph["entry_node"])
+		assert.Equal(t, "b", after.DraftGraph["entry_node"])
+
+		pub := testutil.NewJSONRequest(t, map[string]any{})
+		testutil.SetAuthContext(pub, org.ID, user.ID)
+		testutil.SetPathParam(pub, "id", flow.ID.String())
+		require.NoError(t, app.PublishChatbotFlow(pub))
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(pub))
+
+		require.NoError(t, app.DB.First(&after, "id = ?", flow.ID).Error)
+		assert.False(t, after.HasUnpublishedChanges)
+		assert.Equal(t, "b", after.Graph["entry_node"])
+		require.NotNil(t, after.PublishedAt)
 	})
 }
 
@@ -1652,6 +1791,7 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 	t.Run("validation error missing name", func(t *testing.T) {
 		app := newTestApp(t)
 		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
 		perms := getChatbotFlowPermissions(t, app)
 		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
 		user := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -1661,6 +1801,29 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 
 		req := testutil.NewJSONRequest(t, map[string]any{
 			"description":      "Missing name flow",
+			"whatsapp_account": account.Name,
+			"trigger_keywords": []string{"test"},
+			"enabled":          true,
+		})
+		testutil.SetAuthContext(req, org.ID, user.ID)
+
+		err := app.CreateChatbotFlow(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusBadRequest, testutil.GetResponseStatusCode(req))
+	})
+
+	t.Run("validation error missing account", func(t *testing.T) {
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		perms := getChatbotFlowPermissions(t, app)
+		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
+		user := testutil.CreateTestUser(t, app.DB, org.ID,
+			testutil.WithEmail(testutil.UniqueEmail("create-flow-noacct")),
+			testutil.WithRoleID(&role.ID),
+		)
+
+		req := testutil.NewJSONRequest(t, map[string]any{
+			"name":             "Missing account flow",
 			"trigger_keywords": []string{"test"},
 			"enabled":          true,
 		})
@@ -1674,6 +1837,7 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 	t.Run("create flow without steps", func(t *testing.T) {
 		app := newTestApp(t)
 		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
 		perms := getChatbotFlowPermissions(t, app)
 		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
 		user := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -1684,6 +1848,7 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 		req := testutil.NewJSONRequest(t, map[string]any{
 			"name":             "No Steps Flow",
 			"description":      "A flow with no steps",
+			"whatsapp_account": account.Name,
 			"trigger_keywords": []string{"nostep"},
 			"enabled":          true,
 		})
@@ -1707,11 +1872,13 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 		var flow models.ChatbotFlow
 		require.NoError(t, app.DB.First(&flow, "id = ?", parsedID).Error)
 		assert.Equal(t, "No Steps Flow", flow.Name)
+		assert.Equal(t, account.Name, flow.WhatsAppAccount)
 	})
 
 	t.Run("create flow with completion config", func(t *testing.T) {
 		app := newTestApp(t)
 		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
 		perms := getChatbotFlowPermissions(t, app)
 		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
 		user := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -1721,6 +1888,7 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 
 		req := testutil.NewJSONRequest(t, map[string]any{
 			"name":               "Webhook Flow",
+			"whatsapp_account":   account.Name,
 			"trigger_keywords":   []string{"webhook"},
 			"initial_message":    "Starting form...",
 			"completion_message": "Thank you for submitting!",
@@ -1796,6 +1964,7 @@ func TestApp_UpdateChatbotFlow_Additional(t *testing.T) {
 	t.Run("update replaces steps when provided", func(t *testing.T) {
 		app := newTestApp(t)
 		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
 		perms := getChatbotFlowPermissions(t, app)
 		role := testutil.CreateTestRole(t, app.DB, org.ID, "flow-admin", perms)
 		user := testutil.CreateTestUser(t, app.DB, org.ID,
@@ -1806,6 +1975,7 @@ func TestApp_UpdateChatbotFlow_Additional(t *testing.T) {
 		// Create flow with one step
 		createReq := testutil.NewJSONRequest(t, map[string]any{
 			"name":             "Steps Flow",
+			"whatsapp_account": account.Name,
 			"trigger_keywords": []string{"steps"},
 			"enabled":          true,
 			"steps": []map[string]any{
@@ -2461,6 +2631,47 @@ func TestApp_ListChatbotSessions(t *testing.T) {
 		err = json.Unmarshal(testutil.GetResponseBody(req2), &resp2)
 		require.NoError(t, err)
 		assert.Len(t, resp2.Data.Sessions, 1)
+	})
+}
+
+func TestApp_CountChatbotSessions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("counts active sessions for account", func(t *testing.T) {
+		app := newTestApp(t)
+		org := testutil.CreateTestOrganization(t, app.DB)
+		account := testutil.CreateTestWhatsAppAccount(t, app.DB, org.ID)
+		user := testutil.CreateTestUser(t, app.DB, org.ID)
+		contact := testutil.CreateTestContact(t, app.DB, org.ID)
+
+		session := &models.ChatbotSession{
+			BaseModel:       models.BaseModel{ID: uuid.New()},
+			OrganizationID:  org.ID,
+			ContactID:       contact.ID,
+			WhatsAppAccount: account.Name,
+			PhoneNumber:     contact.PhoneNumber,
+			Status:          models.SessionStatusActive,
+			StartedAt:       time.Now(),
+			LastActivityAt:  time.Now(),
+		}
+		require.NoError(t, app.DB.Create(session).Error)
+
+		req := testutil.NewGETRequest(t)
+		testutil.SetAuthContext(req, org.ID, user.ID)
+		req.RequestCtx.QueryArgs().Set("whatsapp_account", account.Name)
+		req.RequestCtx.QueryArgs().Set("status", "active")
+
+		err := app.CountChatbotSessions(req)
+		require.NoError(t, err)
+		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+		var resp struct {
+			Data struct {
+				Count int64 `json:"count"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+		assert.Equal(t, int64(1), resp.Data.Count)
 	})
 }
 

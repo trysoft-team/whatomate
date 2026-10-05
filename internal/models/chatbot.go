@@ -19,6 +19,13 @@ type AgentAssignmentConfig struct {
 	AllowQueuePickup        bool `gorm:"column:allow_agent_queue_pickup;default:true" json:"allow_agent_queue_pickup"`                // Allow agents to pick transfers from queue
 	AssignToSameAgent       bool `gorm:"column:assign_to_same_agent;default:true" json:"assign_to_same_agent"`                        // Auto-assign transfers to contact's existing agent
 	CurrentConversationOnly bool `gorm:"column:agent_current_conversation_only;default:false" json:"agent_current_conversation_only"` // Agents see only current session messages
+	// SessionTimeoutMinutes is how long chatbot automation stays paused after an
+	// agent replies (default 5). Contact metadata bot_muted_until is set to now+this.
+	SessionTimeoutMinutes int `gorm:"column:agent_session_timeout_minutes;default:5" json:"agent_session_timeout_minutes"`
+	// SessionTimeoutMessage is sent to the customer when the mute expires (empty = send nothing).
+	SessionTimeoutMessage string `gorm:"column:agent_session_timeout_message;type:text" json:"agent_session_timeout_message"`
+	// AppendAgentInitials appends the agent's initials on a new italic line at the end of each agent reply.
+	AppendAgentInitials bool `gorm:"column:agent_append_initials;default:false" json:"agent_append_initials"`
 }
 
 // SLAConfig holds SLA tracking settings
@@ -53,6 +60,18 @@ type AIConfig struct {
 	SystemPrompt   string     `gorm:"column:ai_system_prompt;type:text" json:"ai_system_prompt"`
 	IncludeHistory bool       `gorm:"column:ai_include_history;default:true" json:"ai_include_history"`
 	HistoryLimit   int        `gorm:"column:ai_history_limit;default:4" json:"ai_history_limit"`
+	HandoffSummary bool       `gorm:"column:ai_handoff_summary;default:true" json:"ai_handoff_summary"` // summarize the chat for the agent on transfer
+
+	// Voice-note transcription; empty provider means "same as the AI provider".
+	TranscribeProvider AIProvider `gorm:"column:transcribe_provider;size:20" json:"transcribe_provider"`
+	TranscribeModel    string     `gorm:"column:transcribe_model;size:100" json:"transcribe_model"`
+	TranscribeAPIKey   string     `gorm:"column:transcribe_api_key;type:text" json:"-"` // encrypted; empty reuses APIKey when the providers match
+
+	// Voice / TTS (org-level defaults for IVR AI Call and prompts)
+	VoiceProvider     string `gorm:"column:voice_provider;size:20" json:"voice_provider"`           // piper | openai | elevenlabs
+	ElevenLabsAPIKey  string `gorm:"column:elevenlabs_api_key;type:text" json:"-"`                  // encrypted
+	OpenAITTSVoice    string `gorm:"column:openai_tts_voice;size:50" json:"openai_tts_voice"`       // e.g. alloy
+	ElevenLabsVoiceID string `gorm:"column:elevenlabs_voice_id;size:100" json:"elevenlabs_voice_id"` // ElevenLabs voice_id
 }
 
 // PanelFieldConfig defines a field to display in the contact info panel
@@ -153,6 +172,12 @@ type ChatbotFlow struct {
 	WhatsAppAccount    string       `gorm:"size:100;index;not null" json:"whatsapp_account"` // References WhatsAppAccount.Name
 	Name               string       `gorm:"size:255;not null" json:"name"`
 	IsEnabled          bool         `gorm:"default:true" json:"is_enabled"`
+	// KeepSessionActive: when true, reaching End leaves the session Active with
+	// SessionData intact so the next inbound continues this flow (list/buttons/
+	// WA Flow) without wiping set variables.
+	// When false (default), every user message starts again from the flow entry
+	// (no mid-flow resume); End also clears SessionData / CurrentFlowID.
+	KeepSessionActive  bool         `gorm:"default:false" json:"keep_session_active"`
 	Description        string       `gorm:"type:text" json:"description"`
 	TriggerKeywords    StringArray  `gorm:"type:jsonb" json:"trigger_keywords"`
 	TriggerButtonID    string       `gorm:"size:100" json:"trigger_button_id"`
@@ -165,7 +190,10 @@ type ChatbotFlow struct {
 	TimeoutMessage     string       `gorm:"type:text" json:"timeout_message"`
 	CancelKeywords     StringArray  `gorm:"type:jsonb" json:"cancel_keywords"`
 	PanelConfig        JSONB        `gorm:"type:jsonb;default:'{}'" json:"panel_config"` // Contact info panel configuration
-	Graph              JSONB        `gorm:"type:jsonb" json:"graph"`                     // v2 flow graph: {version, nodes, edges, entry_node}
+	Graph              JSONB        `gorm:"type:jsonb" json:"graph"`                     // Published v2 flow graph (inbound runtime)
+	DraftGraph         JSONB        `gorm:"type:jsonb" json:"draft_graph"`               // Editor draft; Publish copies to Graph
+	PublishedAt        *time.Time   `json:"published_at,omitempty"`
+	HasUnpublishedChanges bool      `gorm:"default:false" json:"has_unpublished_changes"`
 	CreatedByID        *uuid.UUID   `gorm:"type:uuid" json:"created_by_id,omitempty"`
 	UpdatedByID        *uuid.UUID   `gorm:"type:uuid" json:"updated_by_id,omitempty"`
 
@@ -307,6 +335,7 @@ type AgentTransfer struct {
 	TeamID              *uuid.UUID     `gorm:"type:uuid;index" json:"team_id,omitempty"`          // Team queue (null = general queue)
 	TransferredByUserID *uuid.UUID     `gorm:"type:uuid" json:"transferred_by_user_id,omitempty"` // User who initiated the transfer (null for system)
 	Notes               string         `gorm:"type:text" json:"notes"`
+	AISummary           string         `gorm:"column:ai_summary;type:text" json:"ai_summary"` // generated handoff summary
 	TransferredAt       time.Time      `gorm:"autoCreateTime" json:"transferred_at"`
 	ResumedAt           *time.Time     `json:"resumed_at,omitempty"`
 	ResumedBy           *uuid.UUID     `gorm:"type:uuid" json:"resumed_by,omitempty"`

@@ -39,8 +39,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { MessageSquareText, Trash2, Save } from 'lucide-vue-next'
+import { MessageSquareText, Trash2, Save, Sparkles } from 'lucide-vue-next'
 import { CANNED_RESPONSE_CATEGORIES } from '@/lib/constants'
+import { takeAICannedResponseDraft } from '@/lib/cannedResponseDraft'
 
 const route = useRoute()
 const router = useRouter()
@@ -55,6 +56,8 @@ const isNotFound = ref(false)
 const isSaving = ref(false)
 const hasChanges = ref(false)
 const deleteDialogOpen = ref(false)
+// null unless the new-response form was filled by "Generate with AI"; '' when AI left no notes.
+const aiDraftNotes = ref<string | null>(null)
 
 const { showLeaveDialog, confirmLeave, cancelLeave } = useUnsavedChangesGuard(hasChanges)
 
@@ -82,8 +85,20 @@ const pageTitle = computed(() =>
 
 async function loadResponse() {
   if (isNew.value) {
+    const draft = takeAICannedResponseDraft()
+    if (draft) {
+      form.value = {
+        name: draft.name,
+        shortcut: draft.shortcut,
+        content: draft.content,
+        category: draft.category,
+        is_active: true,
+        buttons: (draft.buttons || []).map(b => ({ ...b })),
+      }
+      aiDraftNotes.value = draft.notes || ''
+    }
     isLoading.value = false
-    nextTick(() => { hasChanges.value = false })
+    nextTick(() => { hasChanges.value = !!draft })
     return
   }
   isLoading.value = true
@@ -237,6 +252,13 @@ onMounted(() => { loadResponse() })
           </div>
         </CardHeader>
         <CardContent class="space-y-4">
+          <div v-if="isNew && aiDraftNotes !== null" data-testid="ai-draft-notes" class="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/10 p-3 text-sm">
+            <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-violet-400 light:text-violet-600" />
+            <div>
+              <p class="font-medium">{{ $t('cannedResponses.aiDraftNotes') }}</p>
+              <p v-if="aiDraftNotes" class="text-muted-foreground">{{ aiDraftNotes }}</p>
+            </div>
+          </div>
           <div class="space-y-1.5">
             <Label class="text-xs">{{ $t('cannedResponses.name') }} <span class="text-destructive">*</span></Label>
             <Input v-model="form.name" placeholder="Welcome Message" :disabled="!canWrite" />

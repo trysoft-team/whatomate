@@ -1,13 +1,12 @@
 <script setup lang="ts">
+import type { DropdownMenuTriggerProps } from 'reka-ui'
 import { DropdownMenuTrigger as DropdownMenuTriggerPrimitive } from 'reka-ui'
 
-defineProps<{
-  asChild?: boolean
-}>()
+const props = defineProps<DropdownMenuTriggerProps>()
 </script>
 
 <template>
-  <DropdownMenuTriggerPrimitive :as-child="asChild">
+  <DropdownMenuTriggerPrimitive v-bind="props">
     <slot />
   </DropdownMenuTriggerPrimitive>
 </template>

@@ -19,12 +19,13 @@ const (
 	TypePong          = "pong"
 
 	// Agent transfer types
-	TypeAgentTransfer       = "agent_transfer"
-	TypeAgentTransferResume = "agent_transfer_resume"
-	TypeAgentTransferAssign = "agent_transfer_assign"
-	TypeTransferEscalation  = "transfer_escalation"
-	TypeTransferExpired     = "transfer_expired"
-	TypeTransferEscalated   = "transfer_escalated"
+	TypeAgentTransfer        = "agent_transfer"
+	TypeAgentTransferResume  = "agent_transfer_resume"
+	TypeAgentTransferAssign  = "agent_transfer_assign"
+	TypeAgentTransferSummary = "agent_transfer_summary"
+	TypeTransferEscalation   = "transfer_escalation"
+	TypeTransferExpired      = "transfer_expired"
+	TypeTransferEscalated    = "transfer_escalated"
 
 	// Campaign types
 	TypeCampaignStatsUpdate = "campaign_stats_update"
@@ -41,6 +42,9 @@ const (
 	TypeCallIncoming = "call_incoming"
 	TypeCallAnswered = "call_answered"
 	TypeCallEnded    = "call_ended"
+
+	// Dashboard widget live invalidation
+	TypeWidgetLiveUpdate = "widget_live_update"
 
 	// Call transfer types
 	TypeCallTransferWaiting    = "call_transfer_waiting"

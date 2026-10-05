@@ -141,6 +141,40 @@ POST /api/canned-responses
 }
 ```
 
+## Generate Canned Response with AI
+
+Draft a canned response from a plain-language description using the organization's AI provider. The draft is **not saved**; send it to `POST /api/canned-responses` to create it. Requires `canned_responses:write`.
+
+```bash
+POST /api/canned-responses/generate
+```
+
+### Request Body
+
+```json
+{
+  "prompt": "Apologise for a delayed order and ask for the order number"
+}
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "name": "Order delay apology",
+    "shortcut": "delay",
+    "category": "support",
+    "content": "Hi {{contact_name}}, we're sorry your order is running late. Could you share your order number ({{order_id}}) so we can check it?",
+    "buttons": [],
+    "notes": ""
+  }
+}
+```
+
+`buttons` holds up to 3 reply buttons or a single URL button. Names and shortcuts already used in the organization get a number appended. Errors: `400` when the prompt is empty, longer than 4000 characters, or AI is not configured; `429` when the provider quota is exhausted; `502` when the AI response is not a valid canned response.
+
 ## Update Canned Response
 
 Update an existing canned response.

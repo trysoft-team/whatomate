@@ -13,9 +13,11 @@ import { PageHeader, AuditLogPanel } from '@/components/shared'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { toast } from 'vue-sonner'
 import { Settings, Bell, Loader2, Globe, Phone, Upload, Play, Pause, Music, Mail } from 'lucide-vue-next'
-import { usersService, organizationService } from '@/services/api'
+import { usersService, organizationService, sharedMetaAppService, organizationsService, type MetaAppShareMode, type Organization } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { getTimezoneGroups } from '@/lib/timezones'
+import { setOrgDisplayPrefs, type TimeFormat } from '@/lib/orgDisplay'
+import { Checkbox } from '@/components/ui/checkbox'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -30,8 +32,10 @@ const orgID = computed(
 )
 const userID = computed(() => authStore.user?.id || '')
 const canWriteAccounts = computed(() => authStore.hasPermission('accounts', 'write'))
+const isSuperAdmin = computed(() => !!authStore.user?.is_super_admin)
 
 const isSubmitting = ref(false)
+const isSavingSharedMeta = ref(false)
 const isLoading = ref(true)
 
 // General Settings
@@ -39,15 +43,47 @@ const generalSettings = ref({
   organization_name: 'My Organization',
   default_timezone: 'UTC',
   date_format: 'YYYY-MM-DD',
+  time_format: '12h' as TimeFormat,
   mask_phone_numbers: false,
   meta_app_id: '',
   meta_config_id: '',
   meta_app_secret: '',
-  has_meta_app_secret: false
+  has_meta_app_secret: false,
+  meta_source: 'config' as 'org' | 'shared' | 'config',
+})
+
+const sharedMeta = ref({
+  has_app_secret: false,
+  share_enabled: false,
+  share_mode: 'global' as Exclude<MetaAppShareMode, 'off'>,
+  shared_org_ids: [] as string[],
+})
+const allOrganizations = ref<Organization[]>([])
+const sharingEnabled = computed({
+  get: () => sharedMeta.value.share_enabled,
+  set: (v: boolean) => {
+    sharedMeta.value.share_enabled = v
+    if (v && sharedMeta.value.share_mode !== 'global' && sharedMeta.value.share_mode !== 'selected') {
+      sharedMeta.value.share_mode = 'global'
+    }
+  },
 })
 
 const timezoneGroups = computed(() => getTimezoneGroups(generalSettings.value.default_timezone))
 const timezoneItemClass = 'text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100'
+
+function metaSourceLabel(source: string): string {
+  if (source === 'org') return t('settings.metaSourceOrg')
+  if (source === 'shared') return t('settings.metaSourceShared')
+  return t('settings.metaSourceConfig')
+}
+
+function toggleSharedOrg(id: string, checked: boolean) {
+  const set = new Set(sharedMeta.value.shared_org_ids)
+  if (checked) set.add(id)
+  else set.delete(id)
+  sharedMeta.value.shared_org_ids = Array.from(set)
+}
 
 // Notification Settings
 const notificationSettings = ref({
@@ -110,12 +146,19 @@ onMounted(async () => {
         organization_name: orgData.name || 'My Organization',
         default_timezone: orgData.settings?.timezone || 'UTC',
         date_format: orgData.settings?.date_format || 'YYYY-MM-DD',
+        time_format: (orgData.settings?.time_format === '24h' ? '24h' : '12h') as TimeFormat,
         mask_phone_numbers: orgData.settings?.mask_phone_numbers || false,
         meta_app_id: orgData.settings?.meta_app_id || '',
         meta_config_id: orgData.settings?.meta_config_id || '',
         meta_app_secret: '',
-        has_meta_app_secret: orgData.settings?.has_meta_app_secret || false
+        has_meta_app_secret: orgData.settings?.has_meta_app_secret || false,
+        meta_source: (orgData.settings?.meta_source as 'org' | 'shared' | 'config') || 'config',
       }
+      setOrgDisplayPrefs({
+        time_format: generalSettings.value.time_format,
+        date_format: generalSettings.value.date_format,
+        timezone: generalSettings.value.default_timezone,
+      })
       callingSettings.value = {
         calling_enabled: orgData.settings?.calling_enabled || false,
         max_call_duration: orgData.settings?.max_call_duration || 300,
@@ -143,12 +186,80 @@ onMounted(async () => {
         campaign_updates: user.settings.campaign_updates ?? true
       }
     }
+
+    if (user?.is_super_admin) {
+      await loadSharedMetaApp()
+    }
   } catch (error) {
     console.error('Failed to load settings:', error)
   } finally {
     isLoading.value = false
   }
 })
+
+async function loadSharedMetaApp() {
+  try {
+    const [sharedRes, orgsRes] = await Promise.all([
+      sharedMetaAppService.get(),
+      organizationsService.list(),
+    ])
+    const data = (sharedRes.data as any)?.data || sharedRes.data || {}
+    const mode = (data.share_mode || 'off') as MetaAppShareMode
+    sharedMeta.value = {
+      has_app_secret: !!data.has_app_secret,
+      share_enabled: mode === 'global' || mode === 'selected',
+      share_mode: mode === 'selected' ? 'selected' : 'global',
+      shared_org_ids: Array.isArray(data.shared_org_ids) ? data.shared_org_ids : [],
+    }
+    // If this org has no private override, show shared pool values in the main fields
+    // so super admins edit one set of credentials.
+    if (!generalSettings.value.meta_app_id && !generalSettings.value.meta_config_id && data.app_id) {
+      generalSettings.value.meta_app_id = data.app_id || ''
+      generalSettings.value.meta_config_id = data.config_id || ''
+      if (!generalSettings.value.has_meta_app_secret && data.has_app_secret) {
+        generalSettings.value.has_meta_app_secret = true
+      }
+    }
+    const orgList = (orgsRes.data as any)?.data?.organizations || (orgsRes.data as any)?.organizations || []
+    allOrganizations.value = orgList
+  } catch (error) {
+    console.error('Failed to load shared Meta App settings:', error)
+  }
+}
+
+async function saveSharedMetaApp() {
+  isSavingSharedMeta.value = true
+  try {
+    const payload: {
+      app_id: string
+      config_id: string
+      app_secret?: string
+      share_mode: MetaAppShareMode
+      shared_org_ids: string[]
+    } = {
+      // Reuse the single Meta App ID / Config / Secret fields above.
+      app_id: generalSettings.value.meta_app_id,
+      config_id: generalSettings.value.meta_config_id,
+      share_mode: sharedMeta.value.share_enabled ? sharedMeta.value.share_mode : 'off',
+      shared_org_ids: sharedMeta.value.shared_org_ids,
+    }
+    if (generalSettings.value.meta_app_secret) {
+      payload.app_secret = generalSettings.value.meta_app_secret
+    }
+    await sharedMetaAppService.update(payload)
+    await loadSharedMetaApp()
+    const orgResponse = await organizationService.getSettings()
+    const orgData = orgResponse.data.data || orgResponse.data
+    if (orgData?.settings?.meta_source) {
+      generalSettings.value.meta_source = orgData.settings.meta_source
+    }
+    toast.success(t('settings.sharedMetaSaved'))
+  } catch (error) {
+    toast.error(t('common.failedSave', { resource: t('settings.sharedMetaApp') }))
+  } finally {
+    isSavingSharedMeta.value = false
+  }
+}
 
 async function saveGeneralSettings() {
   isSubmitting.value = true
@@ -157,6 +268,7 @@ async function saveGeneralSettings() {
       name: generalSettings.value.organization_name,
       timezone: generalSettings.value.default_timezone,
       date_format: generalSettings.value.date_format,
+      time_format: generalSettings.value.time_format,
       mask_phone_numbers: generalSettings.value.mask_phone_numbers
     }
     if (canWriteAccounts.value) {
@@ -167,6 +279,11 @@ async function saveGeneralSettings() {
       }
     }
     await organizationService.updateSettings(payload)
+    setOrgDisplayPrefs({
+      time_format: generalSettings.value.time_format,
+      date_format: generalSettings.value.date_format,
+      timezone: generalSettings.value.default_timezone,
+    })
     toast.success(t('settings.generalSaved'))
     // Clear secret input after save
     generalSettings.value.meta_app_secret = ''
@@ -370,6 +487,19 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
                     </Select>
                   </div>
                 </div>
+                <div class="space-y-2 max-w-xs">
+                  <Label for="time_format" class="text-white/70 light:text-gray-700">{{ $t('settings.timeFormat') }}</Label>
+                  <Select v-model="generalSettings.time_format">
+                    <SelectTrigger id="time_format" class="bg-white/[0.04] border-white/[0.1] text-white/70 light:bg-white light:border-gray-200 light:text-gray-700">
+                      <SelectValue :placeholder="$t('settings.selectTimeFormat')" />
+                    </SelectTrigger>
+                    <SelectContent class="bg-[#141414] border-white/[0.08] light:bg-white light:border-gray-200">
+                      <SelectItem value="24h" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('settings.timeFormat24h') }}</SelectItem>
+                      <SelectItem value="12h" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('settings.timeFormat12h') }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p class="text-xs text-white/40 light:text-gray-500">{{ $t('settings.timeFormatDesc') }}</p>
+                </div>
                 <div class="space-y-2">
                   <Label class="text-white/70 light:text-gray-700">
                     <Globe class="h-4 w-4 inline mr-1" />
@@ -398,13 +528,18 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
               </div>
             </div>
 
-            <!-- Meta App Credentials Card (Gated on canWriteAccounts) -->
-            <div v-if="canWriteAccounts" class="mt-6 rounded-xl border border-white/[0.08] bg-white/[0.02] light:bg-white light:border-gray-200">
+            <!-- Meta App Credentials Card (accounts:write private override; super admin sharing) -->
+            <div v-if="canWriteAccounts || isSuperAdmin" class="mt-6 rounded-xl border border-white/[0.08] bg-white/[0.02] light:bg-white light:border-gray-200">
               <div class="p-6 pb-3">
                 <h3 class="text-lg font-semibold text-white light:text-gray-900">{{ $t('settings.metaAppCredentials') }}</h3>
                 <p class="text-sm text-white/40 light:text-gray-500">{{ $t('settings.metaAppCredentialsDesc') }}</p>
+                <p class="text-xs text-white/40 light:text-gray-500 mt-1">
+                  {{ $t('settings.metaSourceLabel') }}: {{ metaSourceLabel(generalSettings.meta_source) }}
+                </p>
               </div>
               <div class="p-6 pt-3 space-y-4">
+                <template v-if="canWriteAccounts || isSuperAdmin">
+                <p class="text-xs text-white/50 light:text-gray-500">{{ $t('settings.metaOrgOverrideHint') }}</p>
                 <div class="grid grid-cols-2 gap-4">
                   <div class="space-y-2">
                     <Label for="meta_app_id" class="text-white/70 light:text-gray-700">{{ $t('settings.metaAppId') }}</Label>
@@ -429,15 +564,66 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
                     id="meta_app_secret"
                     type="password"
                     v-model="generalSettings.meta_app_secret"
-                    :placeholder="generalSettings.has_meta_app_secret ? '••••••••••••' : 'Enter Meta App Secret'"
+                    :placeholder="generalSettings.has_meta_app_secret || sharedMeta.has_app_secret ? '••••••••••••' : 'Enter Meta App Secret'"
                   />
                 </div>
-                <div class="flex justify-end">
+                <div v-if="canWriteAccounts" class="flex justify-end">
                   <Button variant="outline" size="sm" class="bg-white/[0.04] border-white/[0.1] text-white/70 hover:bg-white/[0.08] hover:text-white light:bg-white light:border-gray-200 light:text-gray-700 light:hover:bg-gray-50" @click="saveGeneralSettings" :disabled="isSubmitting">
                     <Loader2 v-if="isSubmitting" class="mr-2 h-4 w-4 animate-spin" />
                     {{ $t('settings.save') }}
                   </Button>
                 </div>
+                </template>
+
+                <!-- Super admin: share the credentials above (on/off) -->
+                <template v-if="isSuperAdmin">
+                  <Separator class="bg-white/[0.08] light:bg-gray-200" />
+                  <div class="flex items-center justify-between gap-4">
+                    <div class="space-y-1 min-w-0">
+                      <h4 class="text-sm font-semibold text-white light:text-gray-900">{{ $t('settings.sharedMetaApp') }}</h4>
+                      <p class="text-xs text-white/40 light:text-gray-500">{{ $t('settings.sharedMetaAppDesc') }}</p>
+                    </div>
+                    <Switch
+                      :checked="sharingEnabled"
+                      @update:checked="sharingEnabled = $event"
+                    />
+                  </div>
+                  <div v-if="sharingEnabled" class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">{{ $t('settings.shareMode') }}</Label>
+                    <Select v-model="sharedMeta.share_mode">
+                      <SelectTrigger class="bg-white/[0.04] border-white/[0.1] text-white/70 light:bg-white light:border-gray-200 light:text-gray-700">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent class="bg-[#141414] border-white/[0.08] light:bg-white light:border-gray-200">
+                        <SelectItem value="global" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('settings.shareModeGlobal') }}</SelectItem>
+                        <SelectItem value="selected" class="text-white/70 focus:bg-white/[0.08] focus:text-white light:text-gray-700 light:focus:bg-gray-100">{{ $t('settings.shareModeSelected') }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div v-if="sharingEnabled && sharedMeta.share_mode === 'selected'" class="space-y-2">
+                    <Label class="text-white/70 light:text-gray-700">{{ $t('settings.sharedOrganizations') }}</Label>
+                    <div class="max-h-40 overflow-y-auto rounded-lg border border-white/[0.08] light:border-gray-200 p-3 space-y-2">
+                      <label
+                        v-for="org in allOrganizations"
+                        :key="org.id"
+                        class="flex items-center gap-2 text-sm text-white/70 light:text-gray-700 cursor-pointer"
+                      >
+                        <Checkbox
+                          :checked="sharedMeta.shared_org_ids.includes(org.id)"
+                          @update:checked="(v) => toggleSharedOrg(org.id, v === true)"
+                        />
+                        <span>{{ org.name }}</span>
+                      </label>
+                      <p v-if="allOrganizations.length === 0" class="text-xs text-white/40 light:text-gray-500">{{ $t('settings.noOrganizations') }}</p>
+                    </div>
+                  </div>
+                  <div class="flex justify-end">
+                    <Button variant="outline" size="sm" class="bg-white/[0.04] border-white/[0.1] text-white/70 hover:bg-white/[0.08] hover:text-white light:bg-white light:border-gray-200 light:text-gray-700 light:hover:bg-gray-50" @click="saveSharedMetaApp" :disabled="isSavingSharedMeta">
+                      <Loader2 v-if="isSavingSharedMeta" class="mr-2 h-4 w-4 animate-spin" />
+                      {{ $t('settings.saveSharedMeta') }}
+                    </Button>
+                  </div>
+                </template>
               </div>
             </div>
             <div v-if="orgID" class="mt-4">

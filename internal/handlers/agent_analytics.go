@@ -228,17 +228,26 @@ func (a *App) calculateSummaryStats(orgID uuid.UUID, start, end time.Time, summa
 		Where("organization_id = ? AND status = ?", orgID, models.TransferStatusActive).
 		Count(&summary.ActiveTransfers)
 
-	// Average queue time (time from transfer to assignment for assigned transfers)
+	// Average queue time (time from transfer to pickup/assignment)
 	type AvgResult struct {
 		Avg float64
 	}
 	var queueTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (updated_at - transferred_at))/60) as avg").
-		Where("organization_id = ? AND agent_id IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
+		Select("AVG(EXTRACT(EPOCH FROM (picked_up_at - transferred_at))/60) as avg").
+		Where("organization_id = ? AND picked_up_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, start, end).
 		Scan(&queueTimeResult)
 	summary.AvgQueueTimeMins = queueTimeResult.Avg
+
+	// Average first response time (transfer → first agent reply)
+	var firstResponseResult AvgResult
+	a.DB.Model(&models.AgentTransfer{}).
+		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Where("organization_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
+			orgID, start, end).
+		Scan(&firstResponseResult)
+	summary.AvgFirstResponseMins = firstResponseResult.Avg
 
 	// Average resolution time (time from transfer to resume)
 	var resolutionTimeResult AvgResult
@@ -278,10 +287,19 @@ func (a *App) calculateAgentSummaryStats(orgID, agentID uuid.UUID, start, end ti
 		Where("organization_id = ? AND agent_id = ? AND status = ?", orgID, agentID, models.TransferStatusActive).
 		Count(&summary.ActiveTransfers)
 
-	// Average resolution time for this agent
+	// Average first response time for this agent
 	type AvgResult struct {
 		Avg float64
 	}
+	var firstResponseResult AvgResult
+	a.DB.Model(&models.AgentTransfer{}).
+		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Where("organization_id = ? AND agent_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
+			orgID, agentID, start, end).
+		Scan(&firstResponseResult)
+	summary.AvgFirstResponseMins = firstResponseResult.Avg
+
+	// Average resolution time for this agent
 	var resolutionTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
 		Select("AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60) as avg").
@@ -340,10 +358,18 @@ func (a *App) calculateAgentStats(orgID, agentID uuid.UUID, start, end time.Time
 		Where("contact_id IN (SELECT contact_id FROM agent_transfers WHERE agent_id = ? AND organization_id = ?)", agentID, orgID).
 		Count(&stats.MessagesSent)
 
-	// Average resolution time
+	// Average first response / resolution times
 	type AvgResult struct {
 		Avg float64
 	}
+	var firstResponseResult AvgResult
+	a.DB.Model(&models.AgentTransfer{}).
+		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Where("organization_id = ? AND agent_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
+			orgID, agentID, start, end).
+		Scan(&firstResponseResult)
+	stats.AvgFirstResponseMins = firstResponseResult.Avg
+
 	var resolutionTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
 		Select("AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60) as avg").

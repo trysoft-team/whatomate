@@ -182,6 +182,42 @@ POST /api/custom-actions
 }
 ```
 
+## Generate Custom Action with AI
+
+Draft a custom action from a plain-language description using the organization's AI provider. The draft is **not saved**; send it to `POST /api/custom-actions` to create it. Requires `custom_actions:write`.
+
+```bash
+POST /api/custom-actions/generate
+```
+
+### Request Body
+
+```json
+{
+  "prompt": "Open the contact's phone number in Google search"
+}
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "name": "Search phone on Google",
+    "icon": "globe",
+    "action_type": "url",
+    "config": {
+      "url": "https://www.google.com/search?q={{contact.phone_number}}",
+      "open_in_new_tab": true
+    },
+    "notes": ""
+  }
+}
+```
+
+`notes` tells the admin what to fill in (for example placeholder URLs or API keys). Errors: `400` when the prompt is empty, longer than 4000 characters, or AI is not configured; `429` when the provider quota is exhausted; `502` when the AI response is not a valid action.
+
 ## Update Custom Action
 
 Update an existing custom action.

@@ -31,8 +31,8 @@ test.describe('Chatbot Settings Page', () => {
     await expect(chatbotSettingsPage.slaTab).toBeVisible()
   })
 
-  test('should have AI tab', async () => {
-    await expect(chatbotSettingsPage.aiTab).toBeVisible()
+  test('should not have AI tab', async () => {
+    await expect(chatbotSettingsPage.page.getByRole('tab', { name: /^AI$/i })).toHaveCount(0)
   })
 })
 
@@ -112,6 +112,10 @@ test.describe('Agents Tab', () => {
 
   test('should have current conversation only toggle', async ({ page }) => {
     await expect(page.getByText('Agents See Current Conversation Only', { exact: true })).toBeVisible()
+  })
+
+  test('should have agent session timeout field', async ({ page }) => {
+    await expect(page.locator('#agent-session-timeout')).toBeVisible()
   })
 
   test('should toggle agent queue pickup', async ({ page }) => {
@@ -226,22 +230,21 @@ test.describe('SLA Tab', () => {
   })
 })
 
-test.describe('AI Tab', () => {
+test.describe('AI Settings', () => {
   let chatbotSettingsPage: ChatbotSettingsPage
 
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page)
     chatbotSettingsPage = new ChatbotSettingsPage(page)
-    await chatbotSettingsPage.goto()
-    await chatbotSettingsPage.switchToAITab()
+    await chatbotSettingsPage.gotoAISettings()
   })
 
   test('should show AI settings', async () => {
-    await chatbotSettingsPage.expectAITabVisible()
+    await chatbotSettingsPage.expectAISettingsVisible()
   })
 
   test('should have enable AI toggle', async ({ page }) => {
-    await expect(page.getByText('Enable AI Responses')).toBeVisible()
+    await expect(page.getByText('Enable AI')).toBeVisible()
   })
 
   test('should toggle AI enabled', async ({ page }) => {
@@ -322,13 +325,8 @@ test.describe('Tab Navigation', () => {
     await chatbotSettingsPage.expectSLATabVisible()
   })
 
-  test('should switch to AI tab', async () => {
-    await chatbotSettingsPage.switchToAITab()
-    await chatbotSettingsPage.expectAITabVisible()
-  })
-
   test('should switch back to Messages tab', async () => {
-    await chatbotSettingsPage.switchToAITab()
+    await chatbotSettingsPage.switchToAgentsTab()
     await chatbotSettingsPage.switchToMessagesTab()
     await chatbotSettingsPage.expectMessagesTabVisible()
   })

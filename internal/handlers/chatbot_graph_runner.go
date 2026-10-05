@@ -13,6 +13,7 @@ import (
 
 	"github.com/expr-lang/expr"
 	"github.com/google/uuid"
+	"github.com/shridarpatil/whatomate/internal/contactutil"
 	"github.com/shridarpatil/whatomate/internal/crypto"
 	wmgoogle "github.com/shridarpatil/whatomate/internal/google"
 	"github.com/shridarpatil/whatomate/internal/mail"
@@ -28,6 +29,32 @@ const maxChatGraphIterations = 100
 
 var errChatGraphRunaway = errors.New("chat graph: too many non-blocking nodes in a single inbound (cycle?)")
 
+// chatRunOpts carries optional inbound metadata for a single graph run.
+// Tests may pass nil; the processor fills message type / media / location.
+type chatRunOpts struct {
+	MessageType         string
+	MetaType            string // original WhatsApp message type (text, interactive, image, …)
+	WhatsAppMessageID   string
+	Timestamp           string
+	From                string
+	ButtonID            string
+	InteractiveType     string // button_reply, list_reply, nfm_reply
+	FlowResponseData    map[string]any
+	Media               *MediaInfo
+	Latitude            float64
+	Longitude           float64
+	LocationName        string
+	LocationAddress     string
+	ForceEntry          bool
+	FromFallback        bool
+	// SystemResume is set for non-user continuations (e.g. delay timer) so
+	// KeepSessionActive=false does not force a restart from the entry node.
+	SystemResume bool
+	// RawInbound is the Meta Cloud API webhook body (object/entry/changes/…)
+	// scoped to this message. When set, {{{inbound}}} uses it as-is.
+	RawInbound map[string]any
+}
+
 // chatNodeCtx carries the per-inbound execution state for a single
 // runChatGraph call. userInput is the message text; buttonID is the
 // payload of an interactive button reply (empty for text messages).
@@ -40,8 +67,11 @@ type chatNodeCtx struct {
 	session          *models.ChatbotSession
 	userInput        string
 	buttonID         string
+	messageType      string
 	flowResponseData map[string]any // form fields from a WhatsApp Flow submission
 	consumed         bool
+	sentOutbound     bool // true when a Message-category node sent this turn
+	fromFallback     bool
 }
 
 // nodeOutcome is the return value of a node executor.
@@ -64,9 +94,11 @@ type nodeOutcome struct {
 // blocking node (or at a terminal node with no outgoing edges).
 //
 // On entry:
-//   - If session.CurrentStep is empty, execution starts at graph.EntryNode
-//     and userInput/buttonID are treated as the trigger that started the
-//     flow (not input to the entry node).
+//   - When KeepSessionActive is false, every user inbound resets to the entry
+//     node (SystemResume / FromFallback skip this). Session variables are cleared.
+//   - If session.CurrentStep is empty (or opts.ForceEntry), execution starts
+//     at graph.EntryNode; the inbound is treated as a flow trigger only (not
+//     an answer to the first prompt/buttons).
 //   - Otherwise, execution resumes at session.CurrentStep with the input
 //     applied to that node.
 func (a *App) runChatGraph(
@@ -77,6 +109,7 @@ func (a *App) runChatGraph(
 	userInput string,
 	buttonID string,
 	flowResponseData map[string]any,
+	opts *chatRunOpts,
 ) error {
 	graph, err := parseChatGraph(flow.Graph)
 	if err != nil {
@@ -86,33 +119,57 @@ func (a *App) runChatGraph(
 		return errors.New("flow has no v2 graph; legacy executor should have run")
 	}
 
+	msgType := ""
+	fromFallback := false
+	forceEntry := false
+	systemResume := false
+	if opts != nil {
+		msgType = opts.MessageType
+		fromFallback = opts.FromFallback
+		forceEntry = opts.ForceEntry
+		systemResume = opts.SystemResume
+	}
+
 	ctx := &chatNodeCtx{
 		account:          account,
 		contact:          contact,
 		session:          session,
 		userInput:        userInput,
 		buttonID:         buttonID,
+		messageType:      msgType,
 		flowResponseData: flowResponseData,
+		fromFallback:     fromFallback,
 	}
 
-	// Ensure resume paths (e.g. Delay poller) can reload this flow.
 	if session.CurrentFlowID == nil {
 		session.CurrentFlowID = &flow.ID
 	}
 
-	// Seed built-in template variables so {{phone_number}} / {{contact_name}}
-	// and whatsCRM aliases {{senderMobile}} / {{senderName}} / {{senderMessage}}
-	// (also {{{…}}}) work in any outgoing message without an upstream api_call.
-	// senderMessage is taken from this webhook's inbound text before we clear
-	// the trigger on a fresh session entry.
-	seedChatSessionBuiltins(session, contact, userInput)
+	// Keep session off: every user inbound starts from the entry node.
+	// System resumes (delay timers) continue from the parked step.
+	if !flow.KeepSessionActive && !systemResume && !fromFallback {
+		session.CurrentStep = ""
+		session.StepRetries = 0
+		session.SessionData = models.JSONB{
+			"_flow_id":   flow.ID.String(),
+			"_flow_name": flow.Name,
+		}
+	}
 
-	if session.CurrentStep == "" {
+	seedChatSessionBuiltins(session, contact, userInput, opts)
+
+	if forceEntry || session.CurrentStep == "" {
 		session.CurrentStep = graph.EntryNode
-		// Trigger input is not "for" the entry node — clear it so we don't
-		// double-count the trigger keyword as user input.
+		session.StepRetries = 0
+		// Inbound only triggered the flow (keyword / Keep-off restart / new
+		// session) — don't treat it as an answer to the first prompt/buttons.
 		ctx.userInput = ""
 		ctx.buttonID = ""
+		ctx.messageType = ""
+		ctx.flowResponseData = nil
+		if forceEntry {
+			a.sendStartFallbackMessage(graph, ctx)
+		}
 	}
 
 	for range maxChatGraphIterations {
@@ -123,9 +180,6 @@ func (a *App) runChatGraph(
 			return fmt.Errorf("node %q not found", session.CurrentStep)
 		}
 
-		// Skip condition: if the node config has a truthy expression,
-		// short-circuit through the default edge without executing the
-		// node. Authored from the editor's per-node Advanced section.
 		if expr := stringFromConfig(node.Config, "skip_condition"); expr != "" {
 			matched, err := evaluateConditionExpression(expr, session.SessionData)
 			if err != nil {
@@ -135,8 +189,7 @@ func (a *App) runChatGraph(
 				appendChatPath(session, node, "skipped")
 				next := graph.ResolveEdge(node.ID, "default")
 				if next == "" {
-					session.Status = models.SessionStatusCompleted
-					return a.persistChatSession(session)
+					return a.finishChatGraphSession(session, flow)
 				}
 				session.CurrentStep = next
 				continue
@@ -146,20 +199,37 @@ func (a *App) runChatGraph(
 		res, err := a.executeChatNode(node, ctx)
 		if err != nil {
 			_ = a.persistChatSession(session)
+			if !ctx.fromFallback && chatInboundPresent(ctx) {
+				return a.redirectChatGraphToEntry(account, contact, session, flow, userInput, buttonID, flowResponseData, opts)
+			}
 			return err
 		}
 
 		appendChatPath(session, node, res.outcome)
 
 		if res.yield {
-			// Stay at this node; next inbound resumes here.
+			if !ctx.fromFallback && !ctx.sentOutbound && chatInboundPresent(ctx) {
+				return a.redirectChatGraphToEntry(account, contact, session, flow, userInput, buttonID, flowResponseData, opts)
+			}
+			// Transfer (and similar) may mark Completed before yielding — wipe
+			// flow state when Keep session is off so nothing is retained.
+			if session.Status == models.SessionStatusCompleted && (flow == nil || !flow.KeepSessionActive) {
+				session.CurrentStep = ""
+				session.StepRetries = 0
+				session.CurrentFlowID = nil
+				var path any
+				if session.SessionData != nil {
+					path = session.SessionData["__path__"]
+				}
+				session.SessionData = models.JSONB{}
+				if path != nil {
+					session.SessionData["__path__"] = path
+				}
+				a.ClearContactChatbotTracking(session.ContactID)
+			}
 			return a.persistChatSession(session)
 		}
 
-		// goto_flow may have switched the session to a different flow.
-		// Reload graph + flow and continue at the new entry node within
-		// the same run, mirroring IVR's executeGotoFlow recursion. The
-		// outer loop's max-iteration guard prevents A→B→A pathologies.
 		if session.CurrentFlowID != nil && *session.CurrentFlowID != flow.ID {
 			newFlow, err := a.getChatbotFlowByIDCached(account.OrganizationID, *session.CurrentFlowID)
 			if err != nil {
@@ -183,9 +253,10 @@ func (a *App) runChatGraph(
 
 		next := graph.ResolveEdge(node.ID, res.outcome)
 		if next == "" {
-			// No matching edge → terminal.
-			session.Status = models.SessionStatusCompleted
-			return a.persistChatSession(session)
+			if isChatUserDrivenOutcome(res.outcome) && !ctx.fromFallback {
+				return a.redirectChatGraphToEntry(account, contact, session, flow, userInput, buttonID, flowResponseData, opts)
+			}
+			return a.finishChatGraphSession(session, flow)
 		}
 		session.CurrentStep = next
 	}
@@ -194,13 +265,182 @@ func (a *App) runChatGraph(
 	return errChatGraphRunaway
 }
 
+// applyChatGraphTerminal marks the session completed, or — when the flow has
+// KeepSessionActive — leaves it Active with CurrentFlowID + SessionData kept
+// and CurrentStep cleared so the next inbound re-enters from the start node
+// without wiping variables (list/buttons/WA Flow can then advance normally).
+//
+// When KeepSessionActive is false, every user inbound already restarts from
+// entry; End also clears SessionData / CurrentFlowID so nothing is retained.
+func (a *App) applyChatGraphTerminal(session *models.ChatbotSession, flow *models.ChatbotFlow) {
+	if flow != nil && flow.KeepSessionActive {
+		session.Status = models.SessionStatusActive
+		session.CompletedAt = nil
+		session.CurrentStep = ""
+		session.StepRetries = 0
+		if session.CurrentFlowID == nil {
+			id := flow.ID
+			session.CurrentFlowID = &id
+		}
+		return
+	}
+	session.Status = models.SessionStatusCompleted
+	session.CurrentStep = ""
+	session.StepRetries = 0
+	session.CurrentFlowID = nil
+	// Drop variables so the next inbound cannot reuse them, but keep the
+	// audit trail (__path__) for session history / tests.
+	var path any
+	if session.SessionData != nil {
+		path = session.SessionData["__path__"]
+	}
+	session.SessionData = models.JSONB{}
+	if path != nil {
+		session.SessionData["__path__"] = path
+	}
+}
+
+// finishChatGraphSession applies terminal Keep-session rules and persists.
+func (a *App) finishChatGraphSession(session *models.ChatbotSession, flow *models.ChatbotFlow) error {
+	a.applyChatGraphTerminal(session, flow)
+	if flow == nil || !flow.KeepSessionActive {
+		a.ClearContactChatbotTracking(session.ContactID)
+	}
+	return a.persistChatSession(session)
+}
+
+func chatInboundPresent(ctx *chatNodeCtx) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.userInput != "" || ctx.buttonID != "" {
+		return true
+	}
+	switch ctx.messageType {
+	case "image", "document", "video", "audio", "sticker", "location", "contacts":
+		return true
+	}
+	return false
+}
+
+func isChatUserDrivenOutcome(outcome string) bool {
+	if outcome == "unmatched" || outcome == "max_retries" {
+		return true
+	}
+	return strings.HasPrefix(outcome, "button:")
+}
+
+func (a *App) redirectChatGraphToEntry(
+	account *models.WhatsAppAccount,
+	contact *models.Contact,
+	session *models.ChatbotSession,
+	flow *models.ChatbotFlow,
+	userInput, buttonID string,
+	flowResponseData map[string]any,
+	opts *chatRunOpts,
+) error {
+	next := &chatRunOpts{FromFallback: true, ForceEntry: true}
+	if opts != nil {
+		next.MessageType = opts.MessageType
+		next.MetaType = opts.MetaType
+		next.WhatsAppMessageID = opts.WhatsAppMessageID
+		next.Timestamp = opts.Timestamp
+		next.From = opts.From
+		next.ButtonID = opts.ButtonID
+		next.InteractiveType = opts.InteractiveType
+		next.FlowResponseData = opts.FlowResponseData
+		next.Media = opts.Media
+		next.Latitude = opts.Latitude
+		next.Longitude = opts.Longitude
+		next.LocationName = opts.LocationName
+		next.LocationAddress = opts.LocationAddress
+		next.RawInbound = opts.RawInbound
+	}
+	a.Log.Info("Chat graph fallback to entry",
+		"session", session.ID, "flow", flow.ID, "from_step", session.CurrentStep)
+	return a.runChatGraph(account, contact, session, flow, userInput, buttonID, flowResponseData, next)
+}
+
+func (a *App) sendStartFallbackMessage(graph *ChatGraph, ctx *chatNodeCtx) {
+	if graph == nil || ctx == nil {
+		return
+	}
+	entry := graph.Node(graph.EntryNode)
+	if entry == nil || entry.Type != ChatNodeStart {
+		return
+	}
+	msg := stringFromConfig(entry.Config, "fallback_message")
+	if msg == "" {
+		return
+	}
+	msg = processTemplate(msg, ctx.session.SessionData)
+	if err := a.sendAndSaveTextMessage(ctx.account, ctx.contact, msg); err != nil {
+		a.Log.Warn("Failed to send start fallback_message", "error", err, "session", ctx.session.ID)
+		return
+	}
+	ctx.sentOutbound = true
+	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, msg, entry.ID)
+}
+
+// startNodeEscapeKeywords returns escape keywords configured on the Start node.
+func startNodeEscapeKeywords(graph *ChatGraph) []string {
+	if graph == nil {
+		return nil
+	}
+	entry := graph.Node(graph.EntryNode)
+	if entry == nil || entry.Config == nil {
+		return nil
+	}
+	raw, ok := entry.Config["escape_keywords"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func matchesEscapeKeyword(text string, keywords []string) bool {
+	if text == "" || len(keywords) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, kw := range keywords {
+		if strings.ToLower(strings.TrimSpace(kw)) == lower {
+			return true
+		}
+	}
+	return false
+}
+
 // seedChatSessionBuiltins writes the per-turn template variables into
 // SessionData. Whatomate canonical names (phone_number, contact_name) and
 // whatsCRM aliases (senderMobile, senderName, senderMessage) are kept in
 // sync so authors can use either family — including {{{triple}}} braces.
-// senderMessage is only overwritten when this webhook carried inbound text,
-// so fire-and-forget node chains in the same turn keep the last inbound.
-func seedChatSessionBuiltins(session *models.ChatbotSession, contact *models.Contact, userInput string) {
+//
+// inbound is the Meta Cloud API webhook body for the latest message (usable as
+// {{{inbound}}} for the full JSON envelope, or nested paths like
+// {{inbound.entry[0].changes[0].value.messages[0].text.body}}).
+func seedChatSessionBuiltins(session *models.ChatbotSession, contact *models.Contact, userInput string, opts *chatRunOpts) {
 	if session.SessionData == nil {
 		session.SessionData = models.JSONB{}
 	}
@@ -213,19 +453,193 @@ func seedChatSessionBuiltins(session *models.ChatbotSession, contact *models.Con
 	if userInput != "" {
 		session.SessionData["senderMessage"] = userInput
 	}
-	// Envelope used by set_variable path lookups (whatsCRM Response Saver style).
-	inbound := map[string]any{
-		"senderName":   session.SessionData["senderName"],
-		"senderMobile": session.SessionData["senderMobile"],
-		"senderMessage": session.SessionData["senderMessage"],
-		"msgContext": map[string]any{
-			"type": "text",
-			"text": map[string]any{
-				"body": session.SessionData["senderMessage"],
+
+	msgType := "text"
+	if opts != nil && opts.MessageType != "" {
+		msgType = opts.MessageType
+	}
+	metaType := msgType
+	if opts != nil && opts.MetaType != "" {
+		metaType = opts.MetaType
+	}
+	session.SessionData["inbound_message_type"] = msgType
+	session.SessionData["senderMessageType"] = msgType
+
+	if opts != nil && opts.Media != nil {
+		if opts.Media.MediaURL != "" {
+			session.SessionData["inbound_media_url"] = opts.Media.MediaURL
+		}
+		if opts.Media.MediaMimeType != "" {
+			session.SessionData["inbound_media_mime"] = opts.Media.MediaMimeType
+		}
+		if opts.Media.MediaFilename != "" {
+			session.SessionData["inbound_media_filename"] = opts.Media.MediaFilename
+		}
+	}
+	if opts != nil && (msgType == "location" || metaType == "location") {
+		session.SessionData["inbound_latitude"] = opts.Latitude
+		session.SessionData["inbound_longitude"] = opts.Longitude
+		if opts.LocationName != "" {
+			session.SessionData["inbound_location_name"] = opts.LocationName
+		}
+		if opts.LocationAddress != "" {
+			session.SessionData["inbound_location_address"] = opts.LocationAddress
+		}
+	}
+
+	inbound := buildInboundMessageVar(session, contact, userInput, opts, metaType, msgType)
+	session.SessionData["inbound"] = inbound
+	// Keep __inbound__ for set_variable path lookups (whatsCRM Response Saver style).
+	session.SessionData["__inbound__"] = inbound
+}
+
+// buildInboundMessageVar returns the Meta webhook envelope for {{{inbound}}}.
+// Prefer opts.RawInbound (exact envelope from webhook intake). Otherwise
+// synthesize a minimal envelope for tests and system resumes.
+func buildInboundMessageVar(
+	session *models.ChatbotSession,
+	contact *models.Contact,
+	userInput string,
+	opts *chatRunOpts,
+	metaType, msgType string,
+) map[string]any {
+	if opts != nil && len(opts.RawInbound) > 0 {
+		return opts.RawInbound
+	}
+
+	from := session.PhoneNumber
+	if opts != nil && opts.From != "" {
+		from = opts.From
+	}
+	msg := map[string]any{
+		"from": from,
+		"type": metaType,
+	}
+	if opts != nil {
+		if opts.WhatsAppMessageID != "" {
+			msg["id"] = opts.WhatsAppMessageID
+		}
+		if opts.Timestamp != "" {
+			msg["timestamp"] = opts.Timestamp
+		}
+	}
+
+	switch metaType {
+	case "text":
+		body := userInput
+		if body == "" {
+			if s, ok := session.SessionData["senderMessage"].(string); ok {
+				body = s
+			}
+		}
+		msg["text"] = map[string]any{"body": body}
+	case "image", "video", "audio", "document", "sticker":
+		mediaObj := map[string]any{}
+		if opts != nil && opts.Media != nil {
+			if opts.Media.MediaMimeType != "" {
+				mediaObj["mime_type"] = opts.Media.MediaMimeType
+			}
+			if opts.Media.MediaID != "" {
+				mediaObj["id"] = opts.Media.MediaID
+			}
+			if opts.Media.MediaFilename != "" {
+				mediaObj["filename"] = opts.Media.MediaFilename
+			}
+		}
+		if userInput != "" && metaType != "audio" && metaType != "sticker" {
+			mediaObj["caption"] = userInput
+		}
+		msg[metaType] = mediaObj
+	case "location":
+		loc := map[string]any{}
+		if opts != nil {
+			loc["latitude"] = opts.Latitude
+			loc["longitude"] = opts.Longitude
+			if opts.LocationName != "" {
+				loc["name"] = opts.LocationName
+			}
+			if opts.LocationAddress != "" {
+				loc["address"] = opts.LocationAddress
+			}
+		}
+		msg["location"] = loc
+	case "interactive", "button":
+		interactive := map[string]any{}
+		itype := "button_reply"
+		if opts != nil && opts.InteractiveType != "" {
+			itype = opts.InteractiveType
+		} else if msgType == "list_reply" || msgType == "nfm_reply" {
+			itype = msgType
+		}
+		interactive["type"] = itype
+		switch itype {
+		case "list_reply":
+			row := map[string]any{"title": userInput}
+			if opts != nil && opts.ButtonID != "" {
+				row["id"] = opts.ButtonID
+			}
+			interactive["list_reply"] = row
+		case "nfm_reply":
+			nfm := map[string]any{"body": userInput}
+			if opts != nil && opts.FlowResponseData != nil {
+				if b, err := json.Marshal(opts.FlowResponseData); err == nil {
+					nfm["response_json"] = string(b)
+				}
+			}
+			interactive["nfm_reply"] = nfm
+		default:
+			btn := map[string]any{"title": userInput}
+			if opts != nil && opts.ButtonID != "" {
+				btn["id"] = opts.ButtonID
+			}
+			interactive["button_reply"] = btn
+		}
+		msg["type"] = "interactive"
+		msg["interactive"] = interactive
+	default:
+		if userInput != "" {
+			msg["text"] = map[string]any{"body": userInput}
+		}
+	}
+
+	phoneID := ""
+	displayPhone := ""
+	entryID := ""
+	profileName := ""
+	if contact != nil {
+		profileName = contact.ProfileName
+	}
+	contacts := []any{}
+	if from != "" || profileName != "" {
+		c := map[string]any{"wa_id": from}
+		if profileName != "" {
+			c["profile"] = map[string]any{"name": profileName}
+		}
+		contacts = append(contacts, c)
+	}
+
+	return map[string]any{
+		"object": "whatsapp_business_account",
+		"entry": []any{
+			map[string]any{
+				"id": entryID,
+				"changes": []any{
+					map[string]any{
+						"value": map[string]any{
+							"messaging_product": "whatsapp",
+							"metadata": map[string]any{
+								"display_phone_number": displayPhone,
+								"phone_number_id":      phoneID,
+							},
+							"contacts": contacts,
+							"messages": []any{msg},
+						},
+						"field": "messages",
+					},
+				},
 			},
 		},
 	}
-	session.SessionData["__inbound__"] = inbound
 }
 
 // executeChatNode dispatches by node type. Phase 1 implements only
@@ -288,6 +702,75 @@ func (a *App) executeChatNode(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 	}
 }
 
+// parseChatSendToPhones splits a templated send_to string into unique phones.
+// Empty / whitespace-only input yields nil (caller should use session contact).
+func parseChatSendToPhones(raw string, sessionData models.JSONB) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	rendered := strings.TrimSpace(processTemplate(raw, sessionData))
+	if rendered == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, part := range strings.Split(rendered, ",") {
+		phone := strings.TrimSpace(part)
+		if phone == "" {
+			continue
+		}
+		phone = strings.TrimPrefix(phone, "+")
+		if _, ok := seen[phone]; ok {
+			continue
+		}
+		seen[phone] = struct{}{}
+		out = append(out, phone)
+	}
+	return out
+}
+
+// resolveChatSendContacts returns who a Message-group node should deliver to.
+// Config key: "send_to" (aliases "to", "recipients") — optional, comma-separated,
+// supports {{session}} templates. Empty → {{senderMobile}} (session contact).
+func (a *App) resolveChatSendContacts(ctx *chatNodeCtx, node *ChatNode) ([]*models.Contact, error) {
+	raw := strings.TrimSpace(stringFromConfig(node.Config, "send_to", "to", "recipients"))
+	if raw == "" {
+		raw = "{{senderMobile}}"
+	}
+	phones := parseChatSendToPhones(raw, ctx.session.SessionData)
+	if len(phones) == 0 {
+		// senderMobile missing from session — fall back to the active contact.
+		if ctx.contact != nil && ctx.contact.PhoneNumber != "" {
+			return []*models.Contact{ctx.contact}, nil
+		}
+		return nil, fmt.Errorf("send_to resolved to no phone numbers")
+	}
+	out := make([]*models.Contact, 0, len(phones))
+	for _, phone := range phones {
+		c, _, err := contactutil.GetOrCreateContact(a.DB, ctx.account.OrganizationID, phone, "")
+		if err != nil {
+			return nil, fmt.Errorf("resolve send_to %q: %w", phone, err)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// forEachChatSendContact runs fn for every resolved recipient of a Message-group node.
+func (a *App) forEachChatSendContact(ctx *chatNodeCtx, node *ChatNode, fn func(*models.Contact) error) error {
+	contacts, err := a.resolveChatSendContacts(ctx, node)
+	if err != nil {
+		return err
+	}
+	for _, c := range contacts {
+		if err := fn(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // execChatMessage sends a text/media/location message. By default it
 // falls through (fire-and-forget). Config:
 //
@@ -299,12 +782,13 @@ func (a *App) executeChatNode(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 //	  "caption": "...",                 // image/video/document caption
 //	  "filename": "...",                // document filename hint
 //	  "latitude": -1.2, "longitude": 36.8, "name": "...", "address": "...",
+//	  "send_to": "1555...,{{manager}}", // optional; comma-separated override recipients
 //	  "wait_for_reply": true,           // yield until next inbound (moveToNextNode:false)
 //	  "store_as": "senderMessage"       // when wait_for_reply; default senderMessage
 //	}
 func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	wait := boolFromConfig(node.Config, "wait_for_reply")
-	if wait && !ctx.consumed && (ctx.userInput != "" || ctx.buttonID != "") {
+	if wait && !ctx.consumed && chatInboundPresent(ctx) {
 		ctx.consumed = true
 		storeAs := stringFromConfig(node.Config, "store_as")
 		if storeAs == "" {
@@ -316,6 +800,9 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		value := ctx.userInput
 		if value == "" {
 			value = ctx.buttonID
+		}
+		if value == "" {
+			value = ctx.messageType
 		}
 		ctx.session.SessionData[storeAs] = value
 		return nodeOutcome{outcome: "default"}, nil
@@ -338,7 +825,9 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		}
 		text = processTemplate(text, ctx.session.SessionData)
 		preview := boolFromConfig(node.Config, "preview_url")
-		if err := a.sendAndSaveTextMessageOpts(ctx.account, ctx.contact, text, preview); err != nil {
+		if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+			return a.sendAndSaveTextMessageOpts(ctx.account, c, text, preview)
+		}); err != nil {
 			return nodeOutcome{}, fmt.Errorf("send message: %w", err)
 		}
 		logPreview = text
@@ -350,7 +839,9 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		}
 		caption := processTemplate(stringFromConfig(node.Config, "caption"), ctx.session.SessionData)
 		filename := processTemplate(stringFromConfig(node.Config, "filename"), ctx.session.SessionData)
-		if err := a.sendAndSaveMediaByLink(ctx.account, ctx.contact, mediaType, link, caption, filename); err != nil {
+		if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+			return a.sendAndSaveMediaByLink(ctx.account, c, mediaType, link, caption, filename)
+		}); err != nil {
 			return nodeOutcome{}, fmt.Errorf("send %s: %w", mediaType, err)
 		}
 		logPreview = caption
@@ -363,7 +854,9 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		lng := floatFromConfig(node.Config, "longitude")
 		name := processTemplate(stringFromConfig(node.Config, "name", "location_name"), ctx.session.SessionData)
 		address := processTemplate(stringFromConfig(node.Config, "address", "location_address"), ctx.session.SessionData)
-		if err := a.sendAndSaveLocationMessage(ctx.account, ctx.contact, lat, lng, name, address); err != nil {
+		if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+			return a.sendAndSaveLocationMessage(ctx.account, c, lat, lng, name, address)
+		}); err != nil {
 			return nodeOutcome{}, fmt.Errorf("send location: %w", err)
 		}
 		logPreview = name
@@ -375,6 +868,7 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		return nodeOutcome{}, fmt.Errorf("message node %q has unsupported media_type %q", node.ID, mediaType)
 	}
 
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, logPreview, node.ID)
 	if wait {
 		return nodeOutcome{yield: true}, nil
@@ -390,10 +884,6 @@ func (a *App) execChatMessage(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 func (a *App) execChatButtons(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	if !ctx.consumed && ctx.buttonID != "" {
 		ctx.consumed = true
-		// Persist the selection when the node configures store_as, mirroring
-		// the prompt node so any node that receives a user response can feed
-		// {{var}} interpolation downstream. Store the visible title (what the
-		// user "said"), falling back to the button id if the title is empty.
 		if storeAs := stringFromConfig(node.Config, "store_as"); storeAs != "" {
 			if ctx.session.SessionData == nil {
 				ctx.session.SessionData = models.JSONB{}
@@ -407,6 +897,12 @@ func (a *App) execChatButtons(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 		return nodeOutcome{outcome: "button:" + ctx.buttonID}, nil
 	}
 
+	// Free text or non-text inbound while parked → unmatched (entry fallback if no edge).
+	if !ctx.consumed && chatInboundPresent(ctx) {
+		ctx.consumed = true
+		return nodeOutcome{outcome: "unmatched"}, nil
+	}
+
 	body := stringFromConfig(node.Config, "body", "message", "text")
 	if body == "" {
 		body = node.Label
@@ -416,8 +912,6 @@ func (a *App) execChatButtons(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 	if len(buttons) == 0 {
 		return nodeOutcome{}, fmt.Errorf("buttons node %q has no buttons configured", node.ID)
 	}
-	// Template each button's user-facing fields so authors can
-	// interpolate variables into titles / urls / phone numbers too.
 	for _, b := range buttons {
 		for _, key := range []string{"title", "url", "phone_number"} {
 			if s, ok := b[key].(string); ok && s != "" {
@@ -425,9 +919,12 @@ func (a *App) execChatButtons(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 			}
 		}
 	}
-	if err := a.sendAndSaveInteractiveButtons(ctx.account, ctx.contact, body, buttons); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		return a.sendAndSaveInteractiveButtons(ctx.account, c, body, buttons)
+	}); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send buttons: %w", err)
 	}
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
 	return nodeOutcome{yield: true}, nil
 }
@@ -456,6 +953,11 @@ func (a *App) execChatList(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error
 		return nodeOutcome{outcome: "button:" + ctx.buttonID}, nil
 	}
 
+	if !ctx.consumed && chatInboundPresent(ctx) {
+		ctx.consumed = true
+		return nodeOutcome{outcome: "unmatched"}, nil
+	}
+
 	body := stringFromConfig(node.Config, "body", "message", "text")
 	if body == "" {
 		body = node.Label
@@ -475,32 +977,17 @@ func (a *App) execChatList(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error
 			sections[i].Rows[j].Description = processTemplate(sections[i].Rows[j].Description, ctx.session.SessionData)
 		}
 	}
-	if err := a.sendAndSaveInteractiveList(ctx.account, ctx.contact, body, button, header, footer, sections); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		return a.sendAndSaveInteractiveList(ctx.account, c, body, button, header, footer, sections)
+	}); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send list: %w", err)
 	}
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
 	return nodeOutcome{yield: true}, nil
 }
 
-// execChatPrompt asks the user for input. On first entry (no userInput),
-// sends the prompt body and yields to wait for a reply. On a later inbound,
-// validates ctx.userInput against an optional regex:
-//   - valid (or no regex): stores the input in SessionData under store_as,
-//     resets StepRetries, returns outcome="default" so the runner advances.
-//   - invalid + StepRetries+1 < max_retries: sends the validation error,
-//     yields to re-prompt (the same node will fire again on next inbound).
-//   - invalid + StepRetries+1 >= max_retries: returns outcome="max_retries"
-//     so the runner can route to an error branch (or terminate if none).
-//
-// Config:
-//
-//	{
-//	  "body": "...",                 // prompt sent on first entry
-//	  "validation_regex": "...",     // optional; default = accept anything
-//	  "validation_error": "...",     // optional; default fallback message
-//	  "store_as": "var_name",        // optional; persists input into SessionData
-//	  "max_retries": 3               // optional; default 3
-//	}
+
 func (a *App) execChatPrompt(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	body := stringFromConfig(node.Config, "body", "message", "text")
 
@@ -510,10 +997,13 @@ func (a *App) execChatPrompt(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, err
 			return nodeOutcome{}, fmt.Errorf("prompt node %q has no body configured", node.ID)
 		}
 		rendered := processTemplate(body, ctx.session.SessionData)
-		if err := a.sendAndSaveTextMessage(ctx.account, ctx.contact, rendered); err != nil {
+		if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+			return a.sendAndSaveTextMessage(ctx.account, c, rendered)
+		}); err != nil {
 			return nodeOutcome{}, fmt.Errorf("send prompt: %w", err)
 		}
 		a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, rendered, node.ID)
+		ctx.sentOutbound = true
 		return nodeOutcome{yield: true}, nil
 	}
 
@@ -563,10 +1053,13 @@ func (a *App) handleChatPromptInvalid(node *ChatNode, ctx *chatNodeCtx) (nodeOut
 		errorMsg = "Invalid input. Please try again."
 	}
 	errorMsg = processTemplate(errorMsg, ctx.session.SessionData)
-	if err := a.sendAndSaveTextMessage(ctx.account, ctx.contact, errorMsg); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		return a.sendAndSaveTextMessage(ctx.account, c, errorMsg)
+	}); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send validation error: %w", err)
 	}
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, errorMsg, node.ID)
+	ctx.sentOutbound = true
 	return nodeOutcome{yield: true}, nil
 }
 
@@ -937,26 +1430,15 @@ type scheduleLogger interface {
 //	  ]
 //	}
 //
-// "set" values are templated. "paths" walk SessionData["__inbound__"]
-// (seeded each turn) with dotted keys. Non-blocking; outcome "default".
+// "set" values are templated after "paths" so templates can reference
+// extracted vars. "paths" walk SessionData["__inbound__"] (seeded each
+// turn) with dotted keys. Non-blocking; outcome "default".
 func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	if ctx.session.SessionData == nil {
 		ctx.session.SessionData = models.JSONB{}
 	}
 
-	assignments, _ := node.Config["set"].(map[string]any)
-	for name, raw := range assignments {
-		if name == "" {
-			continue
-		}
-		tmpl, ok := raw.(string)
-		if !ok {
-			ctx.session.SessionData[name] = raw
-			continue
-		}
-		ctx.session.SessionData[name] = processTemplate(tmpl, ctx.session.SessionData)
-	}
-
+	// Apply "paths" before "set" so templates can reference extracted vars.
 	if paths, ok := node.Config["paths"].([]any); ok {
 		inbound, _ := ctx.session.SessionData["__inbound__"].(map[string]any)
 		for _, item := range paths {
@@ -972,22 +1454,37 @@ func (a *App) execChatSetVariable(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome
 			if v, ok := lookupDottedPath(inbound, path); ok {
 				ctx.session.SessionData[name] = v
 			} else if v, ok := lookupDottedPath(map[string]any(ctx.session.SessionData), path); ok {
-				// Allow paths against session itself (e.g. senderMessage).
+				// Allow paths against session itself (e.g. senderName).
 				ctx.session.SessionData[name] = v
 			}
 		}
+	}
+
+	assignments, _ := node.Config["set"].(map[string]any)
+	for name, raw := range assignments {
+		if name == "" {
+			continue
+		}
+		tmpl, ok := raw.(string)
+		if !ok {
+			ctx.session.SessionData[name] = raw
+			continue
+		}
+		ctx.session.SessionData[name] = processTemplate(tmpl, ctx.session.SessionData)
 	}
 
 	return nodeOutcome{outcome: "default"}, nil
 }
 
 // lookupDottedPath walks a nested map using a.b.c notation. Also accepts
-// whatsCRM-style prefixes like "message.msgContext.text.body".
+// whatsCRM-style prefixes like "message.msgContext.text.body" and
+// "msgContext.text.body" (mapped onto Meta-shaped inbound.text.body).
 func lookupDottedPath(root map[string]any, path string) (any, bool) {
 	if root == nil || path == "" {
 		return nil, false
 	}
 	path = strings.TrimPrefix(path, "message.")
+	path = strings.TrimPrefix(path, "msgContext.")
 	parts := strings.Split(path, ".")
 	var cur any = root
 	for _, part := range parts {
@@ -1063,9 +1560,12 @@ func (a *App) execChatAIResponse(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome,
 		return nodeOutcome{outcome: "default"}, nil
 	}
 
-	if err := a.sendAndSaveTextMessage(ctx.account, ctx.contact, answer); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		return a.sendAndSaveTextMessage(ctx.account, c, answer)
+	}); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send ai response: %w", err)
 	}
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, answer, node.ID)
 	if storeAs := stringFromConfig(node.Config, "store_as"); storeAs != "" {
 		if ctx.session.SessionData == nil {
@@ -1320,9 +1820,12 @@ func (a *App) execChatWhatsAppFlow(node *ChatNode, ctx *chatNodeCtx) (nodeOutcom
 	}
 
 	flowToken := fmt.Sprintf("chatbot_%s_%s_%d", ctx.session.ID.String(), node.ID, time.Now().UnixNano())
-	if err := a.sendAndSaveFlowMessage(ctx.account, ctx.contact, flowID, header, body, footer, cta, flowToken, firstScreen); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		return a.sendAndSaveFlowMessage(ctx.account, c, flowID, header, body, footer, cta, flowToken, firstScreen)
+	}); err != nil {
 		return nodeOutcome{}, fmt.Errorf("send whatsapp_flow: %w", err)
 	}
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, body, node.ID)
 	return nodeOutcome{yield: true}, nil
 }
@@ -1390,17 +1893,21 @@ func (a *App) execChatWATemplate(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome,
 	}
 
 	sendCtx := context.Background()
-	if _, err := a.SendOutgoingMessage(sendCtx, OutgoingMessageRequest{
-		Account:    ctx.account,
-		Contact:    ctx.contact,
-		Type:       models.MessageTypeTemplate,
-		Template:   &tmpl,
-		BodyParams: bodyParams,
-	}, ChatbotSendOptions()); err != nil {
+	if err := a.forEachChatSendContact(ctx, node, func(c *models.Contact) error {
+		_, err := a.SendOutgoingMessage(sendCtx, OutgoingMessageRequest{
+			Account:    ctx.account,
+			Contact:    c,
+			Type:       models.MessageTypeTemplate,
+			Template:   &tmpl,
+			BodyParams: bodyParams,
+		}, ChatbotSendOptions())
+		return err
+	}); err != nil {
 		a.Log.Error("wa_template send failed",
 			"node", node.ID, "template", tmpl.Name, "error", err)
 		return nodeOutcome{outcome: "default"}, nil
 	}
+	ctx.sentOutbound = true
 	a.logSessionMessage(ctx.session.ID, models.DirectionOutgoing, tmpl.DisplayName, node.ID)
 	if wait {
 		return nodeOutcome{yield: true}, nil
@@ -1462,7 +1969,7 @@ func (a *App) execChatResetSession(node *ChatNode, ctx *chatNodeCtx) (nodeOutcom
 	ctx.session.SessionData = preserved
 	ctx.session.StepRetries = 0
 	// Re-seed builtins immediately so following nodes in this turn still work.
-	seedChatSessionBuiltins(ctx.session, ctx.contact, ctx.userInput)
+	seedChatSessionBuiltins(ctx.session, ctx.contact, ctx.userInput, nil)
 	return nodeOutcome{outcome: "default"}, nil
 }
 
@@ -1658,19 +2165,16 @@ func (a *App) execChatPhonebook(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, 
 	return nodeOutcome{outcome: "default"}, nil
 }
 
-// execChatGoogleService runs Sheets append/read/update using an org credential.
+// execChatGoogleService runs Sheets/Calendar/Drive/Docs using an org credential.
 // Config:
 //
 //	{
 //	  "credential_id": "<uuid>",
-//	  "action": "sheets_append" | "sheets_read" | "sheets_update",
-//	  "spreadsheet_id": "...",
-//	  "sheet_name": "Sheet1",          // append
-//	  "range": "Sheet1!A1:D10",        // read/update
-//	  "values": [["a","b"]] | "{{json}}",
-//	  "row": { "colA": "{{x}}" },      // append convenience mapping
-//	  "output_variable": "sheetData",
-//	  "map_first_row": true
+//	  "action": "sheets_append" | "sheets_read" | "sheets_update"
+//	         | "calendar_create_event" | "calendar_list_events" | "calendar_get_event" | "calendar_delete_event"
+//	         | "drive_list_files" | "drive_create_folder" | "drive_upload_file"
+//	         | "docs_create" | "docs_append" | "docs_read",
+//	  ... action-specific fields; secrets never in graph — only credential_id
 //	}
 func (a *App) execChatGoogleService(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	credIDStr := stringFromConfig(node.Config, "credential_id")
@@ -1688,38 +2192,41 @@ func (a *App) execChatGoogleService(node *ChatNode, ctx *chatNodeCtx) (nodeOutco
 	if err != nil {
 		return nodeOutcome{}, fmt.Errorf("decrypt google cred: %w", err)
 	}
-	client, err := wmgoogle.NewSheetsClient(context.Background(), []byte(plain))
+	client, err := wmgoogle.NewClient(context.Background(), []byte(plain))
 	if err != nil {
 		a.Log.Error("google_service client", "error", err)
 		return nodeOutcome{outcome: "error"}, nil
 	}
 
 	action := strings.ToLower(stringFromConfig(node.Config, "action"))
-	spreadsheetID := processTemplate(stringFromConfig(node.Config, "spreadsheet_id", "sheet_id"), ctx.session.SessionData)
 	if ctx.session.SessionData == nil {
 		ctx.session.SessionData = models.JSONB{}
 	}
+	session := ctx.session.SessionData
+	outVar := stringFromConfig(node.Config, "output_variable", "outputVariable")
+	bg := context.Background()
 
 	switch action {
 	case "sheets_append", "append", "":
-		sheetName := processTemplate(stringFromConfig(node.Config, "sheet_name", "sheetName"), ctx.session.SessionData)
-		rows := parseSheetValues(node.Config, ctx.session.SessionData)
+		spreadsheetID := processTemplate(stringFromConfig(node.Config, "spreadsheet_id", "sheet_id"), session)
+		sheetName := processTemplate(stringFromConfig(node.Config, "sheet_name", "sheetName"), session)
+		rows := parseSheetValues(node.Config, session)
 		if len(rows) == 0 {
 			a.Log.Warn("google_service append: no values", "node", node.ID)
 			return nodeOutcome{outcome: "error"}, nil
 		}
-		if err := client.AppendRows(context.Background(), spreadsheetID, sheetName, rows); err != nil {
+		if err := client.AppendRows(bg, spreadsheetID, sheetName, rows); err != nil {
 			a.Log.Error("sheets_append failed", "node", node.ID, "error", err)
 			return nodeOutcome{outcome: "error"}, nil
 		}
 	case "sheets_read", "read":
-		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), ctx.session.SessionData)
-		values, err := client.ReadRange(context.Background(), spreadsheetID, rangeA1)
+		spreadsheetID := processTemplate(stringFromConfig(node.Config, "spreadsheet_id", "sheet_id"), session)
+		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), session)
+		values, err := client.ReadRange(bg, spreadsheetID, rangeA1)
 		if err != nil {
 			a.Log.Error("sheets_read failed", "node", node.ID, "error", err)
 			return nodeOutcome{outcome: "error"}, nil
 		}
-		outVar := stringFromConfig(node.Config, "output_variable", "outputVariable")
 		if outVar == "" {
 			outVar = "sheetData"
 		}
@@ -1733,17 +2240,144 @@ func (a *App) execChatGoogleService(node *ChatNode, ctx *chatNodeCtx) (nodeOutco
 					mapped[key] = row[i]
 				}
 			}
-			ctx.session.SessionData[outVar] = mapped
+			session[outVar] = mapped
 		} else {
-			ctx.session.SessionData[outVar] = values
+			session[outVar] = values
 		}
 	case "sheets_update", "update":
-		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), ctx.session.SessionData)
-		rows := parseSheetValues(node.Config, ctx.session.SessionData)
-		if err := client.UpdateRange(context.Background(), spreadsheetID, rangeA1, rows); err != nil {
+		spreadsheetID := processTemplate(stringFromConfig(node.Config, "spreadsheet_id", "sheet_id"), session)
+		rangeA1 := processTemplate(stringFromConfig(node.Config, "range"), session)
+		rows := parseSheetValues(node.Config, session)
+		if err := client.UpdateRange(bg, spreadsheetID, rangeA1, rows); err != nil {
 			a.Log.Error("sheets_update failed", "node", node.ID, "error", err)
 			return nodeOutcome{outcome: "error"}, nil
 		}
+
+	case "calendar_create_event":
+		calID := processTemplate(stringFromConfig(node.Config, "calendar_id", "calendarId"), session)
+		attendees := mail.SplitAddresses(processTemplate(stringFromConfig(node.Config, "attendees"), session))
+		evID, err := client.CreateEvent(bg, calID, wmgoogle.CalendarEvent{
+			Summary:     processTemplate(stringFromConfig(node.Config, "event_summary", "eventSummary", "summary"), session),
+			Description: processTemplate(stringFromConfig(node.Config, "event_description", "eventDescription", "description"), session),
+			Start:       processTemplate(stringFromConfig(node.Config, "start", "start_iso"), session),
+			End:         processTemplate(stringFromConfig(node.Config, "end", "end_iso"), session),
+			TimeZone:    processTemplate(stringFromConfig(node.Config, "timezone", "timeZone"), session),
+			Attendees:   attendees,
+		})
+		if err != nil {
+			a.Log.Error("calendar_create_event failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "eventId"
+		}
+		session[outVar] = evID
+
+	case "calendar_list_events":
+		calID := processTemplate(stringFromConfig(node.Config, "calendar_id", "calendarId"), session)
+		maxN := intFromConfig(node.Config, "max_results", 10)
+		items, err := client.ListEvents(bg, calID, maxN)
+		if err != nil {
+			a.Log.Error("calendar_list_events failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "events"
+		}
+		session[outVar] = items
+
+	case "calendar_get_event":
+		calID := processTemplate(stringFromConfig(node.Config, "calendar_id", "calendarId"), session)
+		evID := processTemplate(stringFromConfig(node.Config, "event_id", "eventId"), session)
+		item, err := client.GetEvent(bg, calID, evID)
+		if err != nil {
+			a.Log.Error("calendar_get_event failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "event"
+		}
+		session[outVar] = item
+
+	case "calendar_delete_event":
+		calID := processTemplate(stringFromConfig(node.Config, "calendar_id", "calendarId"), session)
+		evID := processTemplate(stringFromConfig(node.Config, "event_id", "eventId"), session)
+		if err := client.DeleteEvent(bg, calID, evID); err != nil {
+			a.Log.Error("calendar_delete_event failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+
+	case "drive_list_files":
+		parent := processTemplate(stringFromConfig(node.Config, "parent_id", "folder_id"), session)
+		files, err := client.ListFiles(bg, parent, intFromConfig(node.Config, "max_results", 20))
+		if err != nil {
+			a.Log.Error("drive_list_files failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "driveFiles"
+		}
+		session[outVar] = files
+
+	case "drive_create_folder":
+		name := processTemplate(stringFromConfig(node.Config, "name", "folder_name"), session)
+		parent := processTemplate(stringFromConfig(node.Config, "parent_id", "folder_id"), session)
+		id, err := client.CreateFolder(bg, name, parent)
+		if err != nil {
+			a.Log.Error("drive_create_folder failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "folderId"
+		}
+		session[outVar] = id
+
+	case "drive_upload_file":
+		name := processTemplate(stringFromConfig(node.Config, "name", "file_name"), session)
+		content := processTemplate(stringFromConfig(node.Config, "content", "text"), session)
+		parent := processTemplate(stringFromConfig(node.Config, "parent_id", "folder_id"), session)
+		id, err := client.UploadTextFile(bg, name, content, parent)
+		if err != nil {
+			a.Log.Error("drive_upload_file failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "fileId"
+		}
+		session[outVar] = id
+
+	case "docs_create":
+		title := processTemplate(stringFromConfig(node.Config, "title", "name"), session)
+		id, err := client.CreateDoc(bg, title)
+		if err != nil {
+			a.Log.Error("docs_create failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "documentId"
+		}
+		session[outVar] = id
+
+	case "docs_append":
+		docID := processTemplate(stringFromConfig(node.Config, "document_id", "documentId"), session)
+		text := processTemplate(stringFromConfig(node.Config, "text", "content"), session)
+		if err := client.AppendDocText(bg, docID, text); err != nil {
+			a.Log.Error("docs_append failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+
+	case "docs_read":
+		docID := processTemplate(stringFromConfig(node.Config, "document_id", "documentId"), session)
+		text, err := client.ReadDoc(bg, docID)
+		if err != nil {
+			a.Log.Error("docs_read failed", "node", node.ID, "error", err)
+			return nodeOutcome{outcome: "error"}, nil
+		}
+		if outVar == "" {
+			outVar = "docText"
+		}
+		session[outVar] = text
+
 	default:
 		a.Log.Warn("google_service unknown action", "action", action, "node", node.ID)
 		return nodeOutcome{outcome: "error"}, nil

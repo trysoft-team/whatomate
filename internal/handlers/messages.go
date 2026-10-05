@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/models"
@@ -157,6 +159,11 @@ func SLASendOptions() MessageSendOptions {
 // SendOutgoingMessage is the unified method for sending all types of WhatsApp messages.
 // It handles: text, media (image/video/audio/document), interactive (buttons/list/cta_url), and template messages.
 func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageRequest, opts MessageSendOptions) (*models.Message, error) {
+	// Agent replies may append initials; then mute chatbot for the session timeout.
+	if opts.SentByUserID != nil {
+		a.applyAgentReplyInitials(&req, *opts.SentByUserID)
+	}
+
 	// 1. Create message record
 	msg := a.createOutgoingMessage(req, opts)
 
@@ -164,6 +171,11 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 	if err := a.DB.Create(msg).Error; err != nil {
 		a.Log.Error("Failed to create message", "error", err)
 		return nil, fmt.Errorf("failed to create message: %w", err)
+	}
+
+	// Agent replies pause chatbot automation for the configured session timeout.
+	if opts.SentByUserID != nil {
+		a.pauseChatbotForAgentReply(req.Contact, req.Account)
 	}
 
 	// 2. Define the send function based on message type
@@ -297,6 +309,70 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 // toWhatsAppAccount converts models.WhatsAppAccount to whatsapp.Account
 func (a *App) toWhatsAppAccount(account *models.WhatsAppAccount) *whatsapp.Account {
 	return account.ToWAAccount()
+}
+
+// applyAgentReplyInitials appends the agent's initials on a new monospace
+// WhatsApp line (`XX`) when Agents → Append initials is on.
+func (a *App) applyAgentReplyInitials(req *OutgoingMessageRequest, userID uuid.UUID) {
+	if req == nil || req.Account == nil {
+		return
+	}
+	settings, err := a.getChatbotSettingsCached(req.Account.OrganizationID, req.Account.Name)
+	if err != nil || settings == nil || !settings.AgentAssignment.AppendAgentInitials {
+		return
+	}
+	var user models.User
+	if err := a.DB.Select("full_name").First(&user, "id = ?", userID).Error; err != nil {
+		return
+	}
+	initials := userInitials(user.FullName)
+	if initials == "" {
+		return
+	}
+	// WhatsApp cannot nest monospace inside italic (_`TM`_ shows raw backticks).
+	// Use monospace alone so the client hides the markers.
+	formatted := "`" + initials + "`"
+	// Retries resend the stored text, which already carries the initials.
+	withInitials := func(s string) string {
+		if strings.HasSuffix(strings.TrimRight(s, " \n"), formatted) {
+			return s
+		}
+		return s + "\n\n" + formatted
+	}
+	switch req.Type {
+	case models.MessageTypeText:
+		if strings.TrimSpace(req.Content) != "" {
+			req.Content = withInitials(req.Content)
+		}
+	case models.MessageTypeImage, models.MessageTypeVideo, models.MessageTypeDocument:
+		if strings.TrimSpace(req.Caption) == "" {
+			req.Caption = formatted
+		} else {
+			req.Caption = withInitials(req.Caption)
+		}
+	case models.MessageTypeInteractive:
+		if strings.TrimSpace(req.BodyText) != "" {
+			req.BodyText = withInitials(req.BodyText)
+		} else if strings.TrimSpace(req.Content) != "" {
+			req.Content = withInitials(req.Content)
+		}
+	}
+}
+
+func userInitials(fullName string) string {
+	parts := strings.Fields(strings.TrimSpace(fullName))
+	if len(parts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		r, _ := utf8.DecodeRuneInString(p)
+		if r == utf8.RuneError {
+			continue
+		}
+		b.WriteRune(unicode.ToUpper(r))
+	}
+	return b.String()
 }
 
 // createOutgoingMessage creates a Message model from the request
@@ -515,6 +591,10 @@ func (a *App) finalizeMessageSend(msg *models.Message, req OutgoingMessageReques
 					"error_message": errMsg,
 				},
 			})
+			a.NotifyWidgetLiveUpdate(req.Account.OrganizationID, "messages", "media")
+		}
+		if isServiceWindowClosedSendError(err) && req.Contact != nil {
+			a.releaseContactForClosedWindow(req.Account.OrganizationID, req.Contact.ID)
 		}
 		return
 	}
@@ -1069,6 +1149,9 @@ func (a *App) SendTemplateMessage(r *fastglue.Request) error {
 		WhatsAppAccount: message.WhatsAppAccount,
 		CreatedAt:       message.CreatedAt,
 		UpdatedAt:       message.UpdatedAt,
+	}
+	if until, ok := contactBotMutedUntil(contact); ok {
+		response.BotMutedUntil = &until
 	}
 	return r.SendEnvelope(response)
 }

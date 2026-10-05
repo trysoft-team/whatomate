@@ -289,7 +289,9 @@ POST /api/flows/sync
 }
 ```
 
-Omitting it returns `400 WhatsApp account is required`; an unknown name returns `400 WhatsApp account not found`.
+`whatsapp_account` is optional. Omit it (or send `"all"`) to sync every WhatsApp account in the organization; an unknown name returns `400 WhatsApp account not found`.
+
+When syncing all accounts, the response also includes `accounts` (how many were synced) and `failed_accounts` (names Meta could not be reached for). The request fails with `500` only if every account fails.
 
 ## Flow Status Lifecycle
 

@@ -19,13 +19,15 @@ const rows = computed(() => {
   return out
 })
 
-const outputHandles = computed(() =>
-  rows.value.map((r) => ({
+const outputHandles = computed(() => {
+  const handles = rows.value.map((r) => ({
     id: `button:${r.id}`,
     label: r.title || '—',
     title: r.title || '—',
-  })),
-)
+  }))
+  handles.push({ id: 'unmatched', label: 'Unmatched', title: 'Free text / unknown' })
+  return handles
+})
 </script>
 
 <template>

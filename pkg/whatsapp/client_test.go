@@ -349,6 +349,8 @@ func TestClient_MarkMessageRead(t *testing.T) {
 				_ = json.NewDecoder(r.Body).Decode(&body)
 				assert.Equal(t, "read", body["status"])
 				assert.Equal(t, "wamid.test123", body["message_id"])
+				_, hasTyping := body["typing_indicator"]
+				assert.False(t, hasTyping)
 
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
@@ -393,6 +395,31 @@ func TestClient_MarkMessageRead(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestClient_MarkMessageReadWithTyping(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "read", body["status"])
+		assert.Equal(t, "wamid.typing1", body["message_id"])
+		ti, ok := body["typing_indicator"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "text", ti["type"])
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	}))
+	defer server.Close()
+
+	log := testutil.NopLogger()
+	client := whatsapp.NewWithTimeout(log, 5*time.Second)
+	client.HTTPClient = &http.Client{
+		Transport: &testServerTransport{serverURL: server.URL},
+	}
+	err := client.MarkMessageReadWithTyping(testutil.TestContext(t), testAccount(server.URL), "wamid.typing1")
+	require.NoError(t, err)
 }
 
 func TestClient_SendImageMessage(t *testing.T) {

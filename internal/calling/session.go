@@ -75,6 +75,24 @@ type CallSession struct {
 	// assigned_user_id).
 	StickyAgentID *uuid.UUID
 
+	// PreferredAgentID is set by IVR transfer node config (agent_id) for one
+	// transfer attempt, then cleared. Takes precedence after StickyAgentID.
+	PreferredAgentID *uuid.UUID
+
+	// Locale is set by the language IVR node for subsequent TTS prompts.
+	Locale string
+
+	// IVRRecorder, when non-nil, receives Opus payloads from the caller's
+	// RTP track (see consumeAudioWithDTMF) for voicemail / speech_input.
+	IVRRecorder *CallRecorder
+
+	// Pipecat realtime AI Call control (nil when not in a Pipecat session).
+	PipecatEvent        chan PipecatControlEvent
+	PipecatTools        []aiCallToolDef
+	PipecatTransferTeam string
+	// AICallNodeID is the graph node id of the active AI Call (for fn: edges).
+	AICallNodeID string
+
 	// Outgoing call fields
 	Direction      models.CallDirection
 	AgentID        uuid.UUID
@@ -91,7 +109,8 @@ type CallSession struct {
 type IVRNodeType string
 
 const (
-	IVRNodeGreeting     IVRNodeType = "greeting"
+	IVRNodeStart           IVRNodeType = "start"
+	IVRNodeGreeting        IVRNodeType = "greeting"
 	IVRNodeMenu         IVRNodeType = "menu"
 	IVRNodeGather       IVRNodeType = "gather"
 	IVRNodeHTTPCallback IVRNodeType = "http_callback"
@@ -99,6 +118,20 @@ const (
 	IVRNodeGotoFlow     IVRNodeType = "goto_flow"
 	IVRNodeTiming       IVRNodeType = "timing"
 	IVRNodeHangup       IVRNodeType = "hangup"
+	IVRNodeCondition    IVRNodeType = "condition"
+	IVRNodeSetVariable  IVRNodeType = "set_variable"
+	IVRNodeConfirm      IVRNodeType = "confirm"
+	IVRNodeDelay        IVRNodeType = "delay"
+	IVRNodeSetLabels    IVRNodeType = "set_labels"
+	IVRNodeSendMessage  IVRNodeType = "send_message"
+	IVRNodeWebhook      IVRNodeType = "webhook"
+	IVRNodeLanguage     IVRNodeType = "language"
+	IVRNodeVoicemail    IVRNodeType = "voicemail"
+	IVRNodeSpeechInput  IVRNodeType = "speech_input"
+	IVRNodeAIVoice         IVRNodeType = "ai_voice"
+	IVRNodeAICall          IVRNodeType = "ai_call"
+	IVRNodeExecuteFunction IVRNodeType = "execute_function"
+	IVRNodeDialOut         IVRNodeType = "dial_out"
 )
 
 // TransferHTTPCallback holds the configuration for a single transfer lifecycle HTTP callback.
@@ -118,8 +151,9 @@ type TransferCallbacks struct {
 // IVRNode, IVREdge and IVRFlowGraph are the IVR domain's views of the shared
 // flow-graph types, specialized to IVRNodeType. Edge conditions for the IVR
 // engine include "default", "digit:N", "timeout", "max_retries", "http:2xx",
-// "http:non2xx", "in_hours", "out_of_hours". Traversal (BuildMaps/Node/
-// ResolveEdge/OutgoingEdges) lives in internal/flowgraph.
+// "http:non2xx", "in_hours", "out_of_hours", "true", "false", "confirmed",
+// "retry". Traversal (BuildMaps/Node/ResolveEdge/OutgoingEdges) lives in
+// internal/flowgraph.
 type (
 	IVRNode      = flowgraph.Node[IVRNodeType]
 	IVREdge      = flowgraph.Edge
@@ -128,26 +162,36 @@ type (
 
 // IVRContext holds runtime state during IVR flow execution.
 type IVRContext struct {
-	Variables   map[string]string
-	CallerPhone string
-	CallID      string
-	CurrentNode string
-	Path        []map[string]string
+	Variables      map[string]string
+	CallerPhone    string
+	CallID         string
+	OrganizationID uuid.UUID
+	CurrentNode    string
+	Path           []map[string]string
 }
 
 // Manager manages active call sessions
 type Manager struct {
-	sessions   map[string]*CallSession
-	mu         sync.RWMutex
-	log        logf.Logger
-	whatsapp   *whatsapp.Client
-	db         *gorm.DB
-	wsHub      *websocket.Hub
-	config     *config.CallingConfig
-	recordings storage.Uploader // nil when recording is disabled (S3 or local_path)
-	redis      *redis.Client
-	assigner   *assignment.Assigner
-	tts        *tts.PiperTTS
+	sessions      map[string]*CallSession
+	mu            sync.RWMutex
+	log           logf.Logger
+	whatsapp      *whatsapp.Client
+	db            *gorm.DB
+	wsHub         *websocket.Hub
+	config        *config.CallingConfig
+	recordings    storage.Uploader // nil when recording is disabled (S3 or local_path)
+	redis         *redis.Client
+	assigner      *assignment.Assigner
+	tts           tts.Synthesizer
+	encryptionKey string               // decrypts org chatbot AI API keys / ElevenLabs key
+	aiConfig      *config.AIConfig     // optional server-level AI keys (Whisper fallback)
+	pipecat       *config.PipecatConfig // optional realtime AI Call sidecar
+}
+
+// SetSecrets configures encryption + optional server AI keys used by Wave 3 IVR nodes.
+func (m *Manager) SetSecrets(encryptionKey string, ai *config.AIConfig) {
+	m.encryptionKey = encryptionKey
+	m.aiConfig = ai
 }
 
 // NewManager creates a new call session manager
@@ -183,13 +227,13 @@ func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm
 	}
 }
 
-// SetTTS attaches Piper TTS so IVR prompts can interpolate {{caller_name}}
-// and other variables at call time.
-func (m *Manager) SetTTS(p *tts.PiperTTS) {
+// SetTTS attaches a Synthesizer (Piper router and/or cloud TTS) so IVR prompts
+// can interpolate {{caller_name}} and other variables at call time.
+func (m *Manager) SetTTS(s tts.Synthesizer) {
 	if m == nil {
 		return
 	}
-	m.tts = p
+	m.tts = s
 }
 
 // HandleIncomingCall processes a new incoming call and starts WebRTC negotiation.

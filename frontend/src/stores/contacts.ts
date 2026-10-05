@@ -30,6 +30,7 @@ export interface Contact {
   assigned_user_id?: string
   whatsapp_account?: string
   marketing_opt_out?: boolean
+  bot_muted_until?: string
   created_at: string
   updated_at: string
 }
@@ -78,8 +79,11 @@ export interface Message {
   reply_to_message?: ReplyPreview
   reactions?: Reaction[]
   whatsapp_account?: string
+  transcript?: string
+  translations?: Record<string, string>
   created_at: string
   updated_at: string
+  bot_muted_until?: string
 }
 
 export const useContactsStore = defineStore('contacts', () => {
@@ -122,6 +126,7 @@ export const useContactsStore = defineStore('contacts', () => {
         page: 1,
         limit: contactsLimit.value,
         tags: tagsParam,
+        search: normalizeContactSearch(searchQuery.value) || undefined,
         ...params
       })
       // API returns { status: "success", data: { contacts: [...], total: number } }
@@ -244,6 +249,9 @@ export const useContactsStore = defineStore('contacts', () => {
       const newMessage = response.data.data || response.data
       // Use addMessage which has duplicate checking (WebSocket may also broadcast this)
       addMessage(newMessage)
+      if (newMessage.bot_muted_until) {
+        applyBotMutedUntil(contactId, newMessage.bot_muted_until)
+      }
 
       return newMessage
     } catch (error) {
@@ -272,6 +280,9 @@ export const useContactsStore = defineStore('contacts', () => {
       const data = response.data.data || response.data
       // Use addMessage which has duplicate checking (WebSocket may also broadcast this)
       addMessage(data)
+      if (data.bot_muted_until) {
+        applyBotMutedUntil(contactId, data.bot_muted_until)
+      }
       return data
     } catch (error) {
       console.error('Failed to send template:', error)
@@ -285,6 +296,37 @@ export const useContactsStore = defineStore('contacts', () => {
 
   function clearReplyingTo() {
     replyingTo.value = null
+  }
+
+  function applyBotMutedUntil(contactId: string, mutedUntil: string) {
+    const patchMeta = (c: Contact): Contact => ({
+      ...c,
+      metadata: { ...(c.metadata || {}), bot_muted_until: mutedUntil, bot_muted_reason: 'agent_reply' },
+      bot_muted_until: mutedUntil,
+    })
+    const idx = contacts.value.findIndex(c => c.id === contactId)
+    if (idx >= 0) {
+      contacts.value[idx] = patchMeta(contacts.value[idx])
+    }
+    if (currentContact.value?.id === contactId) {
+      currentContact.value = patchMeta(currentContact.value)
+    }
+  }
+
+  function clearBotMutedUntil(contactId: string) {
+    const clearMeta = (c: Contact): Contact => {
+      const metadata = { ...(c.metadata || {}) }
+      delete metadata.bot_muted_until
+      delete metadata.bot_muted_reason
+      return { ...c, metadata, bot_muted_until: undefined }
+    }
+    const idx = contacts.value.findIndex(c => c.id === contactId)
+    if (idx >= 0) {
+      contacts.value[idx] = clearMeta(contacts.value[idx])
+    }
+    if (currentContact.value?.id === contactId) {
+      currentContact.value = clearMeta(currentContact.value)
+    }
   }
 
   function addMessage(message: Message) {
@@ -364,6 +406,16 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
+  function patchContact(contactId: string, patch: Partial<Contact>) {
+    const contact = contacts.value.find(c => c.id === contactId)
+    if (contact) {
+      Object.assign(contact, patch)
+    }
+    if (currentContact.value?.id === contactId) {
+      currentContact.value = { ...currentContact.value, ...patch }
+    }
+  }
+
   // Debounce server-side search so each keystroke doesn't fire a request.
   let searchDebounceHandle: ReturnType<typeof setTimeout> | null = null
   watch(searchQuery, (query) => {
@@ -406,7 +458,10 @@ export const useContactsStore = defineStore('contacts', () => {
     setAccountFilter,
     setReplyingTo,
     clearReplyingTo,
+    applyBotMutedUntil,
+    clearBotMutedUntil,
     updateMessageReactions,
-    updateContactTags
+    updateContactTags,
+    patchContact
   }
 })

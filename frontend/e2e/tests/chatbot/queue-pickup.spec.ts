@@ -295,6 +295,7 @@ test.describe('Pick from queue — admin assign flow', () => {
     // Super admin sees the admin/manager view (tabs).
     await page.goto('/login')
     await page.locator('input[type="email"]').fill(SUPER_ADMIN.email)
+    await page.locator('button[type="submit"]').click()
     await page.locator('input[type="password"]').fill(SUPER_ADMIN.password)
     await page.locator('button[type="submit"]').click()
     await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 10_000 })
@@ -640,6 +641,7 @@ test.describe('Admin reassign and unassign flows', () => {
   async function loginSuperAdmin(page: import('@playwright/test').Page) {
     await page.goto('/login')
     await page.locator('input[type="email"]').fill(SUPER_ADMIN.email)
+    await page.locator('button[type="submit"]').click()
     await page.locator('input[type="password"]').fill(SUPER_ADMIN.password)
     await page.locator('button[type="submit"]').click()
     await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 10_000 })
@@ -802,6 +804,7 @@ test.describe('Queue tab team filter', () => {
   test('admin can filter the queue to a single team', async ({ page }) => {
     await page.goto('/login')
     await page.locator('input[type="email"]').fill(SUPER_ADMIN.email)
+    await page.locator('button[type="submit"]').click()
     await page.locator('input[type="password"]').fill(SUPER_ADMIN.password)
     await page.locator('button[type="submit"]').click()
     await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 10_000 })

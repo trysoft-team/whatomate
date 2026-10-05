@@ -106,22 +106,27 @@ GET /api/widgets/data-sources
   "data": {
     "data_sources": [
       { "name": "messages", "label": "Messages", "fields": ["status", "direction", "message_type", "whatsapp_account"] },
-      { "name": "contacts", "label": "Contacts", "fields": ["whatsapp_account", "is_read"] }
+      { "name": "calls", "label": "Calls", "fields": ["direction", "status", "agent_id", "whatsapp_account"] },
+      { "name": "agents", "label": "Agents", "fields": ["is_available", "team_id"] },
+      { "name": "sla", "label": "Sla", "fields": ["status", "sla_breached", "escalation_level"] },
+      { "name": "ai", "label": "Ai", "fields": ["is_enabled"] },
+      { "name": "webhooks", "label": "Webhooks", "fields": ["is_active"] }
     ],
-    "metrics": ["count", "sum", "avg"],
-    "display_types": ["number", "percentage", "chart", "table", "shortcuts"],
+    "metrics": ["count", "sum", "avg", "unique", "rate", "ratio", "sum_duration", "avg_duration", "delta", "p50", "p95"],
+    "display_types": ["number", "percentage", "chart", "table", "shortcuts", "sparkline", "gauge", "leaderboard", "heatmap", "funnel", "kpi_strip", "alert_list", "queue", "agent_status", "iframe"],
+    "colors": ["blue", "green", "purple", "orange", "red", "cyan", "amber", "pink", "slate", "teal", "indigo", "lime", "rose"],
+    "live_display_types": ["queue", "agent_status", "alert_list"],
     "operators": [
       { "value": "equals", "label": "Equals" },
-      { "value": "not_equals", "label": "Not Equals" },
-      { "value": "contains", "label": "Contains" },
-      { "value": "gt", "label": "Greater Than" },
-      { "value": "lt", "label": "Less Than" },
-      { "value": "gte", "label": "Greater Than or Equal" },
-      { "value": "lte", "label": "Less Than or Equal" }
+      { "value": "in", "label": "In" },
+      { "value": "between", "label": "Between" },
+      { "value": "is_null", "label": "Is Null" }
     ]
   }
 }
 ```
+
+`ai` sums token usage from `ai_usage_logs` (prompt/completion/total tokens recorded on chatbot replies and flow generation). `webhooks` is still a stub source (config counts; no delivery log yet). `iframe` requires `config.url` as an `https://` URL. Live widgets refresh via WebSocket `widget_live_update` with `{ "sources": ["transfers", ...] }`.
 
 ## Create Widget
 

@@ -11,6 +11,7 @@ export class GeneralSettingsPage extends BasePage {
   readonly orgNameInput: Locator
   readonly timezoneSelect: Locator
   readonly dateFormatSelect: Locator
+  readonly timeFormatSelect: Locator
   readonly saveButton: Locator
 
   constructor(page: Page) {
@@ -22,6 +23,7 @@ export class GeneralSettingsPage extends BasePage {
     // Use label-based selectors for comboboxes
     this.timezoneSelect = page.locator('label').filter({ hasText: 'Default Timezone' }).locator('..').locator('button[role="combobox"]')
     this.dateFormatSelect = page.locator('label').filter({ hasText: 'Date Format' }).locator('..').locator('button[role="combobox"]')
+    this.timeFormatSelect = page.locator('label').filter({ hasText: 'Time Format' }).locator('..').locator('button[role="combobox"]')
     this.saveButton = page.getByRole('button', { name: /Save Changes/i })
   }
 
@@ -74,6 +76,11 @@ export class GeneralSettingsPage extends BasePage {
 
   async selectDateFormat(value: string) {
     await this.dateFormatSelect.click()
+    await this.page.locator('[role="option"]').filter({ hasText: value }).click()
+  }
+
+  async selectTimeFormat(value: string) {
+    await this.timeFormatSelect.click()
     await this.page.locator('[role="option"]').filter({ hasText: value }).click()
   }
 

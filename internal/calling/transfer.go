@@ -107,6 +107,11 @@ func (m *Manager) initiateTransfer(session *CallSession, waAccount string, teamT
 		assignedAgentID = session.StickyAgentID
 		m.log.Info("Routing call to sticky agent (voice_call payload)",
 			"call_id", session.ID, "agent_id", assignedAgentID)
+	case session.PreferredAgentID != nil:
+		assignedAgentID = session.PreferredAgentID
+		session.PreferredAgentID = nil
+		m.log.Info("Routing call to preferred agent (IVR transfer config)",
+			"call_id", session.ID, "agent_id", assignedAgentID)
 	case session.ContactID != uuid.Nil:
 		var contact models.Contact
 		if m.db.Select("assigned_user_id").Where("id = ?", session.ContactID).First(&contact).Error == nil && contact.AssignedUserID != nil {

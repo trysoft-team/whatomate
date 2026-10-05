@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -419,7 +420,9 @@ func compareNumeric(value any, compareValue string) int {
 	return 0
 }
 
-// formatValue converts a value to a string for template output
+// formatValue converts a value to a string for template output.
+// Maps and slices are JSON-encoded so {{inbound}} / {{{inbound}}} can be
+// pasted into webhook bodies as Meta-shaped payloads.
 func formatValue(value any) string {
 	if value == nil {
 		return ""
@@ -443,7 +446,17 @@ func formatValue(value any) string {
 			return "true"
 		}
 		return "false"
+	case map[string]any, []any, []map[string]any:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
 	default:
+		// Catch other map/slice shapes via json
+		if b, err := json.Marshal(v); err == nil && len(b) > 0 && (b[0] == '{' || b[0] == '[') {
+			return string(b)
+		}
 		return fmt.Sprintf("%v", v)
 	}
 }

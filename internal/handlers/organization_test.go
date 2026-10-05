@@ -28,6 +28,7 @@ func TestApp_GetOrganizationSettings_Success(t *testing.T) {
 		"mask_phone_numbers": true,
 		"timezone":           "Asia/Kolkata",
 		"date_format":        "DD/MM/YYYY",
+		"time_format":        "24h",
 	}
 	require.NoError(t, app.DB.Save(org).Error)
 
@@ -50,6 +51,7 @@ func TestApp_GetOrganizationSettings_Success(t *testing.T) {
 	assert.Equal(t, true, resp.Data.Settings.MaskPhoneNumbers)
 	assert.Equal(t, "Asia/Kolkata", resp.Data.Settings.Timezone)
 	assert.Equal(t, "DD/MM/YYYY", resp.Data.Settings.DateFormat)
+	assert.Equal(t, "24h", resp.Data.Settings.TimeFormat)
 	assert.Equal(t, org.Name, resp.Data.Name)
 }
 
@@ -80,6 +82,7 @@ func TestApp_GetOrganizationSettings_Defaults(t *testing.T) {
 	assert.Equal(t, false, resp.Data.Settings.MaskPhoneNumbers)
 	assert.Equal(t, "UTC", resp.Data.Settings.Timezone)
 	assert.Equal(t, "YYYY-MM-DD", resp.Data.Settings.DateFormat)
+	assert.Equal(t, "12h", resp.Data.Settings.TimeFormat)
 }
 
 func TestApp_GetOrganizationSettings_Unauthorized(t *testing.T) {
@@ -107,12 +110,14 @@ func TestApp_UpdateOrganizationSettings_Success(t *testing.T) {
 	maskEnabled := true
 	timezone := "America/New_York"
 	dateFormat := "MM/DD/YYYY"
+	timeFormat := "24h"
 	newName := "Updated Organization"
 
 	req := testutil.NewJSONRequest(t, map[string]any{
 		"mask_phone_numbers": maskEnabled,
 		"timezone":           timezone,
 		"date_format":        dateFormat,
+		"time_format":        timeFormat,
 		"name":               newName,
 	})
 	testutil.SetAuthContext(req, org.ID, user.ID)
@@ -138,6 +143,7 @@ func TestApp_UpdateOrganizationSettings_Success(t *testing.T) {
 	assert.Equal(t, true, updatedOrg.Settings["mask_phone_numbers"])
 	assert.Equal(t, "America/New_York", updatedOrg.Settings["timezone"])
 	assert.Equal(t, "MM/DD/YYYY", updatedOrg.Settings["date_format"])
+	assert.Equal(t, "24h", updatedOrg.Settings["time_format"])
 }
 
 func TestApp_UpdateOrganizationSettings_PartialUpdate(t *testing.T) {

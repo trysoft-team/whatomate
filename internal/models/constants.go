@@ -61,6 +61,8 @@ const (
 	AIProviderOpenAI    AIProvider = "openai"
 	AIProviderAnthropic AIProvider = "anthropic"
 	AIProviderGoogle    AIProvider = "google"
+	// AIProviderOpenRouter speaks the OpenAI chat-completions API.
+	AIProviderOpenRouter AIProvider = "openrouter"
 )
 
 // MatchType represents keyword matching strategies

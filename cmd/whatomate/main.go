@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -162,6 +163,12 @@ func runServer(args []string) {
 		if err := handlers.BackfillChatbotFlowGraph(db, lo); err != nil {
 			lo.Fatal("Chatbot flow graph backfill failed", "error", err)
 		}
+		if err := handlers.BackfillChatbotFlowDraftGraph(db, lo); err != nil {
+			lo.Fatal("Chatbot flow draft graph backfill failed", "error", err)
+		}
+		if err := handlers.BackfillAccountAIResponsesEnabled(db, lo); err != nil {
+			lo.Fatal("Account AI responses backfill failed", "error", err)
+		}
 	}
 
 	// Connect to Redis
@@ -235,20 +242,35 @@ func runServer(args []string) {
 
 	// Initialize CallManager (per-org calling_enabled DB setting controls access)
 	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, rdb, waClient, wsHub, assigner, lo)
+	app.CallManager.SetSecrets(cfg.App.EncryptionKey, &cfg.AI)
+	app.CallManager.SetPipecat(&cfg.Pipecat)
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
 
-	// Initialize TTS if configured (requires piper binary + model)
+	// Initialize TTS router (Piper local + OpenAI/ElevenLabs cloud; keys come per-call from org settings)
+	audioDir := cfg.Calling.AudioDir
+	ttsRouter := &tts.Router{
+		DefaultProvider: "piper",
+		OpenAI: &tts.OpenAISynth{
+			AudioDir: audioDir,
+		},
+		ElevenLabs: &tts.ElevenLabsSynth{
+			AudioDir: audioDir,
+		},
+	}
 	if cfg.TTS.PiperBinary != "" && cfg.TTS.PiperModel != "" {
-		app.TTS = &tts.PiperTTS{
+		piper := &tts.PiperTTS{
 			BinaryPath:    cfg.TTS.PiperBinary,
 			ModelPath:     cfg.TTS.PiperModel,
 			OpusencBinary: cfg.TTS.OpusencBinary,
-			AudioDir:      cfg.Calling.AudioDir,
+			AudioDir:      audioDir,
 		}
-		lo.Info("TTS initialized", "piper", cfg.TTS.PiperBinary, "model", cfg.TTS.PiperModel)
-		app.CallManager.SetTTS(app.TTS)
+		ttsRouter.Piper = piper
+		lo.Info("TTS Piper initialized", "piper", cfg.TTS.PiperBinary, "model", cfg.TTS.PiperModel)
 	}
+	app.TTS = ttsRouter
+	app.CallManager.SetTTS(ttsRouter)
+	lo.Info("TTS router attached (piper/openai/elevenlabs)")
 
 	// Start campaign stats subscriber for real-time WebSocket updates from worker
 	if err := app.StartCampaignStatsSubscriber(); err != nil {
@@ -496,10 +518,20 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		g.POST("/api/auth/refresh", withRateLimit(app.RefreshToken, middleware.RateLimitOpts{
 			Redis: rdb, Log: lo, Max: cfg.RateLimit.RefreshMaxAttempts, Window: window, KeyPrefix: "refresh", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
+		// Begin only issues a challenge, and the login page requests one on every
+		// load for passkey autofill, so it gets more headroom than finish.
+		g.POST("/api/auth/passkey/begin", withRateLimit(app.BeginPasskeyLogin, middleware.RateLimitOpts{
+			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts * 6, Window: window, KeyPrefix: "passkey_begin", TrustProxy: cfg.RateLimit.TrustProxy,
+		}))
+		g.POST("/api/auth/passkey/finish", withRateLimit(app.FinishPasskeyLogin, middleware.RateLimitOpts{
+			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "passkey_finish", TrustProxy: cfg.RateLimit.TrustProxy,
+		}))
 	} else {
 		g.POST("/api/auth/login", app.Login)
 		g.POST("/api/auth/register", app.Register)
 		g.POST("/api/auth/refresh", app.RefreshToken)
+		g.POST("/api/auth/passkey/begin", app.BeginPasskeyLogin)
+		g.POST("/api/auth/passkey/finish", app.FinishPasskeyLogin)
 	}
 	g.POST("/api/auth/logout", app.Logout)
 	g.POST("/api/auth/switch-org", app.SwitchOrg)
@@ -524,6 +556,12 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/webhook", app.WebhookVerify)
 	g.POST("/api/webhook", app.WebhookHandler)
 
+	// Public chatbot media for Meta link downloads (UUID filename)
+	g.GET("/public/chatbot-media/{id}", app.ServeChatbotMedia)
+
+	// WhatsApp Flow data endpoint (public - encrypted and signed by Meta)
+	g.POST("/api/flow-endpoint/{id}", app.FlowEndpoint)
+
 	// WebSocket route (auth via message-based flow after upgrade)
 	g.GET("/ws", app.WebSocketHandler)
 
@@ -538,11 +576,28 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		// Skip auth for public routes
 		if path == "/health" || path == "/ready" ||
 			path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" ||
-			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" {
+			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" ||
+			path == "/api/auth/passkey/begin" || path == "/api/auth/passkey/finish" {
+			return r
+		}
+		// Pipecat sidecar callbacks use shared auth_token (validated in handlers).
+		if strings.HasPrefix(path, "/api/internal/pipecat") {
+			return r
+		}
+		// Public chatbot media for Meta (UUID filenames; also under base_path)
+		if strings.Contains(path, "/public/chatbot-media/") {
+			return r
+		}
+		// WhatsApp Flow data endpoint (request encryption + Meta signature)
+		if strings.HasPrefix(path, "/api/flow-endpoint/") {
 			return r
 		}
 		// Skip auth for SSO routes (they handle their own auth via state tokens)
 		if len(path) >= 13 && path[:13] == "/api/auth/sso" {
+			return r
+		}
+		// Google account connect callback (one-time state token in Redis)
+		if path == "/api/google-credentials/oauth/callback" {
 			return r
 		}
 		// Skip auth for custom action redirects (uses one-time token)
@@ -602,6 +657,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/me", app.GetCurrentUser)
 	g.PUT("/api/me/settings", app.UpdateCurrentUserSettings)
 	g.PUT("/api/me/password", app.ChangePassword)
+	g.GET("/api/me/passkeys", app.ListPasskeys)
+	g.POST("/api/me/passkeys/register/begin", app.BeginPasskeyRegistration)
+	g.POST("/api/me/passkeys/register/finish", app.FinishPasskeyRegistration)
+	g.DELETE("/api/me/passkeys/{id}", app.DeletePasskey)
 	g.PUT("/api/me/availability", app.UpdateAvailability)
 	g.GET("/api/me/organizations", app.ListMyOrganizations)
 
@@ -637,8 +696,13 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.POST("/api/accounts/{id}/register", app.RegisterPhoneNumber) // Embedded signup manual/2fa registration
 	g.POST("/api/accounts/{id}/test", app.TestAccountConnection)
 	g.POST("/api/accounts/{id}/subscribe", app.SubscribeApp)
+	g.GET("/api/accounts/{id}/flow-encryption", app.GetFlowEncryption)
+	g.POST("/api/accounts/{id}/flow-encryption", app.SetupFlowEncryption)
 	g.GET("/api/accounts/{id}/business_profile", app.GetBusinessProfile)
 	g.PUT("/api/accounts/{id}/business_profile", app.UpdateBusinessProfile)
+	g.GET("/api/accounts/{id}/display_name", app.GetDisplayName)
+	g.POST("/api/accounts/{id}/display_name", app.RequestDisplayNameChange)
+	g.POST("/api/accounts/{id}/display_name/apply", app.ApplyDisplayName)
 	g.POST("/api/accounts/{id}/business_profile/photo", app.UpdateProfilePicture)
 
 	// Contacts
@@ -669,6 +733,9 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.DELETE("/api/contact-lists/{id}", app.DeleteContactList)
 
 	g.GET("/api/google-credentials", app.ListGoogleCredentials)
+	g.GET("/api/google-credentials/oauth", app.GetGoogleOAuthStatus)
+	g.POST("/api/google-credentials/oauth/start", app.StartGoogleOAuth)
+	g.GET("/api/google-credentials/oauth/callback", app.GoogleOAuthCallback)
 	g.POST("/api/google-credentials", app.CreateGoogleCredential)
 	g.DELETE("/api/google-credentials/{id}", app.DeleteGoogleCredential)
 
@@ -676,6 +743,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/contacts/{id}/messages", app.GetMessages)
 	g.POST("/api/contacts/{id}/messages", app.SendMessage)
 	g.POST("/api/contacts/{id}/mark-read", app.MarkContactRead)
+	g.POST("/api/contacts/{id}/typing", app.SendContactTyping)
+	g.POST("/api/contacts/{id}/close-agent-session", app.CloseAgentSession)
+	g.POST("/api/contacts/{id}/ai-assist", app.ChatAIAssist)
+	g.POST("/api/messages/{id}/transcribe", app.TranscribeMessage)
 	g.POST("/api/contacts/{id}/messages/{message_id}/reaction", app.SendReaction)
 	g.POST("/api/messages", app.SendMessage) // Legacy route
 	g.POST("/api/messages/template", app.SendTemplateMessage)
@@ -690,6 +761,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 
 	// Media (serves media files for messages, auth-protected)
 	g.GET("/api/media/{message_id}", app.ServeMedia)
+	g.GET("/api/flow-media/{org}/{name}", app.ServeFlowMedia)
 
 	// Templates
 	g.GET("/api/templates", app.ListTemplates)
@@ -698,6 +770,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.PUT("/api/templates/{id}", app.UpdateTemplate)
 	g.DELETE("/api/templates/{id}", app.DeleteTemplate)
 	g.POST("/api/templates/sync", app.SyncTemplates)
+	g.POST("/api/templates/generate", app.GenerateTemplate)
 	g.POST("/api/templates/{id}/publish", app.SubmitTemplate)
 	g.POST("/api/templates/upload-media", app.UploadTemplateMedia)
 
@@ -712,6 +785,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.POST("/api/flows/{id}/deprecate", app.DeprecateFlow)
 	g.POST("/api/flows/{id}/duplicate", app.DuplicateFlow)
 	g.POST("/api/flows/sync", app.SyncFlows)
+	g.POST("/api/flows/generate", app.GenerateWhatsAppFlow)
 
 	// Bulk Campaigns
 	g.GET("/api/campaigns", app.ListCampaigns)
@@ -733,6 +807,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Chatbot Settings
 	g.GET("/api/chatbot/settings", app.GetChatbotSettings)
 	g.PUT("/api/chatbot/settings", app.UpdateChatbotSettings)
+	g.GET("/api/ai/openrouter/free-models", app.ListOpenRouterFreeModels)
 
 	// Keyword Rules
 	g.GET("/api/chatbot/keywords", app.ListKeywordRules)
@@ -744,8 +819,12 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Chatbot Flows
 	g.GET("/api/chatbot/flows", app.ListChatbotFlows)
 	g.POST("/api/chatbot/flows", app.CreateChatbotFlow)
+	g.POST("/api/chatbot/flows/generate", app.GenerateChatbotFlow)
+	g.POST("/api/chatbot/media", app.UploadChatbotMedia)
 	g.GET("/api/chatbot/flows/{id}", app.GetChatbotFlow)
 	g.PUT("/api/chatbot/flows/{id}", app.UpdateChatbotFlow)
+	g.POST("/api/chatbot/flows/{id}/publish", app.PublishChatbotFlow)
+	g.GET("/api/chatbot/flows/{id}/analytics", app.GetChatbotFlowAnalytics)
 	g.DELETE("/api/chatbot/flows/{id}", app.DeleteChatbotFlow)
 
 	// AI Contexts
@@ -779,6 +858,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Canned Responses
 	g.GET("/api/canned-responses", app.ListCannedResponses)
 	g.POST("/api/canned-responses", app.CreateCannedResponse)
+	g.POST("/api/canned-responses/generate", app.GenerateCannedResponse)
 	g.GET("/api/canned-responses/{id}", app.GetCannedResponse)
 	g.PUT("/api/canned-responses/{id}", app.UpdateCannedResponse)
 	g.DELETE("/api/canned-responses/{id}", app.DeleteCannedResponse)
@@ -786,6 +866,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 
 	// Sessions (admin/debug)
 	g.GET("/api/chatbot/sessions", app.ListChatbotSessions)
+	g.GET("/api/chatbot/sessions/count", app.CountChatbotSessions)
 	g.GET("/api/chatbot/sessions/{id}", app.GetChatbotSession)
 
 	// Analytics
@@ -805,6 +886,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/widgets", app.ListWidgets)
 	g.POST("/api/widgets", app.CreateWidget)
 	g.GET("/api/widgets/data-sources", app.GetWidgetDataSources)
+	g.POST("/api/widgets/generate", app.GenerateWidget)
 	g.GET("/api/widgets/data", app.GetAllWidgetsData)
 	g.GET("/api/widgets/{id}", app.GetWidget)
 	g.PUT("/api/widgets/{id}", app.UpdateWidget)
@@ -816,6 +898,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/org/settings", app.GetOrganizationSettings)
 	g.PUT("/api/org/settings", app.UpdateOrganizationSettings)
 	g.POST("/api/org/audio", app.UploadOrgAudio)
+
+	// Shared Meta App credentials (super admin only — enforced in handlers)
+	g.GET("/api/admin/meta-app", app.GetSharedMetaApp)
+	g.PUT("/api/admin/meta-app", app.UpdateSharedMetaApp)
 
 	// Organizations
 	g.GET("/api/organizations", app.ListOrganizations)
@@ -844,6 +930,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Custom Actions
 	g.GET("/api/custom-actions", app.ListCustomActions)
 	g.POST("/api/custom-actions", app.CreateCustomAction)
+	g.POST("/api/custom-actions/generate", app.GenerateCustomAction)
 	g.GET("/api/custom-actions/{id}", app.GetCustomAction)
 	g.PUT("/api/custom-actions/{id}", app.UpdateCustomAction)
 	g.DELETE("/api/custom-actions/{id}", app.DeleteCustomAction)
@@ -851,13 +938,21 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/custom-actions/redirect/{token}", app.CustomActionRedirect)
 
 	// IVR Flows
+	g.POST("/api/internal/pipecat/events", app.PipecatEvent)
+	g.POST("/api/internal/pipecat/tools/{call_id}", app.PipecatTool)
+	g.POST("/api/internal/pipecat/transcript/{call_id}", app.PipecatTranscript)
+	g.POST("/api/internal/pipecat/recordings/{call_id}", app.PipecatRecording)
+	g.GET("/api/internal/pipecat/status", app.PipecatStatus)
+
 	g.GET("/api/ivr-flows", app.ListIVRFlows)
 	g.GET("/api/ivr-flows/{id}", app.GetIVRFlow)
 	g.POST("/api/ivr-flows", app.CreateIVRFlow)
+	g.POST("/api/ivr-flows/generate", app.GenerateIVRFlow)
 	g.PUT("/api/ivr-flows/{id}", app.UpdateIVRFlow)
 	g.DELETE("/api/ivr-flows/{id}", app.DeleteIVRFlow)
 	g.POST("/api/ivr-flows/audio", app.UploadIVRAudio)
 	g.GET("/api/ivr-flows/audio/{filename}", app.ServeIVRAudio)
+	g.POST("/api/ivr-flows/voice-preview", app.PreviewIVRGeminiVoice)
 
 	// Call Logs
 	g.GET("/api/call-logs", app.ListCallLogs)

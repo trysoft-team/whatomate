@@ -20,6 +20,11 @@ const isLoading = ref(true)
 const resourceRouteMap: Record<string, (id: string) => string> = {
   template: (id) => `/templates/${id}`,
   chatbot_settings: () => `/settings/chatbot`,
+  'settings.chatbot.ai': () => `/settings/ai`,
+  'settings.chatbot.messages': () => `/settings/chatbot`,
+  'settings.chatbot.sla': () => `/settings/chatbot`,
+  'settings.chatbot.agents': () => `/settings/chatbot`,
+  'settings.chatbot.hours': () => `/settings/chatbot`,
   chatbot_flow: (id) => `/chatbot/flows/${id}`,
   keyword_rule: (id) => `/chatbot/keywords/${id}`,
   account: (id) => `/settings/accounts/${id}`,

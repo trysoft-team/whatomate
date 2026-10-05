@@ -43,6 +43,10 @@ func TestApp_CreateOrganization_Success(t *testing.T) {
 	assert.NotEmpty(t, resp.Data.Slug)
 	assert.NotEqual(t, uuid.Nil, resp.Data.ID)
 	assert.NotEmpty(t, resp.Data.CreatedAt)
+
+	var widgetCount int64
+	require.NoError(t, app.DB.Model(&models.Widget{}).Where("organization_id = ? AND is_default = ?", resp.Data.ID, true).Count(&widgetCount).Error)
+	assert.Equal(t, int64(14), widgetCount, "new orgs should get the full default dashboard widget set")
 }
 
 func TestApp_CreateOrganization_EmptyName(t *testing.T) {

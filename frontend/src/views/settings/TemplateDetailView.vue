@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -10,6 +10,7 @@ import DetailPageLayout from '@/components/shared/DetailPageLayout.vue'
 import MetadataPanel from '@/components/shared/MetadataPanel.vue'
 import AuditLogPanel from '@/components/shared/AuditLogPanel.vue'
 import UnsavedChangesDialog from '@/components/shared/UnsavedChangesDialog.vue'
+import TemplatePreview from '@/components/templates/TemplatePreview.vue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -44,10 +45,13 @@ import {
   Send,
   Plus,
   X,
-  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Info,
+  Sparkles,
 } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
+import { takeAITemplateDraft } from '@/lib/templateDraft'
 import { getQualityBadgeClass, getQualityRatingLabel } from '@/lib/utils'
 
 interface WhatsAppAccount {
@@ -150,13 +154,53 @@ const deleteDialogOpen = ref(false)
 const publishDialogOpen = ref(false)
 const isPublishing = ref(false)
 const isPreviewOpen = ref(false)
-const isDetailsOpen = ref(true)
+
+type StepId = 'details' | 'content' | 'buttons'
+const step = ref<StepId>('details')
+const steps = computed<{ id: StepId; label: string; description: string }[]>(() => {
+  const all: { id: StepId; label: string; description: string }[] = [
+    {
+      id: 'details',
+      label: t('templates.stepDetails', 'Details'),
+      description: t('templates.stepDetailsHint', 'WhatsApp account, name, language and category'),
+    },
+    {
+      id: 'content',
+      label: t('templates.stepContent', 'Content'),
+      description: isAuthentication.value
+        ? t('templates.stepContentAuthHint', 'How the verification code is delivered')
+        : t('templates.stepContentHint', 'Header, message body, sample values and footer'),
+    },
+    {
+      id: 'buttons',
+      label: t('templates.stepButtons', 'Buttons'),
+      description: t('templates.stepButtonsHint', 'Optional quick replies and call-to-action buttons'),
+    },
+  ]
+  return isAuthentication.value ? all.slice(0, 2) : all
+})
+const stepIndex = computed(() => Math.max(0, steps.value.findIndex(s => s.id === step.value)))
+const currentStep = computed(() => steps.value[stepIndex.value])
+const isLastStep = computed(() => stepIndex.value === steps.value.length - 1)
+
+// null unless the new-template form was filled by "Generate with AI"; '' when AI left no notes.
+const aiDraftNotes = ref<string | null>(null)
 
 // Header media upload state
 const headerMediaFile = ref<File | null>(null)
 const headerMediaUploading = ref(false)
 const headerMediaHandle = ref('')
 const headerMediaFilename = ref('')
+const headerMediaPreviewUrl = ref('')
+
+watch(headerMediaFile, (file) => {
+  if (headerMediaPreviewUrl.value) URL.revokeObjectURL(headerMediaPreviewUrl.value)
+  headerMediaPreviewUrl.value = file && file.type.startsWith('image/') ? URL.createObjectURL(file) : ''
+})
+
+onBeforeUnmount(() => {
+  if (headerMediaPreviewUrl.value) URL.revokeObjectURL(headerMediaPreviewUrl.value)
+})
 
 // WhatsApp Flows for FLOW button type
 const whatsappFlows = ref<any[]>([])
@@ -376,7 +420,6 @@ async function loadTemplate() {
     const data = (response.data as any).data
     template.value = data
     syncForm()
-    isDetailsOpen.value = false
     nextTick(() => { hasChanges.value = false })
   } catch {
     isNotFound.value = true
@@ -448,52 +491,70 @@ watch(() => form.value.category, (newCat, oldCat) => {
   }
 })
 
-async function save() {
-  if (!form.value.name.trim()) {
-    toast.error(t('templates.nameRequired', 'Template name is required'))
-    return
+// Returns the first problem that blocks leaving (or saving) a step, or null.
+function stepError(id: StepId): string | null {
+  if (id === 'details') {
+    if (!form.value.whatsapp_account) return t('templates.selectAccountFirst', 'Select an account first')
+    if (!form.value.name.trim()) return t('templates.nameRequired', 'Template name is required')
+    return null
   }
-  if (!isAuthentication.value && !form.value.body_content.trim()) {
-    toast.error(t('templates.bodyRequired', 'Body content is required'))
-    return
+  if (id !== 'content') return null
+  if (isAuthentication.value) {
+    if (form.value.code_expiration_minutes && (form.value.code_expiration_minutes < 1 || form.value.code_expiration_minutes > 90)) {
+      return t('templates.invalidExpiration', 'Code expiration must be between 1 and 90 minutes')
+    }
+    if (authOtpType.value === 'ZERO_TAP' && !zeroTapAccepted.value) {
+      return t('templates.zeroTapTosRequired', 'You must accept the Terms of Service to use zero-tap authentication')
+    }
+    if (authOtpType.value === 'ONE_TAP' || authOtpType.value === 'ZERO_TAP') {
+      const apps = form.value.buttons[0]?.supported_apps || []
+      if (apps.length === 0 || apps.some((a: any) => !a.package_name?.trim() || !a.signature_hash?.trim())) {
+        return t('templates.supportedAppsRequired', 'Package name and signature hash are required for all supported apps')
+      }
+    }
+    return null
   }
-  if (!isAuthentication.value
-    && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.value.header_type)
-    && !form.value.header_content) {
+  if (!form.value.body_content.trim()) return t('templates.bodyRequired', 'Body content is required')
+  if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.value.header_type) && !form.value.header_content) {
     const fallback = `Upload a sample ${form.value.header_type.toLowerCase()} before saving — Meta requires it for template approval.`
-    toast.error(t('templates.headerMediaRequired', fallback))
+    return t('templates.headerMediaRequired', fallback)
+  }
+  if (hasMixedVariables.value) {
+    return t('templates.mixedVariables', 'Cannot mix positional ({{1}}, {{2}}) and named ({{name}}) variables. Use one type only.')
+  }
+  if (hasDuplicateVariables.value) {
+    return t('templates.duplicateVariables', 'Duplicate variables found. Each variable should appear only once.')
+  }
+  if (hasVariableAtEdge.value) {
+    return t('templates.variableAtEdge', 'Variables cannot be at the very start or end of the template body.')
+  }
+  if (hasTooManyHeaderVariables.value) return t('templates.headerTooManyVariables', headerTooManyVariablesHint)
+  return null
+}
+
+function nextStep() {
+  const err = stepError(step.value)
+  if (err) {
+    toast.error(err)
     return
   }
-  if (!isAuthentication.value) {
-    if (hasMixedVariables.value) {
-      toast.error(t('templates.mixedVariables', 'Cannot mix positional ({{1}}, {{2}}) and named ({{name}}) variables. Use one type only.'))
-      return
-    }
-    if (hasDuplicateVariables.value) {
-      toast.error(t('templates.duplicateVariables', 'Duplicate variables found. Each variable should appear only once.'))
-      return
-    }
-    if (hasVariableAtEdge.value) {
-      toast.error(t('templates.variableAtEdge', 'Variables cannot be at the very start or end of the template body.'))
-      return
-    }
-    if (hasTooManyHeaderVariables.value) {
-      toast.error(t('templates.headerTooManyVariables', headerTooManyVariablesHint))
-      return
-    }
-  }
-  if (isAuthentication.value && form.value.code_expiration_minutes && (form.value.code_expiration_minutes < 1 || form.value.code_expiration_minutes > 90)) {
-    toast.error(t('templates.invalidExpiration', 'Code expiration must be between 1 and 90 minutes'))
-    return
-  }
-  if (isAuthentication.value && authOtpType.value === 'ZERO_TAP' && !zeroTapAccepted.value) {
-    toast.error(t('templates.zeroTapTosRequired', 'You must accept the Terms of Service to use zero-tap authentication'))
-    return
-  }
-  if (isAuthentication.value && (authOtpType.value === 'ONE_TAP' || authOtpType.value === 'ZERO_TAP')) {
-    const apps = form.value.buttons[0]?.supported_apps || []
-    if (apps.length === 0 || apps.some((a: any) => !a.package_name?.trim() || !a.signature_hash?.trim())) {
-      toast.error(t('templates.supportedAppsRequired', 'Package name and signature hash are required for all supported apps'))
+  if (!isLastStep.value) step.value = steps.value[stepIndex.value + 1].id
+}
+
+function prevStep() {
+  if (stepIndex.value > 0) step.value = steps.value[stepIndex.value - 1].id
+}
+
+watch(isAuthentication, (auth) => {
+  if (auth && step.value === 'buttons') step.value = 'content'
+})
+
+async function save() {
+  for (const s of steps.value) {
+    const err = stepError(s.id)
+    if (err) {
+      step.value = s.id
+      toast.error(err)
       return
     }
   }
@@ -649,13 +710,36 @@ function getFlowScreens(flowId: string): string[] {
     .filter(Boolean)
 }
 
+function applyAIDraft() {
+  const draft = takeAITemplateDraft()
+  if (!draft) return
+  form.value = {
+    whatsapp_account: draft.whatsapp_account || (accounts.value.length === 1 ? accounts.value[0].name : ''),
+    name: draft.name,
+    display_name: draft.display_name,
+    language: draft.language,
+    category: draft.category,
+    header_type: draft.header_type,
+    header_content: ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(draft.header_type) ? '' : draft.header_content,
+    body_content: draft.body_content,
+    footer_content: draft.footer_content,
+    buttons: draft.buttons.map((b: any) => ({ ...b })),
+    sample_values: draft.sample_values.map(s => ({ ...s })),
+    add_security_recommendation: draft.add_security_recommendation,
+    code_expiration_minutes: draft.code_expiration_minutes,
+  }
+  aiDraftNotes.value = draft.notes || ''
+}
+
 onMounted(async () => {
   await Promise.all([loadAccounts(), loadFlows()])
   if (isNew.value) {
     isLoading.value = false
     hasChanges.value = false
+    applyAIDraft()
   } else {
     await loadTemplate()
+    step.value = 'content'
   }
 })
 </script>
@@ -691,12 +775,49 @@ onMounted(async () => {
       </div>
     </template>
 
-    <!-- Details Card -->
-    <Card>
-      <CardHeader class="pb-3 cursor-pointer" @click="isDetailsOpen = !isDetailsOpen">
-        <div class="flex items-center justify-between">
+    <div v-if="isNew && aiDraftNotes !== null" data-testid="ai-draft-notes" class="flex items-start gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 p-3 text-sm">
+      <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-violet-400 light:text-violet-600" />
+      <div>
+        <p class="font-medium">{{ $t('templates.aiDraftNotes') }}</p>
+        <p v-if="aiDraftNotes" class="text-muted-foreground">{{ aiDraftNotes }}</p>
+        <p class="text-xs text-muted-foreground mt-1">{{ $t('templates.aiDraftReview') }}</p>
+      </div>
+    </div>
+    <!-- Edit limits info for approved templates -->
+    <div v-if="template?.status?.toUpperCase() === 'APPROVED'" class="flex items-start gap-2 rounded-lg bg-blue-500/10 border border-blue-500/20 px-3 py-2 text-xs text-blue-400 light:text-blue-600">
+      <Info class="h-3.5 w-3.5 shrink-0 mt-0.5" />
+      <span>{{ $t('templates.editLimitsInfo', 'Approved templates can be edited up to 10 times in 30 days (1 edit per 24 hours). Editing triggers a new review which may take up to 24 hours. Name, language, and category cannot be changed.') }}</span>
+    </div>
+
+    <Card data-testid="template-step-form">
+      <CardHeader class="pb-4 space-y-4">
+        <ol class="flex items-center gap-2">
+          <li v-for="(s, i) in steps" :key="s.id" class="flex items-center gap-2" :class="i < steps.length - 1 && 'flex-1'">
+            <button
+              type="button"
+              :data-testid="`template-step-${s.id}`"
+              :aria-current="s.id === step ? 'step' : undefined"
+              class="flex items-center gap-2 rounded-full pr-2 transition-colors hover:text-foreground"
+              @click="step = s.id"
+            >
+              <span
+                class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors"
+                :class="i < stepIndex ? 'bg-primary/20 text-primary' : i === stepIndex ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'"
+              >
+                <Check v-if="i < stepIndex" class="h-3.5 w-3.5" />
+                <template v-else>{{ i + 1 }}</template>
+              </span>
+              <span class="text-xs font-medium whitespace-nowrap" :class="i === stepIndex ? 'text-foreground' : 'text-muted-foreground'">{{ s.label }}</span>
+            </button>
+            <div v-if="i < steps.length - 1" class="h-px flex-1" :class="i < stepIndex ? 'bg-primary/40' : 'bg-border'" />
+          </li>
+        </ol>
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle class="text-sm font-medium">{{ currentStep.label }}</CardTitle>
+            <p class="text-xs text-muted-foreground mt-0.5">{{ currentStep.description }}</p>
+          </div>
           <div class="flex items-center gap-2">
-            <CardTitle class="text-sm font-medium">{{ $t('templates.details', 'Details') }}</CardTitle>
             <Badge v-if="!isNew && template?.status" :variant="statusVariant">
               {{ template.status }}
             </Badge>
@@ -704,15 +825,9 @@ onMounted(async () => {
               {{ getQualityRatingLabel(template.quality_rating, t) }}
             </Badge>
           </div>
-          <ChevronDown class="h-4 w-4 text-muted-foreground transition-transform" :class="isDetailsOpen && 'rotate-180'" />
         </div>
       </CardHeader>
-      <CardContent v-show="isDetailsOpen" class="space-y-4">
-        <!-- Edit limits info for approved templates -->
-        <div v-if="template?.status?.toUpperCase() === 'APPROVED'" class="flex items-start gap-2 rounded-md bg-blue-500/10 border border-blue-500/20 px-3 py-2 text-xs text-blue-400 light:text-blue-600">
-          <Info class="h-3.5 w-3.5 shrink-0 mt-0.5" />
-          <span>{{ $t('templates.editLimitsInfo', 'Approved templates can be edited up to 10 times in 30 days (1 edit per 24 hours). Editing triggers a new review which may take up to 24 hours. Name, language, and category cannot be changed.') }}</span>
-        </div>
+      <CardContent v-if="step === 'details'" class="space-y-4">
         <div class="space-y-1.5">
           <Label class="text-xs">{{ $t('templates.whatsappAccount', 'WhatsApp Account') }}</Label>
           <Select v-model="form.whatsapp_account" :disabled="!canWrite || !!template?.meta_template_id">
@@ -755,14 +870,8 @@ onMounted(async () => {
           </Select>
         </div>
       </CardContent>
-    </Card>
 
-    <!-- Content Card -->
-    <Card>
-      <CardHeader class="pb-3">
-        <CardTitle class="text-sm font-medium">{{ $t('templates.content', 'Content') }}</CardTitle>
-      </CardHeader>
-      <CardContent class="space-y-4">
+      <CardContent v-else-if="step === 'content'" class="space-y-4">
         <div v-if="!isAuthentication" class="space-y-1.5">
           <Label class="text-xs">{{ $t('templates.headerType', 'Header Type') }}</Label>
           <Select v-model="form.header_type" :disabled="!canWrite || !isEditable">
@@ -1012,10 +1121,21 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Buttons (hidden for auth templates — OTP managed via selector above) -->
-        <div v-if="!isAuthentication" class="space-y-3">
+        <div v-if="!isAuthentication" class="space-y-1.5">
+          <Label class="text-xs">{{ $t('templates.footerContent', 'Footer Content') }}</Label>
+          <Textarea
+            v-model="form.footer_content"
+            :rows="2"
+            :disabled="!canWrite || !isEditable"
+          />
+        </div>
+      </CardContent>
+
+      <!-- Buttons step (not shown for auth templates — OTP managed on the Content step) -->
+      <CardContent v-else class="space-y-4">
+        <div class="space-y-3">
           <div class="flex items-center justify-between">
-            <Label class="text-xs">{{ $t('templates.buttons', 'Buttons') }} <span class="text-muted-foreground font-normal">({{ $t('templates.maxButtonsHint', 'up to 3, optional') }})</span></Label>
+            <span class="text-xs text-muted-foreground">{{ $t('templates.maxButtonsHint', 'up to 3, optional') }}</span>
             <Button
               v-if="canWrite && isEditable"
               type="button"
@@ -1139,17 +1259,28 @@ onMounted(async () => {
               </div>
             </div>
           </div>
+          <p v-if="form.buttons.length === 0" class="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+            {{ $t('templates.noButtonsHint', 'No buttons yet. Buttons are optional — add quick replies, a link, a phone number or a Flow.') }}
+          </p>
         </div>
+      </CardContent>
 
-        <div v-if="!isAuthentication" class="space-y-1.5">
-          <Label class="text-xs">{{ $t('templates.footerContent', 'Footer Content') }}</Label>
-          <Textarea
-            v-model="form.footer_content"
-            :rows="2"
-            :disabled="!canWrite || !isEditable"
-          />
-        </div>
-        </CardContent>
+      <div class="flex items-center justify-between gap-2 border-t px-6 py-4">
+        <Button variant="outline" size="sm" data-testid="template-step-back" :disabled="stepIndex === 0" @click="prevStep">
+          <ChevronLeft class="h-4 w-4 mr-1" /> {{ $t('common.back', 'Back') }}
+        </Button>
+        <span class="text-xs text-muted-foreground">
+          {{ $t('templates.stepOf', { current: stepIndex + 1, total: steps.length }, `Step ${stepIndex + 1} of ${steps.length}`) }}
+        </span>
+        <Button v-if="!isLastStep" size="sm" data-testid="template-step-next" @click="nextStep">
+          {{ $t('common.next', 'Next') }} <ChevronRight class="h-4 w-4 ml-1" />
+        </Button>
+        <Button v-else-if="canWrite && (hasChanges || isNew)" size="sm" data-testid="template-step-finish" :disabled="isSaving" @click="save">
+          <Save class="h-4 w-4 mr-1" />
+          {{ isSaving ? $t('common.saving', 'Saving...') : isNew ? $t('templates.createTemplate', 'Create template') : $t('templates.saveChanges', 'Save changes') }}
+        </Button>
+        <span v-else class="w-16" />
+      </div>
     </Card>
 
     <!-- Activity Log -->
@@ -1160,8 +1291,28 @@ onMounted(async () => {
       :resource-id="template.id"
     />
 
-    <!-- Sidebar -->
-    <template v-if="!isNew" #sidebar>
+    <template #sidebar>
+      <div class="space-y-2" :class="isNew && 'lg:sticky lg:top-6'">
+        <div class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Eye class="h-3.5 w-3.5" /> {{ $t('templates.livePreview', 'Live preview') }}
+        </div>
+        <TemplatePreview
+          :header-type="form.header_type"
+          :header="previewHeader"
+          :body="previewBody"
+          :footer="form.footer_content"
+          :buttons="form.buttons"
+          :is-authentication="isAuthentication"
+          :add-security-recommendation="form.add_security_recommendation"
+          :code-expiration-minutes="form.code_expiration_minutes"
+          :media-url="headerMediaPreviewUrl"
+        />
+        <p class="text-xs text-muted-foreground">
+          {{ $t('templates.livePreviewHint', 'Variables show your sample values. The final look may differ slightly on each device.') }}
+        </p>
+      </div>
+
+      <template v-if="!isNew">
       <MetadataPanel
         :created-at="template?.created_at"
         :updated-at="template?.updated_at"
@@ -1186,6 +1337,7 @@ onMounted(async () => {
           </ul>
         </CardContent>
       </Card>
+      </template>
     </template>
   </DetailPageLayout>
 

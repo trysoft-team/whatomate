@@ -86,9 +86,9 @@ GET /api/analytics/chatbot
 
 ## Agent Analytics
 
-Performance metrics for human agents handling transfers. Users **without** the
-`analytics.agents:read` / `analytics:read` permission see only their own stats
-(`my_stats`); users with the permission see every agent.
+Performance metrics for human agents handling transfers. Users **with**
+`analytics:read` see every agent; users with only `analytics.agents:read`
+(typical Agent role) see their own stats (`my_stats`).
 
 ```bash
 GET /api/analytics/agents
