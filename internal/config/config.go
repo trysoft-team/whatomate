@@ -32,6 +32,12 @@ type Config struct {
 	TTS          TTSConfig          `koanf:"tts"`
 	Pipecat      PipecatConfig      `koanf:"pipecat"`
 	Google       GoogleConfig       `koanf:"google"`
+	Retention    RetentionConfig    `koanf:"retention"`
+}
+
+// RetentionConfig controls how long log-style tables are kept.
+type RetentionConfig struct {
+	WebhookDeliveryDays int `koanf:"webhook_delivery_days"` // 0/unset = 90, negative = keep forever
 }
 
 // GoogleConfig holds the OAuth client used for "Connect Google account"
@@ -331,6 +337,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.RateLimit.WindowSeconds == 0 {
 		cfg.RateLimit.WindowSeconds = 60
+	}
+	if cfg.Retention.WebhookDeliveryDays == 0 {
+		cfg.Retention.WebhookDeliveryDays = 90
 	}
 	// Calling defaults
 	if cfg.Calling.MaxCallDuration == 0 {

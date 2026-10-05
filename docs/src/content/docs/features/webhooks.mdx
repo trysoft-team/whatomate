@@ -88,6 +88,8 @@ Delivery is **asynchronous** — the API call that triggered the event returns i
 - Treats any **2xx** response as success. A non-2xx status or a network error is a failure.
 - **Retries up to 3 times** with exponential backoff between attempts (delays double: ~2s then ~4s). After the final attempt the failure is logged and the delivery is dropped — there is no persistent dead-letter queue.
 
+The final outcome of each delivery (event, success, status code, attempts, duration and error) is stored in a delivery log, which feeds the **Webhooks** data source for dashboard widgets. The log keeps **90 days** by default; older rows are deleted daily. Change this with [`[retention] webhook_delivery_days`](/whatomate/getting-started/configuration/#retention).
+
 Use `POST /api/webhooks/{id}/test` to send a one-off `{"event":"test", ...}` payload synchronously and confirm your endpoint accepts and verifies it.
 
 ## SSRF protection

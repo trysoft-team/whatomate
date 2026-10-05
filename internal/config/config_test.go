@@ -138,6 +138,21 @@ func TestLoad_RateLimitDefaults(t *testing.T) {
 	assert.Equal(t, 10, cfg.RateLimit.SSOMaxAttempts)
 }
 
+func TestLoad_WebhookDeliveryRetention(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, ""))
+	require.NoError(t, err)
+	assert.Equal(t, 90, cfg.Retention.WebhookDeliveryDays)
+
+	cfg, err = config.Load(writeConfig(t, "[retention]\nwebhook_delivery_days = -1\n"))
+	require.NoError(t, err)
+	assert.Equal(t, -1, cfg.Retention.WebhookDeliveryDays, "negative keeps the log forever")
+
+	t.Setenv("WHATOMATE_RETENTION__WEBHOOK_DELIVERY_DAYS", "30")
+	cfg, err = config.Load(writeConfig(t, ""))
+	require.NoError(t, err)
+	assert.Equal(t, 30, cfg.Retention.WebhookDeliveryDays)
+}
+
 func TestResolveCredentials_StaticWhenNoSecret(t *testing.T) {
 	s := config.ICEServerConfig{Username: "user", Credential: "pass"}
 	username, credential := s.ResolveCredentials(time.Now())

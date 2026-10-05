@@ -115,6 +115,9 @@ udp_port_max = 10100
 # secret = "your-coturn-static-auth-secret"
 # credential_ttl = 86400        # Generated-credential lifetime in seconds (default 86400 = 24h)
 
+[retention]
+webhook_delivery_days = 90     # Webhook delivery log; -1 keeps it forever
+
 [default_admin]
 email = "admin@admin.com"
 password = "admin"
@@ -268,6 +271,16 @@ Setup:
 If `[google]` is unset, an organization's enabled **Google SSO** client (Settings → SSO) is used instead; add the redirect URI above to that client too.
 
 Connected accounts are stored as encrypted `authorized_user` credentials (OAuth client plus refresh token). Reconnecting the same Google account updates the existing credential instead of creating a duplicate.
+
+### `[retention]`
+
+Optional. Controls how long log-style data is kept. Old rows are deleted when the server starts and then once a day.
+
+| Field | Notes |
+|---|---|
+| `webhook_delivery_days` | Days of [webhook delivery history](/whatomate/features/webhooks/#delivery-retries--concurrency) to keep. Defaults to `90` when unset or `0`. Set a negative value (e.g. `-1`) to keep it forever. Env: `WHATOMATE_RETENTION__WEBHOOK_DELIVERY_DAYS`. |
+
+Dashboard widgets that use the **Webhooks** data source can only report on the days that are still kept.
 
 ### `[default_admin]`
 

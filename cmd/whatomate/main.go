@@ -319,6 +319,10 @@ func runServer(args []string) {
 	go delayProcessor.Start(delayCtx)
 	lo.Info("Chat delay processor started")
 
+	deliveryPruner := handlers.NewWebhookDeliveryPruner(app, cfg.Retention.WebhookDeliveryDays, 24*time.Hour)
+	pruneCtx, pruneCancel := context.WithCancel(context.Background())
+	go deliveryPruner.Start(pruneCtx)
+
 	// Start embedded workers
 	var workers []*worker.Worker
 	var workerCancel context.CancelFunc
@@ -368,6 +372,9 @@ func runServer(args []string) {
 	delayCancel()
 	delayProcessor.Stop()
 	lo.Info("Chat delay processor stopped")
+
+	pruneCancel()
+	deliveryPruner.Stop()
 
 	// Stop workers first
 	if workerCancel != nil {
