@@ -23,6 +23,7 @@ RUN mkdir -p /tmp/piper-models \
 
 # Final stage (Debian for glibc — required by Piper TTS)
 FROM debian:bookworm-slim
+ARG TARGETPLATFORM
 
 WORKDIR /app
 
@@ -31,8 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata espeak-ng opus-tools ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built binary from GoReleaser
-COPY whatomate .
+# GoReleaser (dockers_v2) puts each platform's binary at $TARGETPLATFORM/whatomate
+COPY $TARGETPLATFORM/whatomate .
 
 # Install Piper TTS binary + shared libraries
 COPY --from=piper-dl /tmp/piper/piper /usr/local/bin/piper

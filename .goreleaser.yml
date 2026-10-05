@@ -109,59 +109,29 @@ changelog:
       - Merge pull request
       - Merge branch
 
-dockers:
-  - id: whatomate-amd64
-    goos: linux
-    goarch: amd64
-    image_templates:
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_ORG }}/whatomate:latest-amd64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:latest-amd64"
+# One multi-arch image per registry. buildx builds and pushes in a single step
+# during publish; `--snapshot` builds per-arch images (tag suffix -amd64/-arm64)
+# locally instead.
+dockers_v2:
+  - id: whatomate
+    ids:
+      - whatomate
     dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    use: buildx
-
-  - id: whatomate-arm64
-    goos: linux
-    goarch: arm64
-    image_templates:
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-arm64"
-      - "{{ .Env.DOCKER_ORG }}/whatomate:latest-arm64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-arm64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:latest-arm64"
-    dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    use: buildx
-
-docker_manifests:
-  - name_template: "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}"
-    image_templates:
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-arm64"
-
-  - name_template: "{{ .Env.DOCKER_ORG }}/whatomate:latest"
-    image_templates:
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "{{ .Env.DOCKER_ORG }}/whatomate:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:latest"
-    image_templates:
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-amd64"
-      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate:{{ .Version }}-arm64"
+    images:
+      - "{{ .Env.DOCKER_ORG }}/whatomate"
+      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate"
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
 
 release:
   github:
