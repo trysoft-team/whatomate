@@ -15,8 +15,8 @@ The fastest way to get started:
 # Clone the repository
 git clone https://github.com/shridarpatil/whatomate.git
 cd whatomate
-cp config.example.toml docker/config.toml
-cp docker/.env.example docker/.env  # Edit to set PostgreSQL credentials and timezone
+cp config.example.toml config.toml
+cp .env.example .env  # Edit to set PostgreSQL credentials and timezone
 
 # Start all services (PostgreSQL, Redis, Server)
 make docker-up
@@ -26,7 +26,7 @@ open http://localhost:8080
 ```
 
 <Aside type="note">
-  The `.env` file is required by Docker Compose. It sets PostgreSQL credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`) and the server timezone (`TZ`). Copy `docker/.env.example` to `docker/.env` and edit as needed.
+  The `.env` file is required by Docker Compose. It sets PostgreSQL credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`) and the server timezone (`TZ`). Copy `.env.example` to `.env` and edit as needed. `.env` is gitignored, so your credentials stay local.
 </Aside>
 
 **Default login:** `admin@admin.com` / `admin`
@@ -142,6 +142,25 @@ make build-prod
 ```
 
 This creates a self-contained binary—no separate frontend server needed. Access at http://localhost:8080.
+
+To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=amd64 make build-prod`. `make release-snapshot` builds every release archive into `dist/`.
+
+### Prebuilt Binaries
+
+Each [GitHub release](https://github.com/shridarpatil/whatomate/releases) includes archives for:
+
+| OS | Architectures |
+|---|---|
+| Linux | `amd64`, `arm64`, `armv7` (Raspberry Pi 2 and later, 32-bit) |
+| macOS | `universal` (one binary for Apple Silicon and Intel) |
+| Windows | `amd64`, `arm64` |
+| FreeBSD | `amd64`, `arm64` |
+
+The binary still needs PostgreSQL, Redis and a `config.toml` (start from `config.example.toml`). Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
+
+<Aside type="note">
+  **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the dependencies with Homebrew: `brew install postgresql@16 redis ffmpeg espeak-ng opus-tools`.
+</Aside>
 
 ## 3rd Party Hosting
 

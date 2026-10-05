@@ -60,8 +60,11 @@ piper-models/
 # Test results
 test-results/
 
-# Docker 
-docker/.env
+# Docker Compose environment (copy .env.example to .env)
+.env
+
+# GoReleaser output
+/dist/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

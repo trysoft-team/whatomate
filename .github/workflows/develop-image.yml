@@ -38,8 +38,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=develop-${{ github.sha }}
           push: true
           tags: |
             shridh0r/whatomate:develop
