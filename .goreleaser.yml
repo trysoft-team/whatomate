@@ -95,6 +95,10 @@ archives:
       - goos: windows
         formats:
           - zip
+    files:
+      - LICENSE*
+      - README*
+      - config.example.toml
 
 checksum:
   name_template: "checksums.txt"
@@ -140,3 +144,41 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{ .Version }}"
+
+# Homebrew cask in <HOMEBREW_TAP_OWNER>/homebrew-tap, installed with
+# `brew install <owner>/tap/whatomate`. Publishing is skipped unless
+# HOMEBREW_TAP_TOKEN (a token with write access to the tap repo) is set.
+homebrew_casks:
+  - name: whatomate
+    ids:
+      - whatomate
+    binaries:
+      - whatomate
+    homepage: "https://github.com/shridarpatil/whatomate"
+    description: "Self-hosted WhatsApp Business platform with chatbots, campaigns and calling"
+    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
+    repository:
+      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "shridarpatil" }}'
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "whatomate {{ .Tag }}"
+    dependencies:
+      - formula: ffmpeg
+      - formula: opus-tools
+    caveats: |
+      Whatomate needs PostgreSQL and Redis:
+        brew install postgresql@16 redis
+        brew services start postgresql@16
+        brew services start redis
+
+      Create a config from the example shipped with this cask, then start the server:
+        cp "#{staged_path}/config.example.toml" ./config.toml
+        whatomate server -config ./config.toml -migrate
+      {{- if not (isEnvSet "MACOS_SIGN_P12") }}
+
+      This build is not notarized. If macOS blocks it, run:
+        xattr -dr com.apple.quarantine "#{staged_path}/whatomate"
+      {{- end }}

@@ -61,3 +61,7 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          # Homebrew cask; skipped when HOMEBREW_TAP_TOKEN is unset. The token needs
+          # contents:write on <HOMEBREW_TAP_OWNER>/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_OWNER: ${{ vars.HOMEBREW_TAP_OWNER || github.repository_owner }}
