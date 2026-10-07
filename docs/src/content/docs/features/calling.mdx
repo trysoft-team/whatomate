@@ -226,7 +226,7 @@ Branches the call based on business hours. Configure a weekly schedule with per-
 
 <Aside type="caution">
   The timing node has **no timezone property** — it evaluates against the **server's local time**.
-  Set the process timezone (the `TZ` environment variable; `docker/.env.example` ships `TZ=UTC`) to
+  Set the process timezone (the `TZ` environment variable; `.env.example` ships `TZ=Africa/Johannesburg`) to
   match your business hours.
 
   A day missing from `schedule`, a disabled day, or an unparseable `start_time`/`end_time`

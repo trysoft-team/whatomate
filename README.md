@@ -59,20 +59,18 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
 
 ### Docker
 
-The latest image is available on Docker Hub at [`trysoft/whatomate:latest`](https://hub.docker.com/r/trysoft/whatomate)
+Prebuilt images are not published yet. Build and run from source with Docker Compose:
 
 ```bash
-# Download compose file, sample config, and env file
-curl -LO https://raw.githubusercontent.com/trysoft/whatomate/main/docker/docker-compose.yml
-curl -LO https://raw.githubusercontent.com/trysoft/whatomate/main/config.example.toml
-curl -L https://raw.githubusercontent.com/trysoft/whatomate/main/docker/.env.example -o .env
+git clone https://github.com/trysoft/whatomate.git
+cd whatomate
 
-# Copy and edit config
+# Copy and edit config and env (PostgreSQL credentials, timezone)
 cp config.example.toml config.toml
-# Edit .env to set PostgreSQL credentials and timezone
+cp .env.example .env
 
-# Run services
-docker compose up -d
+# Build the image and start the app, PostgreSQL and Redis
+docker compose up -d --build
 ```
 
 Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`

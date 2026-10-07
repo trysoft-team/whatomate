@@ -1,9 +1,8 @@
 name: Build develop image
 
+# Manual only while Docker images are not being published.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   develop-image:

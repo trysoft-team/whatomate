@@ -447,13 +447,13 @@ Both API and worker processes need access to the same Postgres and Redis.
 
 ### Docker Compose
 
-The bundled [`docker/docker-compose.yml`](https://github.com/trysoft/whatomate/blob/main/docker/docker-compose.yml) runs three services — `app`, `db` (postgres:17-alpine) and `redis` (redis:7-alpine). The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
+The bundled [`docker-compose.yml`](https://github.com/trysoft/whatomate/blob/main/docker-compose.yml) at the repository root builds the image from source and runs three services — `app`, `db` (postgres:17-alpine) and `redis` (redis:7-alpine). The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (see [`docker/.env.example`](https://github.com/trysoft/whatomate/blob/main/docker/.env.example)). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
+It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
 
 There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` and `redis`.
 

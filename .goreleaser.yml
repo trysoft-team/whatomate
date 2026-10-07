@@ -115,9 +115,12 @@ changelog:
 
 # One multi-arch image per registry. buildx builds and pushes in a single step
 # during publish; `--snapshot` builds per-arch images (tag suffix -amd64/-arm64)
-# locally instead.
+# locally instead. Disabled for now: releases ship binaries and the Homebrew
+# cask only. To publish images, remove `disable` and restore the registry
+# login steps in .github/workflows/release.yml.
 dockers_v2:
   - id: whatomate
+    disable: true
     ids:
       - whatomate
     dockerfile: Dockerfile.goreleaser
