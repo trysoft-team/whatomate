@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
 // negotiateWebRTC handles the SDP exchange and sets up WebRTC media.

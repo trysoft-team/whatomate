@@ -6,9 +6,9 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/middleware"
-	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/middleware"
+	"github.com/trysoft/whatomate/internal/models"
 	"github.com/zerodha/fastglue"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"

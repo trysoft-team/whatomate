@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/config"
-	"github.com/shridarpatil/whatomate/internal/crypto"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/queue"
-	"github.com/shridarpatil/whatomate/internal/templateutil"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
-	"github.com/shridarpatil/whatomate/test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/crypto"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/templateutil"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/test/testutil"
 )
 
 func testWorker(t *testing.T) *Worker {

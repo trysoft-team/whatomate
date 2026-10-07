@@ -3,7 +3,7 @@ package handlers
 import (
 	"encoding/json"
 
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // aiUsageContext carries attribution for a single provider call.

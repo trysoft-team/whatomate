@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 )

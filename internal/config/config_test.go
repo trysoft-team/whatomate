@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
 )
 
 func writeConfig(t *testing.T, content string) string {

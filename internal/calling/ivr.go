@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
 // runIVRFlow parses the IVR flow graph and executes the node loop.

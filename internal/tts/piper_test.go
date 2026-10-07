@@ -6,9 +6,9 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/tts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/tts"
 )
 
 // fakeBin writes a small shell script that emulates piper or opusenc by

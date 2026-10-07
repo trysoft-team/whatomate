@@ -16,8 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
-	"github.com/shridarpatil/whatomate/internal/config"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // PipecatControlEvent is signaled from the sidecar (via HTTP) or the WS reader.

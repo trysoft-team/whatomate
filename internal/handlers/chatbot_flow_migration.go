@@ -8,7 +8,7 @@ import (
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // BackfillChatbotFlowDraftGraph copies published graph → draft_graph for rows

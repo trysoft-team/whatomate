@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/websocket"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/websocket"
 )
 
 // handoffSummaryMinMessages skips summaries for chats with nothing to summarize.

@@ -3,9 +3,9 @@ package whatsapp_test
 import (
 	"testing"
 
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
 // --- VerifyWebhook ---

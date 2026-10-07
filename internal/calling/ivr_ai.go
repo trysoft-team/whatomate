@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/crypto"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/crypto"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // executeAIVoice runs one conversational turn: optional speech gather, LLM reply, TTS play.

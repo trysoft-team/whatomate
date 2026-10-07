@@ -1,4 +1,4 @@
-module github.com/shridarpatil/whatomate
+module github.com/trysoft/whatomate
 
 go 1.25.0
 

@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
 // executeDialOut places an outbound WhatsApp call to another number and bridges

@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/crypto"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/tts"
+	"github.com/trysoft/whatomate/internal/crypto"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/tts"
 )
 
 // synthesizeTTS generates OGG/Opus for text using org voice settings merged with node config.

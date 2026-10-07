@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/storage"
 )
 
 func TestLocalFS_Upload_WritesFile(t *testing.T) {

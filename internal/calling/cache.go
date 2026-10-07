@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/utils"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/utils"
 )
 
 const (

@@ -3,9 +3,9 @@ package handlers
 import (
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/flowgraph"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/flowgraph"
 )
 
 func TestExtractJSONObject(t *testing.T) {

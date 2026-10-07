@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/tts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/tts"
 )
 
 func TestRouter_DefaultsToPiper(t *testing.T) {

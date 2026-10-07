@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
 // FlowMediaURLAllowedForTest exposes the CDN host guard for unit tests.

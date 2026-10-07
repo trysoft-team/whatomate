@@ -3,9 +3,9 @@ package calling
 import (
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
 )
 
 func TestMapPipecatEvent_TransferSetsTeam(t *testing.T) {

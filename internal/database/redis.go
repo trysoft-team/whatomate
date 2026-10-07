@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/shridarpatil/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/config"
 )
 
 // NewRedis creates a new Redis client

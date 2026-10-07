@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // errAIQuotaExceeded marks provider rate-limit / quota responses (HTTP 429).

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/templateutil"
+	"github.com/trysoft/whatomate/internal/templateutil"
 )
 
 // truncateLabel caps a customer-visible button label at max characters.

@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/websocket"
 	"github.com/stretchr/testify/assert"
+	"github.com/trysoft/whatomate/internal/websocket"
 )
 
 // --- IsUserOnline ---

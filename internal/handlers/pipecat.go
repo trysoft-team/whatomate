@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/shridarpatil/whatomate/internal/calling"
+	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 )

@@ -7,7 +7,7 @@ import (
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // BackfillAccountAIResponsesEnabled copies org chatbot_settings.ai_enabled onto

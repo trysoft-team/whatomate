@@ -12,11 +12,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"github.com/shridarpatil/whatomate/internal/handlers"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/handlers"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/test/testutil"
 )
 
 // clearWebhookCache clears the webhook cache for a specific organization.

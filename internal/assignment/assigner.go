@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 )

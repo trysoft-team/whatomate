@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/queue"
-	"github.com/shridarpatil/whatomate/test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/test/testutil"
 )
 
 // skipIfNoRedis returns a Redis client or skips the test if Redis is unavailable.

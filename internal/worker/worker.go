@@ -8,12 +8,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	"github.com/shridarpatil/whatomate/internal/config"
-	"github.com/shridarpatil/whatomate/internal/contactutil"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/internal/queue"
-	"github.com/shridarpatil/whatomate/internal/templateutil"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/contactutil"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/templateutil"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 )

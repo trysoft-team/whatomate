@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // buildIVRAIContext loads enabled org AI Contexts (same source as chatbot AI)

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/contactutil"
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/contactutil"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // Account statuses driven by coexistence account_update webhooks.

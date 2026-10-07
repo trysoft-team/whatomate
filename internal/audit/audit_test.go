@@ -3,9 +3,9 @@ package audit_test
 import (
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/audit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/audit"
 )
 
 func TestComputeChanges_CreateRecordsAllFields(t *testing.T) {

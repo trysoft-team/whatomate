@@ -44,7 +44,7 @@ jobs:
             VERSION=develop-${{ github.sha }}
           push: true
           tags: |
-            shridh0r/whatomate:develop
+            trysoft/whatomate:develop
             ghcr.io/${{ github.repository_owner }}/whatomate:develop
           cache-from: type=gha
           cache-to: type=gha,mode=max

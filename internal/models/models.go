@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/crypto"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/crypto"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"gorm.io/gorm"
 )
 

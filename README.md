@@ -59,7 +59,7 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
 
 ### Docker
 
-The latest image is available on Docker Hub at [`shridh0r/whatomate:latest`](https://hub.docker.com/r/shridh0r/whatomate)
+The latest image is available on Docker Hub at [`trysoft/whatomate:latest`](https://hub.docker.com/r/trysoft/whatomate)
 
 ```bash
 # Download compose file, sample config, and env file

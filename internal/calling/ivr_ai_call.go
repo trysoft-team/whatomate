@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 // executeAICall runs a multi-turn voice conversation with optional LLM tool calls.

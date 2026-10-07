@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/stretchr/testify/assert"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 func TestMessageMediaURL(t *testing.T) {

@@ -12,11 +12,11 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/handlers"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/handlers"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/test/testutil"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 )

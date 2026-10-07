@@ -13,12 +13,12 @@ import (
 
 	"github.com/expr-lang/expr"
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/contactutil"
-	"github.com/shridarpatil/whatomate/internal/crypto"
-	wmgoogle "github.com/shridarpatil/whatomate/internal/google"
-	"github.com/shridarpatil/whatomate/internal/mail"
-	"github.com/shridarpatil/whatomate/internal/models"
-	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"github.com/trysoft/whatomate/internal/contactutil"
+	"github.com/trysoft/whatomate/internal/crypto"
+	wmgoogle "github.com/trysoft/whatomate/internal/google"
+	"github.com/trysoft/whatomate/internal/mail"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"gorm.io/gorm"
 )
 

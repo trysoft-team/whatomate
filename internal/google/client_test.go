@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	wmgoogle "github.com/shridarpatil/whatomate/internal/google"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	wmgoogle "github.com/trysoft/whatomate/internal/google"
 	"golang.org/x/oauth2"
 )
 

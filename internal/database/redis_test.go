@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/config"
-	"github.com/shridarpatil/whatomate/internal/database"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/database"
 )
 
 // parseTestRedisURL splits TEST_REDIS_URL (redis://[user:pass@]host:port[/db])

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 func TestTranscribeSettings(t *testing.T) {

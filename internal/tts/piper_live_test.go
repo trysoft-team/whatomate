@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/tts"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/tts"
 )
 
 // LIVE_PIPER_TEST=1 go test ./internal/tts -run TestLivePiperGenerate -v -count=1

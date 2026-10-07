@@ -3,10 +3,10 @@ package storage_test
 import (
 	"testing"
 
-	"github.com/shridarpatil/whatomate/internal/config"
-	"github.com/shridarpatil/whatomate/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/storage"
 )
 
 // NewS3Client validation: bucket and region required.
