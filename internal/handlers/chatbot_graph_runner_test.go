@@ -69,7 +69,7 @@ func TestRunChatGraph_GoldenPath(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "golden",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -143,7 +143,7 @@ func TestRunChatGraph_ButtonsStoreAs(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "buttons-store-as",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -188,7 +188,7 @@ func TestRunChatGraph_ButtonsRePromptOnText(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "buttons-only",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -238,7 +238,7 @@ func TestRunChatGraph_UnknownButtonEndsFlow(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "unknown-button",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "b1",
@@ -311,7 +311,7 @@ func TestRunChatGraph_RunawayCycle(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "cycle",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "a",
@@ -351,7 +351,7 @@ func newPromptFlow(t *testing.T, app *App, org *models.Organization, account *mo
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "prompt-flow",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "p1",
@@ -378,7 +378,7 @@ func newWhatsAppFlowFlow(t *testing.T, app *App, org *models.Organization, accou
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "waflow",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "wa",
@@ -443,7 +443,7 @@ func TestRunChatGraph_WhatsAppFlow_MissingFlowIDAdvancesGracefully(t *testing.T)
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "wa-broken",
-		IsEnabled: true, KeepSessionActive: false,
+		IsEnabled:       true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "wa",
@@ -535,8 +535,8 @@ func newAPICallFlow(t *testing.T, app *App, org *models.Organization, account *m
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
-		Name:              "api-call-flow",
-		IsEnabled: true, KeepSessionActive: true,
+		Name:            "api-call-flow",
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "api",
@@ -578,7 +578,7 @@ func TestRunChatGraph_APICall_MessageTemplateSendsAfter2xx(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "api-with-message",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "api",
@@ -708,7 +708,7 @@ func newConditionFlowExpr(t *testing.T, app *App, org *models.Organization, acco
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "condition-expr",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "c1",
@@ -837,7 +837,7 @@ func TestRunChatGraph_Timing_RoutesByCurrentTime(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "timing-flow",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "t1",
@@ -879,7 +879,7 @@ func newSetVariableFlow(t *testing.T, app *App, org *models.Organization, accoun
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "set-var-flow",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "s1",
@@ -966,10 +966,10 @@ func newAIResponseFlow(t *testing.T, app *App, org *models.Organization, account
 		cfg["prompt_template"] = promptTemplate
 	}
 	flow := &models.ChatbotFlow{
-		BaseModel:       models.BaseModel{ID: uuid.New()},
-		OrganizationID:  org.ID,
-		WhatsAppAccount: account.Name,
-		Name:            "ai-flow",
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		Name:              "ai-flow",
 		IsEnabled:         true,
 		KeepSessionActive: false,
 		Graph: models.JSONB{
@@ -994,7 +994,7 @@ func createChatbotSettings(t *testing.T, app *App, orgID uuid.UUID, accountName 
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  orgID,
 		WhatsAppAccount: accountName,
-		IsEnabled: true,
+		IsEnabled:       true,
 		AI:              ai,
 	}
 	require.NoError(t, app.DB.Create(&s).Error)
@@ -1053,7 +1053,7 @@ func newTransferFlow(t *testing.T, app *App, org *models.Organization, account *
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "transfer-flow",
-		IsEnabled: true, KeepSessionActive: false,
+		IsEnabled:       true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "t1",
@@ -1138,10 +1138,10 @@ func TestRunChatGraph_Transfer_GeneralStringRoutesToQueue(t *testing.T) {
 func newWebhookFlow(t *testing.T, app *App, org *models.Organization, account *models.WhatsAppAccount, url string) *models.ChatbotFlow {
 	t.Helper()
 	flow := &models.ChatbotFlow{
-		BaseModel:       models.BaseModel{ID: uuid.New()},
-		OrganizationID:  org.ID,
-		WhatsAppAccount: account.Name,
-		Name:            "webhook-flow",
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		Name:              "webhook-flow",
 		IsEnabled:         true,
 		KeepSessionActive: false,
 		Graph: models.JSONB{
@@ -1215,9 +1215,9 @@ func TestRunChatGraph_Webhook_NetworkErrorStillAdvances(t *testing.T) {
 func newGotoTargetFlow(t *testing.T, app *App, org *models.Organization, account *models.WhatsAppAccount, name, messageText string) *models.ChatbotFlow {
 	t.Helper()
 	flow := &models.ChatbotFlow{
-		BaseModel:       models.BaseModel{ID: uuid.New()},
-		OrganizationID:  org.ID,
-		WhatsAppAccount: account.Name,
+		BaseModel:         models.BaseModel{ID: uuid.New()},
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
 		Name:              name,
 		IsEnabled:         true,
 		KeepSessionActive: true,
@@ -1245,7 +1245,7 @@ func TestRunChatGraph_GotoFlow_JumpsAndRunsTarget(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "source-flow",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1287,7 +1287,7 @@ func TestRunChatGraph_GotoFlow_VariablesCarryForward(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "source-vars",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1317,7 +1317,7 @@ func TestRunChatGraph_GotoFlow_DisabledTargetIsTerminal(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "src-disabled",
-		IsEnabled: true, KeepSessionActive: false,
+		IsEnabled:       true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1349,7 +1349,7 @@ func TestRunChatGraph_GotoFlow_MissingFlowIDTerminates(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "src-missing",
-		IsEnabled: true, KeepSessionActive: false,
+		IsEnabled:       true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "g1",
@@ -1377,14 +1377,14 @@ func TestRunChatGraph_GotoFlow_CycleBoundedByMaxIterations(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "flow-a",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 	}
 	flowB := &models.ChatbotFlow{
 		BaseModel:       models.BaseModel{ID: uuid.New()},
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "flow-b",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 	}
 	flowA.Graph = models.JSONB{
 		"version":    2,
@@ -1432,7 +1432,7 @@ func TestRunChatGraph_SeedsBuiltinAliases(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "alias-seed",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1488,7 +1488,7 @@ func TestRunChatGraph_MessageMediaByLink(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "media-link",
-		IsEnabled: true, KeepSessionActive: false,
+		IsEnabled:       true, KeepSessionActive: false,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1529,7 +1529,7 @@ func TestRunChatGraph_MessageWaitForReply(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "wait-reply",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "m1",
@@ -1570,7 +1570,7 @@ func TestRunChatGraph_ListBranchesOnRowID(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "list-branch",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version":    2,
 			"entry_node": "l1",
@@ -1578,9 +1578,9 @@ func TestRunChatGraph_ListBranchesOnRowID(t *testing.T) {
 				map[string]any{
 					"id": "l1", "type": "list", "label": "menu",
 					"config": map[string]any{
-						"body":   "Pick a product",
-						"button": "Products",
-						"header": "Catalog",
+						"body":     "Pick a product",
+						"button":   "Products",
+						"header":   "Catalog",
 						"store_as": "choice",
 						"sections": []any{
 							map[string]any{
@@ -1620,7 +1620,7 @@ func TestRunChatGraph_Condition_RulesNamedBranches(t *testing.T) {
 		OrganizationID:  org.ID,
 		WhatsAppAccount: account.Name,
 		Name:            "condition-rules",
-		IsEnabled: true, KeepSessionActive: true,
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "c1",
 			"nodes": []any{
@@ -1857,11 +1857,11 @@ func TestExecChatSendEmail_NoSMTP(t *testing.T) {
 func TestRunChatGraph_KeepSessionActivePreservesVars(t *testing.T) {
 	app, org, account, contact, session := newGraphTestFixtures(t)
 	flow := &models.ChatbotFlow{
-		BaseModel:         models.BaseModel{ID: uuid.New()},
-		OrganizationID:    org.ID,
-		WhatsAppAccount:   account.Name,
-		Name:              "keep-session",
-		IsEnabled: true, KeepSessionActive: true,
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
+		WhatsAppAccount: account.Name,
+		Name:            "keep-session",
+		IsEnabled:       true, KeepSessionActive: true,
 		Graph: models.JSONB{
 			"version": 2, "entry_node": "s1",
 			"nodes": []any{

@@ -11,10 +11,10 @@ func TestMatchIVRCondition(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		cfg    map[string]any
-		left   string
-		want   bool
+		name string
+		cfg  map[string]any
+		left string
+		want bool
 	}{
 		{"equals", map[string]any{"operator": "equals", "value": "abc"}, "abc", true},
 		{"equals case insensitive", map[string]any{"operator": "equals", "value": "ABC"}, "abc", true},

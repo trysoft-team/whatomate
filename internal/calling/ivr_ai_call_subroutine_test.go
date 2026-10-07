@@ -150,8 +150,8 @@ func TestRunAICallTool_HTTPIgnoresOrphanFnEdge(t *testing.T) {
 		Nodes: []IVRNode{
 			{ID: "ai", Type: IVRNodeAICall},
 			{
-				ID:   "http1",
-				Type: IVRNodeHTTPCallback,
+				ID:     "http1",
+				Type:   IVRNodeHTTPCallback,
 				Config: map[string]any{"url": "http://should-not-hit.invalid", "method": "POST"},
 			},
 		},

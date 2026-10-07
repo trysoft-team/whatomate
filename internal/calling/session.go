@@ -111,23 +111,23 @@ type IVRNodeType string
 const (
 	IVRNodeStart           IVRNodeType = "start"
 	IVRNodeGreeting        IVRNodeType = "greeting"
-	IVRNodeMenu         IVRNodeType = "menu"
-	IVRNodeGather       IVRNodeType = "gather"
-	IVRNodeHTTPCallback IVRNodeType = "http_callback"
-	IVRNodeTransfer     IVRNodeType = "transfer"
-	IVRNodeGotoFlow     IVRNodeType = "goto_flow"
-	IVRNodeTiming       IVRNodeType = "timing"
-	IVRNodeHangup       IVRNodeType = "hangup"
-	IVRNodeCondition    IVRNodeType = "condition"
-	IVRNodeSetVariable  IVRNodeType = "set_variable"
-	IVRNodeConfirm      IVRNodeType = "confirm"
-	IVRNodeDelay        IVRNodeType = "delay"
-	IVRNodeSetLabels    IVRNodeType = "set_labels"
-	IVRNodeSendMessage  IVRNodeType = "send_message"
-	IVRNodeWebhook      IVRNodeType = "webhook"
-	IVRNodeLanguage     IVRNodeType = "language"
-	IVRNodeVoicemail    IVRNodeType = "voicemail"
-	IVRNodeSpeechInput  IVRNodeType = "speech_input"
+	IVRNodeMenu            IVRNodeType = "menu"
+	IVRNodeGather          IVRNodeType = "gather"
+	IVRNodeHTTPCallback    IVRNodeType = "http_callback"
+	IVRNodeTransfer        IVRNodeType = "transfer"
+	IVRNodeGotoFlow        IVRNodeType = "goto_flow"
+	IVRNodeTiming          IVRNodeType = "timing"
+	IVRNodeHangup          IVRNodeType = "hangup"
+	IVRNodeCondition       IVRNodeType = "condition"
+	IVRNodeSetVariable     IVRNodeType = "set_variable"
+	IVRNodeConfirm         IVRNodeType = "confirm"
+	IVRNodeDelay           IVRNodeType = "delay"
+	IVRNodeSetLabels       IVRNodeType = "set_labels"
+	IVRNodeSendMessage     IVRNodeType = "send_message"
+	IVRNodeWebhook         IVRNodeType = "webhook"
+	IVRNodeLanguage        IVRNodeType = "language"
+	IVRNodeVoicemail       IVRNodeType = "voicemail"
+	IVRNodeSpeechInput     IVRNodeType = "speech_input"
 	IVRNodeAIVoice         IVRNodeType = "ai_voice"
 	IVRNodeAICall          IVRNodeType = "ai_call"
 	IVRNodeExecuteFunction IVRNodeType = "execute_function"
@@ -183,8 +183,8 @@ type Manager struct {
 	redis         *redis.Client
 	assigner      *assignment.Assigner
 	tts           tts.Synthesizer
-	encryptionKey string               // decrypts org chatbot AI API keys / ElevenLabs key
-	aiConfig      *config.AIConfig     // optional server-level AI keys (Whisper fallback)
+	encryptionKey string                // decrypts org chatbot AI API keys / ElevenLabs key
+	aiConfig      *config.AIConfig      // optional server-level AI keys (Whisper fallback)
 	pipecat       *config.PipecatConfig // optional realtime AI Call sidecar
 }
 

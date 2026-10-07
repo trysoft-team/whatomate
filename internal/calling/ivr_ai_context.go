@@ -18,6 +18,7 @@ import (
 //   - ai_context_mode: "all" (default) | "selected"
 //   - ai_context_ids: []string UUIDs — used when mode is "selected", or when non-empty
 //     without an explicit mode (backward-compatible filter).
+//
 // Empty/missing selection with mode "all" loads every enabled context.
 func (m *Manager) buildIVRAIContext(session *CallSession, ctx *IVRContext, userMessage string, cfg map[string]any) string {
 	if m.db == nil || session == nil {

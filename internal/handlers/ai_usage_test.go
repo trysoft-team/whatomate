@@ -33,8 +33,8 @@ func TestRecordAIUsageAndWidgetQuery(t *testing.T) {
 	app := newTestApp(t)
 	org := testutil.CreateTestOrganization(t, app.DB)
 	settings := &models.ChatbotSettings{
-		BaseModel:      models.BaseModel{ID: uuid.New()},
-		OrganizationID: org.ID,
+		BaseModel:       models.BaseModel{ID: uuid.New()},
+		OrganizationID:  org.ID,
 		WhatsAppAccount: "test-account",
 		AI: models.AIConfig{
 			Enabled:  true,

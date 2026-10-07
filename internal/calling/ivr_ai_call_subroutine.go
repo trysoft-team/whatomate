@@ -24,16 +24,16 @@ func aiCallToolUsesNodes(def *aiCallToolDef) bool {
 // aiCallSubroutineAllowed are node types safe to run while an AI Call owns the
 // media path (no DTMF gather / TTS takeover / nested AI / transfer).
 var aiCallSubroutineAllowed = map[IVRNodeType]struct{}{
-	IVRNodeHTTPCallback:     {},
-	IVRNodeExecuteFunction:  {},
-	IVRNodeSetVariable:      {},
-	IVRNodeCondition:        {},
-	IVRNodeWebhook:          {},
-	IVRNodeSetLabels:        {},
-	IVRNodeSendMessage:      {},
-	IVRNodeLanguage:         {},
-	IVRNodeTiming:           {},
-	IVRNodeDelay:            {},
+	IVRNodeHTTPCallback:    {},
+	IVRNodeExecuteFunction: {},
+	IVRNodeSetVariable:     {},
+	IVRNodeCondition:       {},
+	IVRNodeWebhook:         {},
+	IVRNodeSetLabels:       {},
+	IVRNodeSendMessage:     {},
+	IVRNodeLanguage:        {},
+	IVRNodeTiming:          {},
+	IVRNodeDelay:           {},
 }
 
 // resolveAICallFnEdge returns the subroutine entry node for fn:<tool>, or "".

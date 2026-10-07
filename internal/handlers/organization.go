@@ -67,12 +67,12 @@ type OrganizationSettings struct {
 	HasMetaAppSecret    bool   `json:"has_meta_app_secret"`
 	MetaSource          string `json:"meta_source"` // org | shared | config — where resolveMetaAppCreds would draw from
 	// SMTP (password never returned — only has_smtp_password)
-	SMTPHost          string `json:"smtp_host"`
-	SMTPPort          int    `json:"smtp_port"`
-	SMTPUsername      string `json:"smtp_username"`
-	SMTPFrom          string `json:"smtp_from"`
-	SMTPSecurity      string `json:"smtp_security"` // tls | ssl | none
-	HasSMTPPassword   bool   `json:"has_smtp_password"`
+	SMTPHost        string `json:"smtp_host"`
+	SMTPPort        int    `json:"smtp_port"`
+	SMTPUsername    string `json:"smtp_username"`
+	SMTPFrom        string `json:"smtp_from"`
+	SMTPSecurity    string `json:"smtp_security"` // tls | ssl | none
+	HasSMTPPassword bool   `json:"has_smtp_password"`
 }
 
 // normalizeTimeFormat accepts 12h/24h (and common aliases). Empty if invalid.

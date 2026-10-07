@@ -68,9 +68,9 @@ type AIConfig struct {
 	TranscribeAPIKey   string     `gorm:"column:transcribe_api_key;type:text" json:"-"` // encrypted; empty reuses APIKey when the providers match
 
 	// Voice / TTS (org-level defaults for IVR AI Call and prompts)
-	VoiceProvider     string `gorm:"column:voice_provider;size:20" json:"voice_provider"`           // piper | openai | elevenlabs
-	ElevenLabsAPIKey  string `gorm:"column:elevenlabs_api_key;type:text" json:"-"`                  // encrypted
-	OpenAITTSVoice    string `gorm:"column:openai_tts_voice;size:50" json:"openai_tts_voice"`       // e.g. alloy
+	VoiceProvider     string `gorm:"column:voice_provider;size:20" json:"voice_provider"`            // piper | openai | elevenlabs
+	ElevenLabsAPIKey  string `gorm:"column:elevenlabs_api_key;type:text" json:"-"`                   // encrypted
+	OpenAITTSVoice    string `gorm:"column:openai_tts_voice;size:50" json:"openai_tts_voice"`        // e.g. alloy
 	ElevenLabsVoiceID string `gorm:"column:elevenlabs_voice_id;size:100" json:"elevenlabs_voice_id"` // ElevenLabs voice_id
 }
 
@@ -168,34 +168,34 @@ func (KeywordRule) TableName() string {
 // ChatbotFlow defines multi-step conversation flows
 type ChatbotFlow struct {
 	BaseModel
-	OrganizationID     uuid.UUID    `gorm:"type:uuid;index;not null" json:"organization_id"`
-	WhatsAppAccount    string       `gorm:"size:100;index;not null" json:"whatsapp_account"` // References WhatsAppAccount.Name
-	Name               string       `gorm:"size:255;not null" json:"name"`
-	IsEnabled          bool         `gorm:"default:true" json:"is_enabled"`
+	OrganizationID  uuid.UUID `gorm:"type:uuid;index;not null" json:"organization_id"`
+	WhatsAppAccount string    `gorm:"size:100;index;not null" json:"whatsapp_account"` // References WhatsAppAccount.Name
+	Name            string    `gorm:"size:255;not null" json:"name"`
+	IsEnabled       bool      `gorm:"default:true" json:"is_enabled"`
 	// KeepSessionActive: when true, reaching End leaves the session Active with
 	// SessionData intact so the next inbound continues this flow (list/buttons/
 	// WA Flow) without wiping set variables.
 	// When false (default), every user message starts again from the flow entry
 	// (no mid-flow resume); End also clears SessionData / CurrentFlowID.
-	KeepSessionActive  bool         `gorm:"default:false" json:"keep_session_active"`
-	Description        string       `gorm:"type:text" json:"description"`
-	TriggerKeywords    StringArray  `gorm:"type:jsonb" json:"trigger_keywords"`
-	TriggerButtonID    string       `gorm:"size:100" json:"trigger_button_id"`
-	InitialMessage     string       `gorm:"type:text" json:"initial_message"`
-	InitialMessageType FlowStepType `gorm:"size:20;default:'text'" json:"initial_message_type"`
-	InitialTemplateID  *uuid.UUID   `gorm:"type:uuid" json:"initial_template_id,omitempty"`
-	CompletionMessage  string       `gorm:"type:text" json:"completion_message"`
-	OnCompleteAction   string       `gorm:"size:20" json:"on_complete_action"` // none, webhook, create_record
-	CompletionConfig   JSONB        `gorm:"type:jsonb" json:"completion_config"`
-	TimeoutMessage     string       `gorm:"type:text" json:"timeout_message"`
-	CancelKeywords     StringArray  `gorm:"type:jsonb" json:"cancel_keywords"`
-	PanelConfig        JSONB        `gorm:"type:jsonb;default:'{}'" json:"panel_config"` // Contact info panel configuration
-	Graph              JSONB        `gorm:"type:jsonb" json:"graph"`                     // Published v2 flow graph (inbound runtime)
-	DraftGraph         JSONB        `gorm:"type:jsonb" json:"draft_graph"`               // Editor draft; Publish copies to Graph
-	PublishedAt        *time.Time   `json:"published_at,omitempty"`
-	HasUnpublishedChanges bool      `gorm:"default:false" json:"has_unpublished_changes"`
-	CreatedByID        *uuid.UUID   `gorm:"type:uuid" json:"created_by_id,omitempty"`
-	UpdatedByID        *uuid.UUID   `gorm:"type:uuid" json:"updated_by_id,omitempty"`
+	KeepSessionActive     bool         `gorm:"default:false" json:"keep_session_active"`
+	Description           string       `gorm:"type:text" json:"description"`
+	TriggerKeywords       StringArray  `gorm:"type:jsonb" json:"trigger_keywords"`
+	TriggerButtonID       string       `gorm:"size:100" json:"trigger_button_id"`
+	InitialMessage        string       `gorm:"type:text" json:"initial_message"`
+	InitialMessageType    FlowStepType `gorm:"size:20;default:'text'" json:"initial_message_type"`
+	InitialTemplateID     *uuid.UUID   `gorm:"type:uuid" json:"initial_template_id,omitempty"`
+	CompletionMessage     string       `gorm:"type:text" json:"completion_message"`
+	OnCompleteAction      string       `gorm:"size:20" json:"on_complete_action"` // none, webhook, create_record
+	CompletionConfig      JSONB        `gorm:"type:jsonb" json:"completion_config"`
+	TimeoutMessage        string       `gorm:"type:text" json:"timeout_message"`
+	CancelKeywords        StringArray  `gorm:"type:jsonb" json:"cancel_keywords"`
+	PanelConfig           JSONB        `gorm:"type:jsonb;default:'{}'" json:"panel_config"` // Contact info panel configuration
+	Graph                 JSONB        `gorm:"type:jsonb" json:"graph"`                     // Published v2 flow graph (inbound runtime)
+	DraftGraph            JSONB        `gorm:"type:jsonb" json:"draft_graph"`               // Editor draft; Publish copies to Graph
+	PublishedAt           *time.Time   `json:"published_at,omitempty"`
+	HasUnpublishedChanges bool         `gorm:"default:false" json:"has_unpublished_changes"`
+	CreatedByID           *uuid.UUID   `gorm:"type:uuid" json:"created_by_id,omitempty"`
+	UpdatedByID           *uuid.UUID   `gorm:"type:uuid" json:"updated_by_id,omitempty"`
 
 	// Relations
 	Organization    *Organization `gorm:"foreignKey:OrganizationID" json:"organization,omitempty"`

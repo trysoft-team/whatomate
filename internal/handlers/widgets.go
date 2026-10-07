@@ -110,50 +110,50 @@ type KPIItem struct {
 
 // AlertItem is one row in an alert_list widget.
 type AlertItem struct {
-	Severity  string `json:"severity"`
-	Title     string `json:"title"`
-	Subtitle  string `json:"subtitle"`
-	At        string `json:"at"`
-	Href      string `json:"href,omitempty"`
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle"`
+	At       string `json:"at"`
+	Href     string `json:"href,omitempty"`
 }
 
 // QueueItem is one waiting transfer in a queue widget.
 type QueueItem struct {
-	ID           string  `json:"id"`
-	ContactID    string  `json:"contact_id"`
-	Label        string  `json:"label"`
-	Source       string  `json:"source"`
-	WaitMins     float64 `json:"wait_mins"`
-	TransferredAt string `json:"transferred_at"`
+	ID            string  `json:"id"`
+	ContactID     string  `json:"contact_id"`
+	Label         string  `json:"label"`
+	Source        string  `json:"source"`
+	WaitMins      float64 `json:"wait_mins"`
+	TransferredAt string  `json:"transferred_at"`
 }
 
 // AgentStatusItem is one agent presence row.
 type AgentStatusItem struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	IsAvailable      bool   `json:"is_available"`
-	ActiveTransfers  int64  `json:"active_transfers"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	IsAvailable     bool   `json:"is_available"`
+	ActiveTransfers int64  `json:"active_transfers"`
 }
 
 // WidgetDataResponse represents the computed data for a widget
 type WidgetDataResponse struct {
-	WidgetID      uuid.UUID           `json:"widget_id"`
-	Value         float64             `json:"value"`
-	Change        float64             `json:"change"`
-	ChartData     []ChartPoint        `json:"chart_data"`
-	PrevValue     float64             `json:"prev_value"`
-	DataPoints    []DataPoint         `json:"data_points"`
-	GroupedSeries *GroupedSeriesData  `json:"grouped_series,omitempty"`
-	TableRows     []TableRow          `json:"table_rows,omitempty"`
-	Leaderboard   []LeaderboardEntry  `json:"leaderboard,omitempty"`
-	Heatmap       *HeatmapData        `json:"heatmap,omitempty"`
-	Funnel        []FunnelStage       `json:"funnel,omitempty"`
-	KPIs          []KPIItem           `json:"kpis,omitempty"`
-	Alerts        []AlertItem         `json:"alerts,omitempty"`
-	QueueItems    []QueueItem         `json:"queue_items,omitempty"`
-	Agents        []AgentStatusItem   `json:"agents,omitempty"`
-	Stub          bool                `json:"stub,omitempty"`
-	Live          bool                `json:"live,omitempty"`
+	WidgetID      uuid.UUID          `json:"widget_id"`
+	Value         float64            `json:"value"`
+	Change        float64            `json:"change"`
+	ChartData     []ChartPoint       `json:"chart_data"`
+	PrevValue     float64            `json:"prev_value"`
+	DataPoints    []DataPoint        `json:"data_points"`
+	GroupedSeries *GroupedSeriesData `json:"grouped_series,omitempty"`
+	TableRows     []TableRow         `json:"table_rows,omitempty"`
+	Leaderboard   []LeaderboardEntry `json:"leaderboard,omitempty"`
+	Heatmap       *HeatmapData       `json:"heatmap,omitempty"`
+	Funnel        []FunnelStage      `json:"funnel,omitempty"`
+	KPIs          []KPIItem          `json:"kpis,omitempty"`
+	Alerts        []AlertItem        `json:"alerts,omitempty"`
+	QueueItems    []QueueItem        `json:"queue_items,omitempty"`
+	Agents        []AgentStatusItem  `json:"agents,omitempty"`
+	Stub          bool               `json:"stub,omitempty"`
+	Live          bool               `json:"live,omitempty"`
 }
 
 // GroupedSeriesData represents multiple datasets for grouped time-series charts
@@ -631,12 +631,12 @@ func (a *App) GetWidgetDataSources(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"data_sources":  sources,
-		"metrics":       widgetMetrics,
-		"display_types": widgetDisplayTypes,
-		"colors":        namedWidgetColorList(),
+		"data_sources":       sources,
+		"metrics":            widgetMetrics,
+		"display_types":      widgetDisplayTypes,
+		"colors":             namedWidgetColorList(),
 		"live_display_types": []string{"queue", "agent_status", "alert_list"},
-		"operators":     widgetOperatorDefs,
+		"operators":          widgetOperatorDefs,
 	})
 }
 

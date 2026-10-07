@@ -51,19 +51,19 @@ type OutgoingMessageRequest struct {
 	Caption       string
 
 	// Location messages
-	Latitude  float64
-	Longitude float64
+	Latitude        float64
+	Longitude       float64
 	LocationName    string
 	LocationAddress string
 
 	// Interactive messages
-	InteractiveType string            // "button", "list", "cta_url", "voice_call"
-	BodyText        string            // Body text for interactive messages
-	Buttons         []whatsapp.Button // For button/list messages
-	ButtonText      string            // For CTA URL button / list menu CTA
-	URL             string            // For CTA URL button
-	ListHeader      string            // Optional list header text
-	ListFooter      string            // Optional list footer text
+	InteractiveType string                 // "button", "list", "cta_url", "voice_call"
+	BodyText        string                 // Body text for interactive messages
+	Buttons         []whatsapp.Button      // For button/list messages
+	ButtonText      string                 // For CTA URL button / list menu CTA
+	URL             string                 // For CTA URL button
+	ListHeader      string                 // Optional list header text
+	ListFooter      string                 // Optional list footer text
 	ListSections    []whatsapp.ListSection // Structured list sections (preferred over Buttons for list)
 
 	// voice_call interactive (WhatsApp Business Calling)

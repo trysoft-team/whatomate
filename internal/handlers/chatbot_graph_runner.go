@@ -32,21 +32,21 @@ var errChatGraphRunaway = errors.New("chat graph: too many non-blocking nodes in
 // chatRunOpts carries optional inbound metadata for a single graph run.
 // Tests may pass nil; the processor fills message type / media / location.
 type chatRunOpts struct {
-	MessageType         string
-	MetaType            string // original WhatsApp message type (text, interactive, image, …)
-	WhatsAppMessageID   string
-	Timestamp           string
-	From                string
-	ButtonID            string
-	InteractiveType     string // button_reply, list_reply, nfm_reply
-	FlowResponseData    map[string]any
-	Media               *MediaInfo
-	Latitude            float64
-	Longitude           float64
-	LocationName        string
-	LocationAddress     string
-	ForceEntry          bool
-	FromFallback        bool
+	MessageType       string
+	MetaType          string // original WhatsApp message type (text, interactive, image, …)
+	WhatsAppMessageID string
+	Timestamp         string
+	From              string
+	ButtonID          string
+	InteractiveType   string // button_reply, list_reply, nfm_reply
+	FlowResponseData  map[string]any
+	Media             *MediaInfo
+	Latitude          float64
+	Longitude         float64
+	LocationName      string
+	LocationAddress   string
+	ForceEntry        bool
+	FromFallback      bool
 	// SystemResume is set for non-user continuations (e.g. delay timer) so
 	// KeepSessionActive=false does not force a restart from the entry node.
 	SystemResume bool
@@ -987,7 +987,6 @@ func (a *App) execChatList(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error
 	return nodeOutcome{yield: true}, nil
 }
 
-
 func (a *App) execChatPrompt(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	body := stringFromConfig(node.Config, "body", "message", "text")
 
@@ -1150,14 +1149,14 @@ func (a *App) execChatAPICall(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, er
 //
 //  2. Rules (whatsCRM-style named branches):
 //     {
-//       "mode": "rules",
-//       "variable": "senderMessage",   // optional; empty = senderMessage
-//       "rules": [
-//         { "name": "Yes", "operator": "text_exact", "value": "yes",
-//           "case_sensitive": false, "handle": "yes" },
-//         { "name": "Range", "operator": "number_between",
-//           "value": "1", "value_to": "10", "handle": "mid" }
-//       ]
+//     "mode": "rules",
+//     "variable": "senderMessage",   // optional; empty = senderMessage
+//     "rules": [
+//     { "name": "Yes", "operator": "text_exact", "value": "yes",
+//     "case_sensitive": false, "handle": "yes" },
+//     { "name": "Range", "operator": "number_between",
+//     "value": "1", "value_to": "10", "handle": "mid" }
+//     ]
 //     }
 //     Outcomes: first matching rule's handle, else "else".
 //

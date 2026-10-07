@@ -13,12 +13,12 @@ import (
 
 // SharedMetaAppResponse is returned by GET /api/admin/meta-app (no secret).
 type SharedMetaAppResponse struct {
-	AppID         string   `json:"app_id"`
-	ConfigID      string   `json:"config_id"`
-	ShareMode     string   `json:"share_mode"`
-	SharedOrgIDs  []string `json:"shared_org_ids"`
-	HasAppSecret  bool     `json:"has_app_secret"`
-	UpdatedByID   *string  `json:"updated_by_id,omitempty"`
+	AppID        string   `json:"app_id"`
+	ConfigID     string   `json:"config_id"`
+	ShareMode    string   `json:"share_mode"`
+	SharedOrgIDs []string `json:"shared_org_ids"`
+	HasAppSecret bool     `json:"has_app_secret"`
+	UpdatedByID  *string  `json:"updated_by_id,omitempty"`
 }
 
 // GetSharedMetaApp returns the platform shared Meta App credential pool.
@@ -46,10 +46,10 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 	}
 
 	var req struct {
-		AppID        *string  `json:"app_id"`
-		ConfigID     *string  `json:"config_id"`
-		AppSecret    *string  `json:"app_secret"`
-		ShareMode    *string  `json:"share_mode"`
+		AppID        *string   `json:"app_id"`
+		ConfigID     *string   `json:"config_id"`
+		AppSecret    *string   `json:"app_secret"`
+		ShareMode    *string   `json:"share_mode"`
 		SharedOrgIDs *[]string `json:"shared_org_ids"`
 	}
 	if err := a.decodeRequest(r, &req); err != nil {
@@ -122,7 +122,7 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"message": "Shared Meta App credentials updated",
+		"message":  "Shared Meta App credentials updated",
 		"settings": sharedMetaAppResponse(row),
 	})
 }

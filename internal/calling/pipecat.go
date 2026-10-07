@@ -30,33 +30,33 @@ type PipecatControlEvent struct {
 
 // pipecatBootstrap is POSTed to the sidecar before the audio WebSocket opens.
 type pipecatBootstrap struct {
-	SessionID       string           `json:"session_id"`
-	CallID          string           `json:"call_id"`
-	OrganizationID  string           `json:"organization_id"`
-	AccountName     string           `json:"account_name"`
-	CallerPhone     string           `json:"caller_phone"`
-	CallerName      string           `json:"caller_name"`
-	SystemPrompt    string           `json:"system_prompt"`
-	WelcomeMessage  string           `json:"welcome_message"`
-	TransferTeamID  string           `json:"transfer_team_id"`
-	Locale          string           `json:"locale"`
-	Provider        string           `json:"llm_provider"`
-	Model           string           `json:"llm_model"`
-	APIKey          string           `json:"llm_api_key"`
-	MaxTokens       int              `json:"llm_max_tokens"`
-	VoiceProvider   string           `json:"voice_provider"`
-	VoiceID         string           `json:"voice_id"`
-	OpenAIKey       string           `json:"openai_key"` // optional Whisper / OpenAI TTS fallback
-	Tools           []map[string]any `json:"tools"`
-	CallbackURL     string           `json:"callback_url"`
-	CallbackToken   string           `json:"callback_token"`
-	MaxSessionSecs  int              `json:"max_session_secs"`
+	SessionID      string           `json:"session_id"`
+	CallID         string           `json:"call_id"`
+	OrganizationID string           `json:"organization_id"`
+	AccountName    string           `json:"account_name"`
+	CallerPhone    string           `json:"caller_phone"`
+	CallerName     string           `json:"caller_name"`
+	SystemPrompt   string           `json:"system_prompt"`
+	WelcomeMessage string           `json:"welcome_message"`
+	TransferTeamID string           `json:"transfer_team_id"`
+	Locale         string           `json:"locale"`
+	Provider       string           `json:"llm_provider"`
+	Model          string           `json:"llm_model"`
+	APIKey         string           `json:"llm_api_key"`
+	MaxTokens      int              `json:"llm_max_tokens"`
+	VoiceProvider  string           `json:"voice_provider"`
+	VoiceID        string           `json:"voice_id"`
+	OpenAIKey      string           `json:"openai_key"` // optional Whisper / OpenAI TTS fallback
+	Tools          []map[string]any `json:"tools"`
+	CallbackURL    string           `json:"callback_url"`
+	CallbackToken  string           `json:"callback_token"`
+	MaxSessionSecs int              `json:"max_session_secs"`
 	// Recording / transcription (AI Call node options)
-	RecordingEnabled      bool `json:"recording_enabled"`
-	RecordUser            bool `json:"record_user"`
-	RecordAssistant       bool `json:"record_assistant"`
-	RecordStereo          bool `json:"record_stereo"`
-	TranscriptionEnabled  bool `json:"transcription_enabled"`
+	RecordingEnabled     bool `json:"recording_enabled"`
+	RecordUser           bool `json:"record_user"`
+	RecordAssistant      bool `json:"record_assistant"`
+	RecordStereo         bool `json:"record_stereo"`
+	TranscriptionEnabled bool `json:"transcription_enabled"`
 }
 
 // SetPipecat attaches sidecar config used by realtime ai_call.
@@ -193,7 +193,7 @@ func (m *Manager) executeAICallPipecat(session *CallSession, node *IVRNode, ctx 
 		toolMaps = append(toolMaps, map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
-			"parameters":    t.Parameters,
+			"parameters":  t.Parameters,
 			"handler":     t.Handler,
 		})
 	}
@@ -203,27 +203,27 @@ func (m *Manager) executeAICallPipecat(session *CallSession, node *IVRNode, ctx 
 		maxSecs = 600
 	}
 	boot := pipecatBootstrap{
-		SessionID:      uuid.New().String(),
-		CallID:         session.ID,
-		OrganizationID: session.OrganizationID.String(),
-		AccountName:    session.AccountName,
-		CallerPhone:    session.CallerPhone,
-		CallerName:     session.CallerName,
-		SystemPrompt:   systemInstr,
-		WelcomeMessage: welcome,
-		TransferTeamID: transferTeamID,
-		Locale:         session.Locale,
-		Provider:       provider,
-		Model:          llmModel,
-		APIKey:         apiKey,
-		MaxTokens:      maxTokens,
-		VoiceProvider:  "gemini",
-		VoiceID:        pipecatGeminiVoice(synthOpts.Voice),
-		OpenAIKey:      m.resolveOpenAIKey(session.OrganizationID),
-		Tools:          toolMaps,
-		CallbackURL:    strings.TrimRight(m.pipecat.CallbackURL, "/"),
-		CallbackToken:  m.pipecat.AuthToken,
-		MaxSessionSecs: maxSecs,
+		SessionID:            uuid.New().String(),
+		CallID:               session.ID,
+		OrganizationID:       session.OrganizationID.String(),
+		AccountName:          session.AccountName,
+		CallerPhone:          session.CallerPhone,
+		CallerName:           session.CallerName,
+		SystemPrompt:         systemInstr,
+		WelcomeMessage:       welcome,
+		TransferTeamID:       transferTeamID,
+		Locale:               session.Locale,
+		Provider:             provider,
+		Model:                llmModel,
+		APIKey:               apiKey,
+		MaxTokens:            maxTokens,
+		VoiceProvider:        "gemini",
+		VoiceID:              pipecatGeminiVoice(synthOpts.Voice),
+		OpenAIKey:            m.resolveOpenAIKey(session.OrganizationID),
+		Tools:                toolMaps,
+		CallbackURL:          strings.TrimRight(m.pipecat.CallbackURL, "/"),
+		CallbackToken:        m.pipecat.AuthToken,
+		MaxSessionSecs:       maxSecs,
 		RecordingEnabled:     boolFromConfig(node.Config, "recording_enabled", false),
 		RecordUser:           boolFromConfig(node.Config, "record_user", true),
 		RecordAssistant:      boolFromConfig(node.Config, "record_assistant", true),

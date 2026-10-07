@@ -61,10 +61,10 @@ type passkeyResponse struct {
 	// CredentialID (base64url) lets the browser's password manager be told
 	// which passkeys are still valid (WebAuthn Signal API).
 	CredentialID string     `json:"credential_id"`
-	RPID        string     `json:"rp_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
-	CurrentSite bool       `json:"current_site"`
+	RPID         string     `json:"rp_id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	CurrentSite  bool       `json:"current_site"`
 }
 
 // passkeyRelyingParty returns the browser origin of the request and the

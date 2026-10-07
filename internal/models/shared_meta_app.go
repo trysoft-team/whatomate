@@ -16,12 +16,12 @@ const (
 // when share_mode is global or the org is listed in SharedOrgIDs.
 type SharedMetaAppCredentials struct {
 	BaseModel
-	AppID               string      `gorm:"size:128" json:"app_id"`
-	ConfigID            string      `gorm:"size:128" json:"config_id"`
-	AppSecretEncrypted  string      `gorm:"type:text" json:"-"`
-	ShareMode           string      `gorm:"size:32;not null;default:'off'" json:"share_mode"` // off | global | selected
-	SharedOrgIDs        JSONBArray  `gorm:"type:jsonb;default:'[]'" json:"shared_org_ids"`
-	UpdatedByID         *uuid.UUID  `gorm:"type:uuid" json:"updated_by_id,omitempty"`
+	AppID              string     `gorm:"size:128" json:"app_id"`
+	ConfigID           string     `gorm:"size:128" json:"config_id"`
+	AppSecretEncrypted string     `gorm:"type:text" json:"-"`
+	ShareMode          string     `gorm:"size:32;not null;default:'off'" json:"share_mode"` // off | global | selected
+	SharedOrgIDs       JSONBArray `gorm:"type:jsonb;default:'[]'" json:"shared_org_ids"`
+	UpdatedByID        *uuid.UUID `gorm:"type:uuid" json:"updated_by_id,omitempty"`
 }
 
 func (SharedMetaAppCredentials) TableName() string {

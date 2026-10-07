@@ -9,7 +9,7 @@ import (
 )
 
 type widgetLiveDebouncer struct {
-	mu    sync.Mutex
+	mu      sync.Mutex
 	pending map[uuid.UUID]map[string]struct{}
 	timers  map[uuid.UUID]*time.Timer
 }

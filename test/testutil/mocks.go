@@ -27,17 +27,17 @@ type MockWhatsAppClient struct {
 	SentMessages []MockSentMessage
 
 	// Configurable behavior
-	SendTextMessageFunc        func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, text string) (string, error)
-	SendInteractiveButtonsFunc func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, body string, buttons []whatsapp.Button) (string, error)
-	SendTemplateMessageFunc    func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, template, lang string, components []map[string]any) (string, error)
-	SendImageMessageFunc       func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, caption string) (string, error)
-	SendDocumentMessageFunc    func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, filename, caption string) (string, error)
-	MarkMessageReadFunc             func(ctx context.Context, account *whatsapp.Account, messageID string) error
-	MarkMessageReadWithTypingFunc   func(ctx context.Context, account *whatsapp.Account, messageID string) error
-	TypingIndicatorsSent            []string
-	GetMediaURLFunc            func(ctx context.Context, mediaID string, account *whatsapp.Account) (string, error)
-	DownloadMediaFunc          func(ctx context.Context, mediaURL, accessToken string) ([]byte, error)
-	UploadMediaFunc            func(ctx context.Context, account *whatsapp.Account, data []byte, mimeType, filename string) (string, error)
+	SendTextMessageFunc           func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, text string) (string, error)
+	SendInteractiveButtonsFunc    func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, body string, buttons []whatsapp.Button) (string, error)
+	SendTemplateMessageFunc       func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, template, lang string, components []map[string]any) (string, error)
+	SendImageMessageFunc          func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, caption string) (string, error)
+	SendDocumentMessageFunc       func(ctx context.Context, account *whatsapp.Account, rcpt whatsapp.Recipient, mediaID, filename, caption string) (string, error)
+	MarkMessageReadFunc           func(ctx context.Context, account *whatsapp.Account, messageID string) error
+	MarkMessageReadWithTypingFunc func(ctx context.Context, account *whatsapp.Account, messageID string) error
+	TypingIndicatorsSent          []string
+	GetMediaURLFunc               func(ctx context.Context, mediaID string, account *whatsapp.Account) (string, error)
+	DownloadMediaFunc             func(ctx context.Context, mediaURL, accessToken string) ([]byte, error)
+	UploadMediaFunc               func(ctx context.Context, account *whatsapp.Account, data []byte, mimeType, filename string) (string, error)
 
 	// Error to return (if set, overrides function)
 	Error error

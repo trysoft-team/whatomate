@@ -192,11 +192,11 @@ func (a *App) GetChatbotSettings(r *fastglue.Request) error {
 		AgentSessionTimeoutMessage:   settings.AgentAssignment.SessionTimeoutMessage,
 		AgentAppendInitials:          settings.AgentAssignment.AppendAgentInitials,
 		// AI
-		AIEnabled:         settings.AI.Enabled,
-		AIProvider:        settings.AI.Provider,
-		AIModel:           settings.AI.Model,
-		AIMaxTokens:       settings.AI.MaxTokens,
-		AISystemPrompt:    settings.AI.SystemPrompt,
+		AIEnabled:          settings.AI.Enabled,
+		AIProvider:         settings.AI.Provider,
+		AIModel:            settings.AI.Model,
+		AIMaxTokens:        settings.AI.MaxTokens,
+		AISystemPrompt:     settings.AI.SystemPrompt,
 		AIHandoffSummary:   settings.AI.HandoffSummary,
 		TranscribeProvider: settings.AI.TranscribeProvider,
 		TranscribeModel:    settings.AI.TranscribeModel,
@@ -296,19 +296,19 @@ func chatbotSLASnapshot(s *models.ChatbotSettings) map[string]any {
 // change the activity log should surface.
 func chatbotAISnapshot(s *models.ChatbotSettings) map[string]any {
 	return map[string]any{
-		"ai_enabled":           s.AI.Enabled,
-		"ai_provider":          s.AI.Provider,
-		"ai_model":             s.AI.Model,
-		"ai_max_tokens":        s.AI.MaxTokens,
-		"ai_system_prompt":     s.AI.SystemPrompt,
-		"ai_handoff_summary":   s.AI.HandoffSummary,
-		"transcribe_provider":  s.AI.TranscribeProvider,
-		"transcribe_model":     s.AI.TranscribeModel,
-		"has_transcribe_key":   s.AI.TranscribeAPIKey != "",
-		"voice_provider":       s.AI.VoiceProvider,
-		"openai_tts_voice":     s.AI.OpenAITTSVoice,
-		"elevenlabs_voice_id":  s.AI.ElevenLabsVoiceID,
-		"has_elevenlabs_key":   s.AI.ElevenLabsAPIKey != "",
+		"ai_enabled":          s.AI.Enabled,
+		"ai_provider":         s.AI.Provider,
+		"ai_model":            s.AI.Model,
+		"ai_max_tokens":       s.AI.MaxTokens,
+		"ai_system_prompt":    s.AI.SystemPrompt,
+		"ai_handoff_summary":  s.AI.HandoffSummary,
+		"transcribe_provider": s.AI.TranscribeProvider,
+		"transcribe_model":    s.AI.TranscribeModel,
+		"has_transcribe_key":  s.AI.TranscribeAPIKey != "",
+		"voice_provider":      s.AI.VoiceProvider,
+		"openai_tts_voice":    s.AI.OpenAITTSVoice,
+		"elevenlabs_voice_id": s.AI.ElevenLabsVoiceID,
+		"has_elevenlabs_key":  s.AI.ElevenLabsAPIKey != "",
 	}
 }
 
@@ -1462,9 +1462,9 @@ func (a *App) CountChatbotSessions(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"count":             count,
-		"whatsapp_account":  accountName,
-		"status":            status,
+		"count":            count,
+		"whatsapp_account": accountName,
+		"status":           status,
 	})
 }
 

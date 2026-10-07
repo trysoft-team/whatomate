@@ -76,8 +76,8 @@ func (a *App) pauseChatbotForAgentReply(contact *models.Contact, account *models
 		a.WSHub.BroadcastToOrg(account.OrganizationID, websocket.WSMessage{
 			Type: websocket.TypeContactUpdate,
 			Payload: map[string]any{
-				"contact_id":      contact.ID.String(),
-				"bot_muted_until": until.Format(time.RFC3339),
+				"contact_id":       contact.ID.String(),
+				"bot_muted_until":  until.Format(time.RFC3339),
 				"bot_muted_reason": "agent_reply",
 			},
 		})

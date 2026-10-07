@@ -66,11 +66,11 @@ func TestProcessTemplate_InboundIsRawJSON(t *testing.T) {
 							},
 							"messages": []any{
 								map[string]any{
-									"from": "15559876543",
-									"id":   "wamid.abc",
+									"from":      "15559876543",
+									"id":        "wamid.abc",
 									"timestamp": "1234567890",
-									"type": "text",
-									"text": map[string]any{"body": "Hello"},
+									"type":      "text",
+									"text":      map[string]any{"body": "Hello"},
 								},
 							},
 						},
@@ -101,7 +101,9 @@ func TestMetaInboundMessageMap_MatchesMetaMessage(t *testing.T) {
 		ID:        "wamid.xyz",
 		Timestamp: "1700000000",
 		Type:      "text",
-		Text:      &struct{ Body string `json:"body"` }{Body: "Hi Meta"},
+		Text: &struct {
+			Body string `json:"body"`
+		}{Body: "Hi Meta"},
 	}
 	raw := metaInboundMessageMap(msg)
 	require.NotNil(t, raw)
@@ -121,7 +123,9 @@ func TestBuildMetaWebhookInboundEnvelope_FullBody(t *testing.T) {
 		ID:         "wamid.test",
 		Timestamp:  "1790293174",
 		Type:       "text",
-		Text:       &struct{ Body string `json:"body"` }{Body: "Xxx"},
+		Text: &struct {
+			Body string `json:"body"`
+		}{Body: "Xxx"},
 	}
 	contacts := []map[string]any{
 		{
@@ -165,7 +169,9 @@ func TestSeedChatSessionBuiltins_UsesRawInboundAsIs(t *testing.T) {
 		[]map[string]any{{"wa_id": "15551112222", "profile": map[string]any{"name": "Ada"}}},
 		IncomingTextMessage{
 			From: "15551112222", ID: "wamid.raw", Type: "text",
-			Text: &struct{ Body string `json:"body"` }{Body: "Hi"},
+			Text: &struct {
+				Body string `json:"body"`
+			}{Body: "Hi"},
 		},
 	)
 	seedChatSessionBuiltins(session, nil, "Hi", &chatRunOpts{

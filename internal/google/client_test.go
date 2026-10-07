@@ -71,8 +71,8 @@ func TestCalendarEventJSONShape(t *testing.T) {
 	}
 	body := map[string]any{
 		"summary": ev.Summary, "description": ev.Description,
-		"start": map[string]any{"dateTime": ev.Start, "timeZone": ev.TimeZone},
-		"end":   map[string]any{"dateTime": ev.End, "timeZone": ev.TimeZone},
+		"start":     map[string]any{"dateTime": ev.Start, "timeZone": ev.TimeZone},
+		"end":       map[string]any{"dateTime": ev.End, "timeZone": ev.TimeZone},
 		"attendees": []map[string]string{{"email": "a@b.com"}},
 	}
 	b, err := json.Marshal(body)
