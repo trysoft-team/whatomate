@@ -2,7 +2,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 export default defineConfig({
-  site: 'https://shridarpatil.github.io',
+  site: 'https://trysoft.github.io',
   base: '/whatomate',
   // astro 6 leaves markdown.gfm undefined and lets its own processor default it
   // to on, but @astrojs/mdx still reads the raw value — undefined disables
@@ -15,7 +15,7 @@ export default defineConfig({
       title: 'Whatomate',
       description: 'A modern WhatsApp Business Platform',
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/shridarpatil/whatomate' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/trysoft/whatomate' },
       ],
       sidebar: [
         {

@@ -34,7 +34,7 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
   Pre-defined quick replies with slash commands (`/shortcut`) and dynamic placeholders.
 
 - **Voice Calling & IVR**
-  Incoming and outgoing WhatsApp calls with IVR menus, DTMF routing, call transfers to agent teams, hold music, and call recording. See [calling docs](https://shridarpatil.github.io/whatomate/features/calling/).
+  Incoming and outgoing WhatsApp calls with IVR menus, DTMF routing, call transfers to agent teams, hold music, and call recording. See [calling docs](https://trysoft.github.io/whatomate/features/calling/).
 
 - **Analytics Dashboard**
   Track messages, engagement, and campaign performance.
@@ -63,9 +63,9 @@ The latest image is available on Docker Hub at [`shridh0r/whatomate:latest`](htt
 
 ```bash
 # Download compose file, sample config, and env file
-curl -LO https://raw.githubusercontent.com/shridarpatil/whatomate/main/docker/docker-compose.yml
-curl -LO https://raw.githubusercontent.com/shridarpatil/whatomate/main/config.example.toml
-curl -L https://raw.githubusercontent.com/shridarpatil/whatomate/main/docker/.env.example -o .env
+curl -LO https://raw.githubusercontent.com/trysoft/whatomate/main/docker/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/trysoft/whatomate/main/config.example.toml
+curl -L https://raw.githubusercontent.com/trysoft/whatomate/main/docker/.env.example -o .env
 
 # Copy and edit config
 cp config.example.toml config.toml
@@ -81,7 +81,7 @@ __________________
 
 ### Binary
 
-Download the [latest release](https://github.com/shridarpatil/whatomate/releases) and extract the binary.
+Download the [latest release](https://github.com/trysoft/whatomate/releases) and extract the binary.
 
 ```bash
 # Copy and edit config
@@ -98,7 +98,7 @@ __________________
 ### Build from Source
 
 ```bash
-git clone https://github.com/shridarpatil/whatomate.git
+git clone https://github.com/trysoft/whatomate.git
 cd whatomate
 
 # Production build (single binary with embedded frontend)
@@ -106,7 +106,7 @@ make build-prod
 ./whatomate server -migrate
 ```
 
-See [configuration docs](https://shridarpatil.github.io/whatomate/getting-started/configuration/) for detailed setup options.
+See [configuration docs](https://trysoft.github.io/whatomate/getting-started/configuration/) for detailed setup options.
 
 ## CLI Usage
 

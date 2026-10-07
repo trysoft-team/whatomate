@@ -139,7 +139,7 @@ dockers_v2:
 
 release:
   github:
-    owner: shridarpatil
+    owner: trysoft
     name: whatomate
   draft: false
   prerelease: auto
@@ -154,11 +154,11 @@ homebrew_casks:
       - whatomate
     binaries:
       - whatomate
-    homepage: "https://github.com/shridarpatil/whatomate"
+    homepage: "https://github.com/trysoft/whatomate"
     description: "Self-hosted WhatsApp Business platform with chatbots, campaigns and calling"
     skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
     repository:
-      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "shridarpatil" }}'
+      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "trysoft" }}'
       name: homebrew-tap
       token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
     commit_author:

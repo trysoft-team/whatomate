@@ -13,7 +13,7 @@ The fastest way to get started:
 
 ```bash
 # Clone the repository
-git clone https://github.com/shridarpatil/whatomate.git
+git clone https://github.com/trysoft/whatomate.git
 cd whatomate
 cp config.example.toml config.toml
 cp .env.example .env  # Edit to set PostgreSQL credentials and timezone
@@ -47,7 +47,7 @@ open http://localhost:8080
 ### Step 1: Clone and Configure
 
 ```bash
-git clone https://github.com/shridarpatil/whatomate.git
+git clone https://github.com/trysoft/whatomate.git
 cd whatomate
 cp config.example.toml config.toml
 ```
@@ -147,7 +147,7 @@ To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH
 
 ### Prebuilt Binaries
 
-Each [GitHub release](https://github.com/shridarpatil/whatomate/releases) includes archives for:
+Each [GitHub release](https://github.com/trysoft/whatomate/releases) includes archives for:
 
 | OS | Architectures |
 |---|---|
@@ -167,7 +167,7 @@ The binary still needs PostgreSQL, Redis and a `config.toml` (start from `config
 On macOS and Linux, install the release binary from the project's tap:
 
 ```bash
-brew install shridarpatil/tap/whatomate
+brew install trysoft/tap/whatomate
 ```
 
 This also installs `ffmpeg` and `opus-tools`. PostgreSQL and Redis are not installed automatically, so you can point Whatomate at existing servers; to run them locally:
