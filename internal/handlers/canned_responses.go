@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -80,7 +81,8 @@ func (a *App) ListCannedResponses(r *fastglue.Request) error {
 	}
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR content ILIKE ? OR shortcut ILIKE ?",
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike("content")+" OR "+d.ILike("shortcut"),
 			searchPattern, searchPattern, searchPattern)
 	}
 

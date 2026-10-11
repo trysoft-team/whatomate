@@ -16,6 +16,7 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -91,7 +92,7 @@ func (a *App) ListCustomActions(r *fastglue.Request) error {
 	// Apply search filter - search by name (case-insensitive)
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		query = query.Where("name ILIKE ?", searchPattern)
+		query = query.Where(dialect.Of(a.DB).ILike("name"), searchPattern)
 	}
 
 	var total int64

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/utils"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -113,8 +114,8 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 			search = search[:1000]
 		}
 		searchPattern := "%" + search + "%"
-		// Use ILIKE for case-insensitive search on profile_name
-		query = query.Where("phone_number LIKE ? OR profile_name ILIKE ?", searchPattern, searchPattern)
+		// Case-insensitive search on profile_name
+		query = query.Where("phone_number LIKE ? OR "+dialect.Of(a.DB).ILike("profile_name"), searchPattern, searchPattern)
 	}
 
 	// Filter by tags (comma-separated, matches contacts that have ANY of the specified tags)

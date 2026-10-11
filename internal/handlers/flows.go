@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/valyala/fasthttp"
@@ -77,7 +78,7 @@ func (a *App) ListFlows(r *fastglue.Request) error {
 	if search != "" {
 		searchPattern := "%" + search + "%"
 		// Search by flow name (case-insensitive)
-		query = query.Where("name ILIKE ?", searchPattern)
+		query = query.Where(dialect.Of(a.DB).ILike("name"), searchPattern)
 	}
 
 	var total int64

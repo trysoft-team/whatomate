@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -71,7 +72,7 @@ func (a *App) ListRoles(r *fastglue.Request) error {
 
 	baseQuery := a.ScopeToOrg(a.DB, userID, orgID)
 	if search != "" {
-		baseQuery = baseQuery.Where("name ILIKE ?", "%"+search+"%")
+		baseQuery = baseQuery.Where(dialect.Of(a.DB).ILike("name"), "%"+search+"%")
 	}
 
 	// Get total count

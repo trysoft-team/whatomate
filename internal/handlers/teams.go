@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -69,7 +70,7 @@ func (a *App) ListTeams(r *fastglue.Request) error {
 	if a.HasPermission(userID, models.ResourceTeams, models.ActionRead, orgID) {
 		baseQuery := a.ScopeToOrg(a.DB, userID, orgID)
 		if search != "" {
-			baseQuery = baseQuery.Where("name ILIKE ?", "%"+search+"%")
+			baseQuery = baseQuery.Where(dialect.Of(a.DB).ILike("name"), "%"+search+"%")
 		}
 		baseQuery.Model(&models.Team{}).Count(&total)
 		if err := pg.Apply(baseQuery.
@@ -83,7 +84,7 @@ func (a *App) ListTeams(r *fastglue.Request) error {
 		baseQuery := a.ScopeToOrg(a.DB.Joins("JOIN team_members ON team_members.team_id = teams.id"), userID, orgID).
 			Where("team_members.user_id = ?", userID)
 		if search != "" {
-			baseQuery = baseQuery.Where("teams.name ILIKE ?", "%"+search+"%")
+			baseQuery = baseQuery.Where(dialect.Of(a.DB).ILike("teams.name"), "%"+search+"%")
 		}
 		baseQuery.Model(&models.Team{}).Count(&total)
 		if err := pg.Apply(baseQuery.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/utils"
 	"github.com/valyala/fasthttp"
@@ -231,12 +232,13 @@ func (a *App) ExportData(r *fastglue.Request) error {
 	// Apply filters
 	if search, ok := req.Filters["search"]; ok && search != "" {
 		searchPattern := "%" + search + "%"
+		d := dialect.Of(a.DB)
 		switch req.Table {
 		case "contacts":
-			// Use ILIKE for case-insensitive search on profile_name
-			query = query.Where("phone_number LIKE ? OR profile_name ILIKE ?", searchPattern, searchPattern)
+			// Case-insensitive search on profile_name
+			query = query.Where("phone_number LIKE ? OR "+d.ILike("profile_name"), searchPattern, searchPattern)
 		case "tags":
-			query = query.Where("name ILIKE ? OR description ILIKE ?", searchPattern, searchPattern)
+			query = query.Where(d.ILike("name")+" OR "+d.ILike("description"), searchPattern, searchPattern)
 		}
 	}
 

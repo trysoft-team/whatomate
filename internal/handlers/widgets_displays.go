@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 )
 
@@ -20,7 +21,7 @@ func (a *App) getQueueItems(orgID uuid.UUID, filters []FilterInput) []QueueItem 
 
 	for _, f := range filters {
 		if f.Field == "team_id" || f.Field == "agent_id" || f.Field == "source" {
-			condition, values, ok := buildFilterSQL("transfers", f)
+			condition, values, ok := buildFilterSQL(dialect.Of(a.DB), "transfers", f)
 			if ok {
 				query = query.Where("t."+condition, values...)
 			}
@@ -168,7 +169,7 @@ func (a *App) getLeaderboard(orgID uuid.UUID, widget models.Widget, filters []Fi
 			WHERE t.organization_id = ? AND t.transferred_at >= ? AND t.transferred_at <= ?
 			  AND t.agent_id IS NOT NULL`
 		args = []any{orgID, start, end}
-		query, args = appendFilterSQL("transfers", query, args, filters)
+		query, args = appendFilterSQL(dialect.Of(a.DB), "transfers", query, args, filters)
 		query += ` GROUP BY u.full_name ORDER BY value DESC LIMIT 10`
 	case "calls":
 		query = `
@@ -178,7 +179,7 @@ func (a *App) getLeaderboard(orgID uuid.UUID, widget models.Widget, filters []Fi
 			WHERE c.organization_id = ? AND c.created_at >= ? AND c.created_at <= ?
 			  AND c.agent_id IS NOT NULL`
 		args = []any{orgID, start, end}
-		query, args = appendFilterSQL("calls", query, args, filters)
+		query, args = appendFilterSQL(dialect.Of(a.DB), "calls", query, args, filters)
 		query += ` GROUP BY u.full_name ORDER BY value DESC LIMIT 10`
 	default:
 		points := a.getGroupedData(orgID, widget, filters, start, end)
@@ -227,7 +228,7 @@ func (a *App) getHeatmapData(orgID uuid.UUID, widget models.Widget, filters []Fi
 		WHERE organization_id = ? AND %s >= ? AND %s <= ?
 	`, dateField, dateField, tableName, dateField, dateField)
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
 	if widget.DataSource == "media" {
 		query += ` AND (message_type IN ('image','audio','video','document','sticker','voice') OR (media_url IS NOT NULL AND media_url != ''))`
 	}

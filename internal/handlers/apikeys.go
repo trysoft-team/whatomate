@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -63,7 +64,8 @@ func (a *App) ListAPIKeys(r *fastglue.Request) error {
 	// Apply search filter - search by name or key prefix (case-insensitive)
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR key_prefix ILIKE ?", searchPattern, searchPattern)
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike("key_prefix"), searchPattern, searchPattern)
 	}
 
 	var total int64

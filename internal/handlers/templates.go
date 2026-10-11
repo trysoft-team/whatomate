@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/templateutil"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -84,7 +85,8 @@ func (a *App) ListTemplates(r *fastglue.Request) error {
 		query = query.Where("category = ?", category)
 	}
 	if search != "" {
-		query = query.Where("name ILIKE ? OR display_name ILIKE ?", "%"+search+"%", "%"+search+"%")
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike("display_name"), "%"+search+"%", "%"+search+"%")
 	}
 
 	var total int64

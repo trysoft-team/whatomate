@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/audit"
 	"github.com/trysoft/whatomate/internal/crypto"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -678,7 +679,8 @@ func (a *App) ListKeywordRules(r *fastglue.Request) error {
 	if search != "" {
 		searchPattern := "%" + search + "%"
 		// Search in name (case-insensitive) or in keywords JSONB array
-		query = query.Where("name ILIKE ? OR keywords::text ILIKE ?", searchPattern, searchPattern)
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike(d.AsText("keywords")), searchPattern, searchPattern)
 	}
 
 	var total int64
@@ -956,7 +958,8 @@ func (a *App) ListChatbotFlows(r *fastglue.Request) error {
 	// Apply search filter - search by name, description, or trigger keywords
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR description ILIKE ? OR trigger_keywords::text ILIKE ?", searchPattern, searchPattern, searchPattern)
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike("description")+" OR "+d.ILike(d.AsText("trigger_keywords")), searchPattern, searchPattern, searchPattern)
 	}
 
 	var total int64
@@ -1538,7 +1541,8 @@ func (a *App) ListAIContexts(r *fastglue.Request) error {
 	// Apply search filter - search by name, static content, or trigger keywords
 	if search != "" {
 		searchPattern := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR static_content ILIKE ? OR trigger_keywords::text ILIKE ?", searchPattern, searchPattern, searchPattern)
+		d := dialect.Of(a.DB)
+		query = query.Where(d.ILike("name")+" OR "+d.ILike("static_content")+" OR "+d.ILike(d.AsText("trigger_keywords")), searchPattern, searchPattern, searchPattern)
 	}
 
 	var total int64

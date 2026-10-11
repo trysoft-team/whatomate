@@ -10,6 +10,7 @@ import (
 	"github.com/trysoft/whatomate/internal/audit"
 	"github.com/trysoft/whatomate/internal/crypto"
 	"github.com/trysoft/whatomate/internal/database"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/utils"
 	"github.com/valyala/fasthttp"
@@ -742,7 +743,8 @@ func (a *App) ListOrganizationMembers(r *fastglue.Request) error {
 		Where("user_organizations.organization_id = ? AND user_organizations.deleted_at IS NULL", orgID)
 
 	if search != "" {
-		baseQuery = baseQuery.Where("users.full_name ILIKE ? OR users.email ILIKE ?", "%"+search+"%", "%"+search+"%")
+		d := dialect.Of(a.DB)
+		baseQuery = baseQuery.Where(d.ILike("users.full_name")+" OR "+d.ILike("users.email"), "%"+search+"%", "%"+search+"%")
 	}
 
 	var total int64

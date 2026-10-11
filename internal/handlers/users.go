@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -109,8 +110,10 @@ func (a *App) ListUsers(r *fastglue.Request) error {
 	countQuery := a.DB.Joins(joinClause, orgID).Where("users.deleted_at IS NULL")
 	dataQuery := a.DB.Joins(joinClause, orgID).Where("users.deleted_at IS NULL")
 	if search != "" {
-		countQuery = countQuery.Where("users.full_name ILIKE ? OR users.email ILIKE ?", "%"+search+"%", "%"+search+"%")
-		dataQuery = dataQuery.Where("users.full_name ILIKE ? OR users.email ILIKE ?", "%"+search+"%", "%"+search+"%")
+		d := dialect.Of(a.DB)
+		searchCond := d.ILike("users.full_name") + " OR " + d.ILike("users.email")
+		countQuery = countQuery.Where(searchCond, "%"+search+"%", "%"+search+"%")
+		dataQuery = dataQuery.Where(searchCond, "%"+search+"%", "%"+search+"%")
 	}
 	if roleIDParam != "" {
 		if roleUUID, err := uuid.Parse(roleIDParam); err == nil {

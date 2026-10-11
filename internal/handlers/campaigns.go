@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/utils"
@@ -82,7 +83,7 @@ func (a *App) ListCampaigns(r *fastglue.Request) error {
 	baseQuery := a.DB.Where("organization_id = ?", orgID)
 
 	if search != "" {
-		baseQuery = baseQuery.Where("name ILIKE ?", "%"+search+"%")
+		baseQuery = baseQuery.Where(dialect.Of(a.DB).ILike("name"), "%"+search+"%")
 	}
 
 	if status != "" {

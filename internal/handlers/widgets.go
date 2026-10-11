@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -920,7 +921,7 @@ func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []Filt
 	`, dateField, tableName, dateField, dateField)
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
 
 	switch widget.DataSource {
 	case "media":
@@ -990,9 +991,9 @@ func resolveDataSourceTable(dataSource string) (tableName, dateField string, ok 
 }
 
 // appendFilterSQL appends filter conditions to a raw SQL query string and args slice.
-func appendFilterSQL(dataSource string, query string, args []any, filters []FilterInput) (string, []any) {
+func appendFilterSQL(d dialect.Dialect, dataSource string, query string, args []any, filters []FilterInput) (string, []any) {
 	for _, f := range filters {
-		condition, values, ok := buildFilterSQL(dataSource, f)
+		condition, values, ok := buildFilterSQL(d, dataSource, f)
 		if !ok {
 			continue
 		}
@@ -1029,7 +1030,7 @@ func (a *App) getGroupedData(orgID uuid.UUID, widget models.Widget, filters []Fi
 	`, widget.GroupByField, tableName, dateField, dateField)
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
 
 	query += fmt.Sprintf(" GROUP BY %s ORDER BY value DESC", widget.GroupByField)
 
@@ -1068,7 +1069,7 @@ func (a *App) getCampaignMessageStatusData(orgID uuid.UUID, filters []FilterInpu
 	`
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL("campaigns", query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), "campaigns", query, args, filters)
 
 	type CampaignCounts struct {
 		Sent      int64
@@ -1112,7 +1113,7 @@ func (a *App) getGroupedTimeSeriesData(orgID uuid.UUID, widget models.Widget, fi
 	`, dateField, widget.GroupByField, tableName, dateField, dateField)
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
 
 	query += fmt.Sprintf(" GROUP BY DATE_TRUNC('day', %s), %s ORDER BY date ASC", dateField, widget.GroupByField)
 
@@ -1196,7 +1197,7 @@ func (a *App) getCampaignMessageStatusTimeSeries(orgID uuid.UUID, filters []Filt
 	`
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL("campaigns", query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), "campaigns", query, args, filters)
 
 	query += " GROUP BY DATE_TRUNC('day', created_at) ORDER BY date ASC"
 
@@ -1240,7 +1241,7 @@ func (a *App) getCampaignMessageStatusTimeSeries(orgID uuid.UUID, filters []Filt
 // filters whose field isn't in the data-source whitelist — that's the SQL
 // injection guard. The query is unchanged in that case.
 func applyFilter(dataSource string, query *gorm.DB, filter FilterInput) *gorm.DB {
-	condition, values, ok := buildFilterSQL(dataSource, filter)
+	condition, values, ok := buildFilterSQL(dialect.Of(query), dataSource, filter)
 	if !ok {
 		return query
 	}
@@ -1248,7 +1249,7 @@ func applyFilter(dataSource string, query *gorm.DB, filter FilterInput) *gorm.DB
 }
 
 // buildFilterSQL turns a user-supplied filter into a parameterized SQL fragment.
-func buildFilterSQL(dataSource string, filter FilterInput) (string, []any, bool) {
+func buildFilterSQL(d dialect.Dialect, dataSource string, filter FilterInput) (string, []any, bool) {
 	if !allowedFilterFields[dataSource][filter.Field] {
 		return "", nil, false
 	}
@@ -1261,9 +1262,9 @@ func buildFilterSQL(dataSource string, filter FilterInput) (string, []any, bool)
 	case "not_equals":
 		return fmt.Sprintf("%s != ?", field), []any{value}, true
 	case "contains":
-		return fmt.Sprintf("%s ILIKE ?", field), []any{"%" + value + "%"}, true
+		return d.ILike(field), []any{"%" + value + "%"}, true
 	case "starts_with":
-		return fmt.Sprintf("%s ILIKE ?", field), []any{value + "%"}, true
+		return d.ILike(field), []any{value + "%"}, true
 	case "gt":
 		return fmt.Sprintf("%s > ?", field), []any{value}, true
 	case "lt":
@@ -1360,7 +1361,7 @@ func (a *App) getTableRows(orgID uuid.UUID, widget models.Widget, filters []Filt
 
 	query := sql.base
 	args := []any{orgID, periodStart, periodEnd}
-	query, args = appendFilterSQL(widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
 	query += sql.orderBy
 
 	type row struct {
