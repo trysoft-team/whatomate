@@ -142,7 +142,16 @@ type ServerConfig struct {
 	AllowedOrigins string `koanf:"allowed_origins"` // Comma-separated list of allowed CORS origins
 }
 
+const (
+	DriverPostgres  = "postgres"
+	DriverMySQL     = "mysql"
+	DriverSQLite    = "sqlite"
+	DriverSQLServer = "sqlserver"
+)
+
 type DatabaseConfig struct {
+	Driver          string `koanf:"driver"` // postgres (default), mysql, sqlite, sqlserver
+	Path            string `koanf:"path"`   // sqlite database file
 	Host            string `koanf:"host"`
 	Port            int    `koanf:"port"`
 	User            string `koanf:"user"`
@@ -272,8 +281,22 @@ func setDefaults(cfg *Config) {
 	if cfg.Server.WriteTimeout == 0 {
 		cfg.Server.WriteTimeout = 30
 	}
+	cfg.Database.Driver = strings.ToLower(strings.TrimSpace(cfg.Database.Driver))
+	if cfg.Database.Driver == "" {
+		cfg.Database.Driver = DriverPostgres
+	}
 	if cfg.Database.Port == 0 {
-		cfg.Database.Port = 5432
+		switch cfg.Database.Driver {
+		case DriverMySQL:
+			cfg.Database.Port = 3306
+		case DriverSQLServer:
+			cfg.Database.Port = 1433
+		default:
+			cfg.Database.Port = 5432
+		}
+	}
+	if cfg.Database.Driver == DriverSQLite && cfg.Database.Path == "" {
+		cfg.Database.Path = "./whatomate.db"
 	}
 	if cfg.Database.SSLMode == "" {
 		cfg.Database.SSLMode = "disable"

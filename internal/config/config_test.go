@@ -214,3 +214,23 @@ func TestLoad_EnvMapsMultiWordKeys(t *testing.T) {
 	assert.Equal(t, "admin@example.com", cfg.DefaultAdmin.Email)
 	assert.Equal(t, "db.internal", cfg.Database.Host)
 }
+
+func TestLoad_DatabaseDriverDefaults(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, ""))
+	require.NoError(t, err)
+	assert.Equal(t, config.DriverPostgres, cfg.Database.Driver)
+	assert.Equal(t, 5432, cfg.Database.Port)
+
+	cfg, err = config.Load(writeConfig(t, "[database]\ndriver = \"SQLite\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, config.DriverSQLite, cfg.Database.Driver, "driver is case-insensitive")
+	assert.Equal(t, "./whatomate.db", cfg.Database.Path)
+
+	cfg, err = config.Load(writeConfig(t, "[database]\ndriver = \"mysql\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 3306, cfg.Database.Port)
+
+	cfg, err = config.Load(writeConfig(t, "[database]\ndriver = \"sqlserver\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 1433, cfg.Database.Port)
+}
