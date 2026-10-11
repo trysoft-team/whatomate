@@ -136,6 +136,8 @@ PostgreSQL syntax. `App` holds the active dialect (`a.Dialect`).
 | `MinutesBetween(a, b)` | `EXTRACT(EPOCH FROM (b - a))/60` | `TIMESTAMPDIFF(SECOND, a, b)/60` | `(julianday(b) - julianday(a))*1440` | `DATEDIFF_BIG(SECOND, a, b)/60.0` |
 | `DayOfWeek(col)` (0 = Sunday) | `EXTRACT(DOW FROM col)::int` | `DAYOFWEEK(col)-1` | `CAST(strftime('%w', col) AS INTEGER)` | `DATEPART(WEEKDAY, col)-1` (with `SET DATEFIRST 7`) |
 | `HourOf(col)` | `EXTRACT(HOUR FROM col)::int` | `HOUR(col)` | `CAST(strftime('%H', col) AS INTEGER)` | `DATEPART(HOUR, col)` |
+| `DateTrunc(unit, col)` (day, week, month) | `DATE_TRUNC('unit', col)` | `DATE(col)` / week and month via `DATE_SUB`/`DATE_FORMAT` | `date(col)` / `date(col, '-6 days', 'weekday 1')` / `strftime('%Y-%m-01', col)` | `CAST(col AS date)` / `DATEADD`+`DATEDIFF` |
+| `AsText(col)` (JSON column searched with LIKE) | `col::text` | `CAST(col AS CHAR)` | `CAST(col AS TEXT)` | `CAST(col AS nvarchar(max))` |
 | `Now()` | `NOW()` | `NOW()` | `CURRENT_TIMESTAMP` | `SYSUTCDATETIME()` |
 | `SkipLocked()` | `FOR UPDATE SKIP LOCKED` | same (MySQL 8) | none (writes are serialised) | `WITH (UPDLOCK, READPAST, ROWLOCK)` table hint |
 
@@ -145,7 +147,16 @@ agent analytics and dashboard widgets; `::` casts in 6 files; row locking in
 agent transfers; `COALESCE` (portable, unchanged).
 
 Dashboard widgets that let users choose a date grouping are built by string
-concatenation today; they move onto the same helpers.
+concatenation today; they move onto the same helpers. Truncated dates come
+back as text on SQLite, so result structs scan them into `dialect.DBTime`,
+which accepts `time.Time`, `string` and `[]byte`.
+
+The active dialect comes from `db.Dialector.Name()` (`dialect.Of(db)`), so no
+new field is needed on `App`.
+
+Renaming or deleting a tag rewrites contacts' tag arrays in Go (batches of
+500 in one transaction) instead of PostgreSQL JSON functions, so one code path
+serves every database.
 
 Every helper has a table-driven unit test per driver, plus the handler tests
 that already exercise the call sites.
@@ -157,8 +168,10 @@ that already exercise the call sites.
   `database is locked` errors; reads share it. Fine for a single server.
 - Documented as single-server only: separate `whatomate worker` processes on
   other machines cannot share a SQLite file.
-- Times stored as UTC text in GORM's default format; date helpers above assume
-  that.
+- Times are stored as text including the zone offset and compared as text, so
+  SQLite connections convert every `time.Time` argument to UTC before it
+  reaches the driver, and GORM's `NowFunc` returns UTC. Date helpers above
+  assume UTC.
 
 ## Testing
 
