@@ -9,16 +9,21 @@ import (
 )
 
 // portableDialector maps the PostgreSQL column types used in model tags to
-// the wrapped driver's equivalents, so models stay unchanged.
+// the wrapped driver's equivalents, so models stay unchanged. Types are
+// matched on their base name, so "decimal(3,2)" matches "decimal".
 type portableDialector struct {
 	gorm.Dialector
 	types map[string]string
 }
 
-var sqliteTypes = map[string]string{"uuid": "text", "jsonb": "text", "text": "text"}
+// SQLite ignores decimal precision, but the migrator reads "decimal(3,2)" back
+// as length 3, never equal to a float field's size of 64, so the table would
+// be rebuilt on every migration; plain numeric has the same affinity.
+var sqliteTypes = map[string]string{"uuid": "text", "jsonb": "text", "text": "text", "decimal": "numeric"}
 
 func (d portableDialector) DataTypeOf(field *schema.Field) string {
-	if t, ok := d.types[strings.ToLower(string(field.DataType))]; ok {
+	base, _, _ := strings.Cut(strings.ToLower(string(field.DataType)), "(")
+	if t, ok := d.types[strings.TrimSpace(base)]; ok {
 		return t
 	}
 	return d.Dialector.DataTypeOf(field)

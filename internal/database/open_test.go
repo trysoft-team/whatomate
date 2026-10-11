@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -67,6 +68,38 @@ func TestOpenSQLite_MigratesAndSeeds(t *testing.T) {
 	require.NoError(t, database.RunMigrationWithProgress(db, &config.DefaultAdminConfig{Email: "a@b.c", Password: "pw", FullName: "A"}))
 	require.NoError(t, db.Model(&models.UserOrganization{}).Count(&n).Error)
 	assert.EqualValues(t, 1, n)
+}
+
+func TestOpenSQLite_RepeatMigrationRebuildsNothing(t *testing.T) {
+	db := openSQLite(t)
+
+	type schemaObject struct {
+		Type     string
+		Name     string
+		SQL      string
+		Rootpage int64
+	}
+	snapshot := func() []schemaObject {
+		var objs []schemaObject
+		require.NoError(t, db.Raw(`SELECT type, name, COALESCE(sql, '') AS sql, rootpage FROM sqlite_master ORDER BY name`).Scan(&objs).Error)
+		return objs
+	}
+
+	ddl := regexp.MustCompile("(?i)^\\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)|__temp")
+	var mu sync.Mutex
+	var rebuilds []string
+	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register("test:capture_ddl", func(tx *gorm.DB) {
+		if sql := tx.Statement.SQL.String(); ddl.MatchString(sql) {
+			mu.Lock()
+			rebuilds = append(rebuilds, sql)
+			mu.Unlock()
+		}
+	}))
+
+	before := snapshot()
+	require.NoError(t, database.RunMigrationWithProgress(db, &config.DefaultAdminConfig{Email: "a@b.c", Password: "pw", FullName: "A"}))
+	assert.Empty(t, rebuilds, "second migration must not create, alter or copy tables")
+	assert.Equal(t, before, snapshot())
 }
 
 func TestOpenSQLite_TimeArgsAreUTC(t *testing.T) {
