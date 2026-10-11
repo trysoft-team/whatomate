@@ -59,10 +59,9 @@ func TestJSONB_Value(t *testing.T) {
 				return
 			}
 
-			// Value returns []byte from json.Marshal
-			bytes, ok := val.([]byte)
-			require.True(t, ok, "expected []byte, got %T", val)
-			assert.JSONEq(t, tt.wantJSON, string(bytes))
+			str, ok := val.(string)
+			require.True(t, ok, "expected string, got %T", val)
+			assert.JSONEq(t, tt.wantJSON, str)
 		})
 	}
 }
@@ -96,7 +95,7 @@ func TestJSONB_Scan(t *testing.T) {
 		},
 		{
 			name:    "invalid type",
-			input:   "not bytes",
+			input:   123,
 			wantErr: true,
 		},
 		{
@@ -162,9 +161,9 @@ func TestStringArray_Value(t *testing.T) {
 				return
 			}
 
-			bytes, ok := val.([]byte)
-			require.True(t, ok, "expected []byte, got %T", val)
-			assert.JSONEq(t, tt.wantJSON, string(bytes))
+			str, ok := val.(string)
+			require.True(t, ok, "expected string, got %T", val)
+			assert.JSONEq(t, tt.wantJSON, str)
 		})
 	}
 }
@@ -259,9 +258,9 @@ func TestJSONBArray_Value(t *testing.T) {
 				return
 			}
 
-			bytes, ok := val.([]byte)
-			require.True(t, ok, "expected []byte, got %T", val)
-			assert.JSONEq(t, tt.wantJSON, string(bytes))
+			str, ok := val.(string)
+			require.True(t, ok, "expected string, got %T", val)
+			assert.JSONEq(t, tt.wantJSON, str)
 		})
 	}
 }
@@ -292,7 +291,7 @@ func TestJSONBArray_Scan(t *testing.T) {
 		},
 		{
 			name:    "invalid type",
-			input:   "not bytes",
+			input:   123,
 			wantErr: true,
 		},
 	}

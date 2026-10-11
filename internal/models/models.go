@@ -3,7 +3,7 @@ package models
 import (
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +12,24 @@ import (
 	"gorm.io/gorm"
 )
 
+func scanJSON(value any, dest any) error {
+	switch v := value.(type) {
+	case []byte:
+		return json.Unmarshal(v, dest)
+	case string:
+		return json.Unmarshal([]byte(v), dest)
+	}
+	return fmt.Errorf("cannot scan %T into JSON", value)
+}
+
+func jsonValue(v any) (driver.Value, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
 // JSONB is a custom type for PostgreSQL JSONB columns
 type JSONB map[string]any
 
@@ -19,7 +37,7 @@ func (j JSONB) Value() (driver.Value, error) {
 	if j == nil {
 		return nil, nil
 	}
-	return json.Marshal(j)
+	return jsonValue(j)
 }
 
 func (j *JSONB) Scan(value any) error {
@@ -27,11 +45,7 @@ func (j *JSONB) Scan(value any) error {
 		*j = nil
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
-	}
-	return json.Unmarshal(bytes, j)
+	return scanJSON(value, j)
 }
 
 // JSONBArray is a custom type for JSONB arrays
@@ -41,7 +55,7 @@ func (j JSONBArray) Value() (driver.Value, error) {
 	if j == nil {
 		return nil, nil
 	}
-	return json.Marshal(j)
+	return jsonValue(j)
 }
 
 func (j *JSONBArray) Scan(value any) error {
@@ -49,11 +63,7 @@ func (j *JSONBArray) Scan(value any) error {
 		*j = nil
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
-	}
-	return json.Unmarshal(bytes, j)
+	return scanJSON(value, j)
 }
 
 // StringArray is a custom type for PostgreSQL text[] columns
@@ -63,7 +73,7 @@ func (s StringArray) Value() (driver.Value, error) {
 	if s == nil {
 		return nil, nil
 	}
-	return json.Marshal(s)
+	return jsonValue(s)
 }
 
 func (s *StringArray) Scan(value any) error {
@@ -71,19 +81,23 @@ func (s *StringArray) Scan(value any) error {
 		*s = nil
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
-	}
-	return json.Unmarshal(bytes, s)
+	return scanJSON(value, s)
 }
 
 // BaseModel contains common fields for all models
 type BaseModel struct {
-	ID        uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ID        uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+}
+
+// BeforeCreate assigns a UUID in Go so every database driver gets one.
+func (b *BaseModel) BeforeCreate(*gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+	return nil
 }
 
 // Organization represents a tenant in the multi-tenant system
@@ -150,7 +164,7 @@ func (UserOrganization) TableName() string {
 
 // UserAvailabilityLog tracks user availability changes for break time calculation
 type UserAvailabilityLog struct {
-	ID             uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey" json:"id"`
 	UserID         uuid.UUID  `gorm:"type:uuid;index;not null" json:"user_id"`
 	OrganizationID uuid.UUID  `gorm:"type:uuid;index;not null" json:"organization_id"`
 	IsAvailable    bool       `gorm:"not null" json:"is_available"`
@@ -163,6 +177,14 @@ type UserAvailabilityLog struct {
 
 func (UserAvailabilityLog) TableName() string {
 	return "user_availability_logs"
+}
+
+// BeforeCreate assigns a UUID in Go so every database driver gets one.
+func (l *UserAvailabilityLog) BeforeCreate(*gorm.DB) error {
+	if l.ID == uuid.Nil {
+		l.ID = uuid.New()
+	}
+	return nil
 }
 
 // Team represents a group of agents handling specific types of chats
@@ -553,7 +575,7 @@ type WidgetFilter struct {
 
 // AuditLog represents a record-level audit trail entry
 type AuditLog struct {
-	ID             uuid.UUID   `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	ID             uuid.UUID   `gorm:"type:uuid;primary_key" json:"id"`
 	OrganizationID uuid.UUID   `gorm:"type:uuid;index;not null" json:"organization_id"`
 	ResourceType   string      `gorm:"size:50;not null;index:idx_audit_resource" json:"resource_type"`
 	ResourceID     uuid.UUID   `gorm:"type:uuid;not null;index:idx_audit_resource" json:"resource_id"`
@@ -566,4 +588,12 @@ type AuditLog struct {
 
 func (AuditLog) TableName() string {
 	return "audit_logs"
+}
+
+// BeforeCreate assigns a UUID in Go so every database driver gets one.
+func (a *AuditLog) BeforeCreate(*gorm.DB) error {
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	return nil
 }
