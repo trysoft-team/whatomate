@@ -12,6 +12,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+const sqliteDefaultMaxOpenConns = 10
+
 // OpenDialector returns the GORM dialector for cfg.Driver.
 func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	switch cfg.Driver {
@@ -26,8 +28,20 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 		if err != nil {
 			return nil, err
 		}
-		// A single connection serialises writers, avoiding "database is locked".
-		sqlDB.SetMaxOpenConns(1)
+		// The driver applies the DSN pragmas to every new connection. Under WAL,
+		// readers run concurrently; writers serialise through the IMMEDIATE
+		// transaction lock and wait up to busy_timeout instead of failing.
+		maxOpen := cfg.MaxOpenConns
+		if maxOpen <= 0 {
+			maxOpen = sqliteDefaultMaxOpenConns
+		}
+		sqlDB.SetMaxOpenConns(maxOpen)
+		if cfg.MaxIdleConns > 0 {
+			sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+		}
+		if cfg.ConnMaxLifetime > 0 {
+			sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+		}
 		return portableDialector{
 			Dialector: sqlite.Dialector{DriverName: "sqlite", DSN: dsn, Conn: utcPool{sqlDB}},
 			types:     sqliteTypes,

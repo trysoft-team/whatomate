@@ -22,12 +22,17 @@ var (
 	testDBInitErr error
 )
 
-// Driver returns TEST_DB_DRIVER, defaulting to postgres.
+// Driver returns TEST_DB_DRIVER, defaulting to postgres. It panics on any
+// other value so a typo cannot silently run (or skip) the postgres suite.
 func Driver() string {
-	if d := strings.ToLower(os.Getenv("TEST_DB_DRIVER")); d != "" {
+	switch d := strings.ToLower(strings.TrimSpace(os.Getenv("TEST_DB_DRIVER"))); d {
+	case "", config.DriverPostgres:
+		return config.DriverPostgres
+	case config.DriverSQLite:
 		return d
+	default:
+		panic(fmt.Sprintf("TEST_DB_DRIVER=%q is not supported; use %q or %q", d, config.DriverPostgres, config.DriverSQLite))
 	}
-	return config.DriverPostgres
 }
 
 // SetupTestDB creates a connection to the test database selected by TEST_DB_DRIVER.

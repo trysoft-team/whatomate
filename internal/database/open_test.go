@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -129,6 +130,82 @@ func TestOpenSQLite_ConcurrentWrites(t *testing.T) {
 	for err := range errs {
 		assert.NoError(t, err)
 	}
+}
+
+func TestOpenSQLite_ConcurrentTransactions(t *testing.T) {
+	db := openSQLite(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- db.Transaction(func(tx *gorm.DB) error {
+				return tx.Create(&models.Organization{Name: "o", Slug: fmt.Sprintf("tx-%d", i)}).Error
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		assert.NoError(t, err)
+	}
+}
+
+func TestOpenSQLite_QueryWhileRowsOpen(t *testing.T) {
+	db := openSQLite(t)
+	require.NoError(t, db.Create(&models.Organization{Name: "o", Slug: "o"}).Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := db.WithContext(ctx).Model(&models.Organization{}).Rows()
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+
+	var seen int
+	for rows.Next() {
+		seen++
+		var n int64
+		require.NoError(t, db.WithContext(ctx).Model(&models.Organization{}).Count(&n).Error)
+		assert.Positive(t, n)
+	}
+	require.NoError(t, rows.Err())
+	assert.Positive(t, seen)
+}
+
+func TestOpenSQLite_PoolSize(t *testing.T) {
+	for _, tc := range []struct{ configured, want int }{{0, 10}, {4, 4}} {
+		db, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: filepath.Join(t.TempDir(), "w.db"), MaxOpenConns: tc.configured}, false)
+		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, sqlDB.Stats().MaxOpenConnections, "max_open_conns = %d", tc.configured)
+		require.NoError(t, sqlDB.Close())
+	}
+}
+
+func TestOpenSQLite_PragmasOnEveryConnection(t *testing.T) {
+	db := openSQLite(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for i := 0; i < 3; i++ {
+		conn, err := sqlDB.Conn(ctx)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+
+		var foreignKeys, busyTimeout int
+		var journalMode string
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys))
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout))
+		require.NoError(t, conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode))
+		assert.Equal(t, 1, foreignKeys, "connection %d", i)
+		assert.Equal(t, 10000, busyTimeout, "connection %d", i)
+		assert.Equal(t, "wal", journalMode, "connection %d", i)
+	}
+	assert.GreaterOrEqual(t, sqlDB.Stats().OpenConnections, 3)
 }
 
 func TestOpenSQLite_NestedTransactionRollsBackToSavepoint(t *testing.T) {
