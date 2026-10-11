@@ -10,6 +10,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // TagRequest represents the request body for creating/updating a tag
@@ -256,12 +257,13 @@ func (a *App) DeleteTag(r *fastglue.Request) error {
 
 // rewriteContactTags renames (or, with to == "", removes) a tag on every
 // contact in the org, soft-deleted ones included. Done in Go so it works on
-// every database. Renaming onto a tag the contact already has keeps it once.
+// every database. On rewritten contacts all duplicate tags collapse to one.
 func (a *App) rewriteContactTags(orgID uuid.UUID, from, to string) error {
 	cond, arg := dialect.Of(a.DB).JSONArrayHas("tags", from)
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		var contacts []models.Contact
 		return tx.Unscoped().Select("id", "tags").Where("organization_id = ?", orgID).Where(cond, arg).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
 			FindInBatches(&contacts, 500, func(batch *gorm.DB, _ int) error {
 				for _, c := range contacts {
 					next := make(models.JSONBArray, 0, len(c.Tags))

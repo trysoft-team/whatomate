@@ -36,7 +36,7 @@ func TestTags_RenameAndDeleteRewriteContacts(t *testing.T) {
 	}
 
 	require.NoError(t, app.RewriteContactTagsForTest(org.ID, odd, "gold"))
-	assert.ElementsMatch(t, models.JSONBArray{"gold", "keep"}, tagsOf(c1.ID))
+	assert.Equal(t, models.JSONBArray{"gold", "keep"}, tagsOf(c1.ID))
 	assert.Equal(t, models.JSONBArray{"gold"}, tagsOf(both.ID), "rename de-duplicates")
 	assert.Equal(t, models.JSONBArray{"gold"}, tagsOf(deleted.ID), "soft-deleted contacts are rewritten too")
 	assert.Equal(t, models.JSONBArray{odd}, tagsOf(other.ID), "other orgs are untouched")
@@ -45,6 +45,7 @@ func TestTags_RenameAndDeleteRewriteContacts(t *testing.T) {
 	assert.Equal(t, models.JSONBArray{"keep"}, tagsOf(c1.ID))
 	assert.Equal(t, models.JSONBArray{"keep"}, tagsOf(c2.ID))
 	assert.Equal(t, models.JSONBArray{}, tagsOf(both.ID))
+	assert.Equal(t, models.JSONBArray{}, tagsOf(deleted.ID))
 	assert.Equal(t, models.JSONBArray{odd}, tagsOf(other.ID))
 }
 
