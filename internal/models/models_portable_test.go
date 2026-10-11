@@ -16,6 +16,7 @@ func TestJSONTypesScanStringAndBytes(t *testing.T) {
 	assert.Equal(t, float64(1), j["a"])
 	require.NoError(t, j.Scan([]byte(`{"a":2}`)))
 	assert.Equal(t, float64(2), j["a"])
+	assert.Error(t, j.Scan("not json"))
 
 	var arr models.JSONBArray
 	require.NoError(t, arr.Scan(`["x"]`))
@@ -40,7 +41,22 @@ func TestBeforeCreateAssignsID(t *testing.T) {
 	require.NoError(t, b2.BeforeCreate(nil))
 	assert.Equal(t, keep, b2.ID)
 
-	for _, m := range []interface{ BeforeCreate(*gorm.DB) error }{&models.UserPasskey{}, &models.UserAvailabilityLog{}, &models.AuditLog{}} {
-		require.NoError(t, m.BeforeCreate(nil))
+	p := &models.UserPasskey{}
+	l := &models.UserAvailabilityLog{}
+	a := &models.AuditLog{}
+	for _, tc := range []struct {
+		m  interface{ BeforeCreate(*gorm.DB) error }
+		id func() uuid.UUID
+	}{
+		{p, func() uuid.UUID { return p.ID }},
+		{l, func() uuid.UUID { return l.ID }},
+		{a, func() uuid.UUID { return a.ID }},
+	} {
+		require.NoError(t, tc.m.BeforeCreate(nil))
+		assert.NotEqual(t, uuid.Nil, tc.id(), "%T", tc.m)
 	}
+
+	kept := &models.AuditLog{ID: keep}
+	require.NoError(t, kept.BeforeCreate(nil))
+	assert.Equal(t, keep, kept.ID)
 }
