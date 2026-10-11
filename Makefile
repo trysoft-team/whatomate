@@ -1,4 +1,4 @@
-.PHONY: all build build-prod run test clean docker-build docker-up docker-down migrate frontend-dev frontend-build release-check release-snapshot
+.PHONY: all build build-prod run test test-sqlite clean docker-build docker-up docker-down migrate frontend-dev frontend-build release-check release-snapshot
 
 # Go parameters
 GOCMD=go
@@ -59,6 +59,10 @@ test:
 		echo "(install gotestsum for nicer output: go install gotest.tools/gotestsum@latest)"; \
 		$(GOTEST) -v ./...; \
 	fi
+
+# Run the test suite against a temporary SQLite database (needs Redis).
+test-sqlite:
+	TEST_DB_DRIVER=sqlite TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
 
 # Run tests with coverage. Same gotestsum fallback as `make test`.
 test-coverage:
@@ -185,6 +189,7 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  test           - Run tests"
+	@echo "  test-sqlite    - Run tests against SQLite (TEST_DB_DRIVER=sqlite)"
 	@echo "  test-coverage  - Run tests with coverage report"
 	@echo ""
 	@echo "Docker (full stack):"

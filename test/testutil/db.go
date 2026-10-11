@@ -3,9 +3,13 @@ package testutil
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/models"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -18,12 +22,39 @@ var (
 	testDBInitErr error
 )
 
-// SetupTestDB creates a connection to a test PostgreSQL database.
-// Requires TEST_DATABASE_URL environment variable to be set.
-// If not set, the test will be skipped.
+// Driver returns TEST_DB_DRIVER, defaulting to postgres.
+func Driver() string {
+	if d := strings.ToLower(os.Getenv("TEST_DB_DRIVER")); d != "" {
+		return d
+	}
+	return config.DriverPostgres
+}
+
+// SetupTestDB creates a connection to the test database selected by TEST_DB_DRIVER.
+// For sqlite, a fresh database file is created in a temporary directory.
+// For postgres, TEST_DATABASE_URL must be set; if not, the test is skipped.
 // Migrations are run only once across all tests to avoid conflicts.
 func SetupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+
+	driver := Driver()
+	if driver == config.DriverSQLite {
+		testDBOnce.Do(func() {
+			dir, err := os.MkdirTemp("", "whatomate-test-*")
+			if err != nil {
+				testDBInitErr = err
+				return
+			}
+			testDB, testDBInitErr = database.Open(&config.DatabaseConfig{Driver: driver, Path: filepath.Join(dir, "test.db")}, false)
+			if testDBInitErr == nil {
+				testDBInitErr = runMigrations(testDB)
+			}
+		})
+		if testDBInitErr != nil {
+			t.Fatalf("failed to initialize test database: %v", testDBInitErr)
+		}
+		return testDB.Session(&gorm.Session{})
+	}
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -76,8 +107,16 @@ func SetupTestDBWithCleanup(t *testing.T, cleanup bool) *gorm.DB {
 	return db
 }
 
-// runMigrations runs all model migrations.
+// runMigrations runs all model migrations, then creates the app's extra indexes.
 func runMigrations(db *gorm.DB) error {
+	if err := migrateModels(db); err != nil {
+		return err
+	}
+	return database.CreateIndexes(db)
+}
+
+// migrateModels auto-migrates all models.
+func migrateModels(db *gorm.DB) error {
 	return db.AutoMigrate(
 		// Core models
 		&models.Organization{},
@@ -139,8 +178,8 @@ func runMigrations(db *gorm.DB) error {
 	)
 }
 
-// cleanupTables removes all data from tables (for PostgreSQL cleanup).
-// Uses TRUNCATE CASCADE to handle foreign key constraints properly.
+// cleanupTables removes all data from tables.
+// Uses TRUNCATE CASCADE on PostgreSQL to handle foreign key constraints properly.
 func cleanupTables(db *gorm.DB) {
 	tables := []string{
 		"ai_usage_logs",
@@ -193,12 +232,10 @@ func cleanupTables(db *gorm.DB) {
 		"organizations",
 	}
 
-	for _, table := range tables {
-		db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
-	}
+	clearTables(db, tables)
 }
 
-// TruncateTables truncates all tables (PostgreSQL only, faster than DELETE).
+// TruncateTables empties all tables (TRUNCATE on PostgreSQL, DELETE on SQLite).
 func TruncateTables(db *gorm.DB) {
 	tables := []string{
 		"widgets",
@@ -238,7 +275,26 @@ func TruncateTables(db *gorm.DB) {
 		"organizations",
 	}
 
-	for _, table := range tables {
-		db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
+	clearTables(db, tables)
+}
+
+// clearTables empties tables, ignoring errors (e.g. a table not migrated).
+func clearTables(db *gorm.DB, tables []string) {
+	if db.Dialector.Name() != config.DriverSQLite {
+		for _, table := range tables {
+			db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
+		}
+		return
 	}
+
+	// PRAGMA foreign_keys is a no-op inside a transaction, so pin one
+	// connection and run the statements outside any transaction.
+	_ = db.Connection(func(conn *gorm.DB) error {
+		conn.Exec("PRAGMA foreign_keys = OFF")
+		for _, table := range tables {
+			conn.Exec(fmt.Sprintf("DELETE FROM %s", table))
+		}
+		conn.Exec("PRAGMA foreign_keys = ON")
+		return nil
+	})
 }
