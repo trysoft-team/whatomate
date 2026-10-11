@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/zerodha/logf"
@@ -21,10 +22,10 @@ func BackfillChatbotFlowDraftGraph(db *gorm.DB, lo logf.Logger) error {
 	result := db.Exec(`
 		UPDATE chatbot_flows
 		SET draft_graph = graph,
-		    published_at = COALESCE(published_at, updated_at, NOW()),
+		    published_at = COALESCE(published_at, updated_at, ?),
 		    has_unpublished_changes = false
 		WHERE draft_graph IS NULL AND graph IS NOT NULL
-	`)
+	`, time.Now().UTC())
 	if result.Error != nil {
 		return fmt.Errorf("backfill draft_graph: %w", result.Error)
 	}
@@ -56,15 +57,25 @@ func BackfillChatbotFlowGraph(db *gorm.DB, lo logf.Logger) error {
 		return nil
 	}
 
-	var pending []legacyFlowMeta
+	var flows []legacyFlowMeta
 	err := db.Raw(`
-		SELECT id, name, COALESCE(canvas_layout, '{}'::jsonb) AS canvas_layout
+		SELECT id, name, canvas_layout, graph
 		FROM chatbot_flows
-		WHERE (graph IS NULL OR graph::text = '{}')
-		  AND deleted_at IS NULL
-	`).Scan(&pending).Error
+		WHERE deleted_at IS NULL
+	`).Scan(&flows).Error
 	if err != nil {
 		return fmt.Errorf("load flows for graph backfill: %w", err)
+	}
+
+	var pending []legacyFlowMeta
+	for _, f := range flows {
+		if len(f.Graph) != 0 {
+			continue
+		}
+		if f.CanvasLayout == nil {
+			f.CanvasLayout = models.JSONB{}
+		}
+		pending = append(pending, f)
 	}
 
 	if len(pending) == 0 {
@@ -100,6 +111,7 @@ type legacyFlowMeta struct {
 	ID           uuid.UUID
 	Name         string
 	CanvasLayout models.JSONB `gorm:"column:canvas_layout"`
+	Graph        models.JSONB `gorm:"column:graph"`
 }
 
 // stepsToGraph converts a legacy slice of ChatbotFlowStep rows plus an

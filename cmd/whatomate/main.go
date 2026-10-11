@@ -146,12 +146,12 @@ func runServer(args []string) {
 		})
 	}
 
-	// Connect to PostgreSQL
-	db, err := database.NewPostgres(&cfg.Database, cfg.App.Debug)
+	// Connect to the database
+	db, err := database.Open(&cfg.Database, cfg.App.Debug)
 	if err != nil {
 		lo.Fatal("Failed to connect to database", "error", err)
 	}
-	lo.Info("Connected to PostgreSQL")
+	lo.Info("Connected to database", "driver", cfg.Database.Driver)
 
 	// Run migrations if requested
 	if *migrate {
@@ -430,12 +430,12 @@ func runWorker(args []string) {
 		})
 	}
 
-	// Connect to PostgreSQL
-	db, err := database.NewPostgres(&cfg.Database, cfg.App.Debug)
+	// Connect to the database
+	db, err := database.Open(&cfg.Database, cfg.App.Debug)
 	if err != nil {
 		lo.Fatal("Failed to connect to database", "error", err)
 	}
-	lo.Info("Connected to PostgreSQL")
+	lo.Info("Connected to database", "driver", cfg.Database.Driver)
 
 	// Connect to Redis
 	rdb, err := database.NewRedis(&cfg.Redis)

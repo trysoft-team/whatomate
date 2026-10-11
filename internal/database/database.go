@@ -3,48 +3,14 @@ package database
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/models"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
-
-// NewPostgres creates a new PostgreSQL connection
-func NewPostgres(cfg *config.DatabaseConfig, debug bool) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode,
-	)
-
-	logLevel := logger.Silent
-	if debug {
-		logLevel = logger.Info
-	}
-
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logLevel),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database instance: %w", err)
-	}
-
-	// Configure connection pool
-	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-	sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
-
-	return db, nil
-}
 
 // MigrationModel holds model info for migration progress
 type MigrationModel struct {
@@ -142,7 +108,7 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 	silentDB := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 
 	migrationModels := GetMigrationModels()
-	indexes := getIndexes()
+	indexes := indexesFor(db.Dialector.Name())
 
 	// Total steps: models + indexes + default admin check
 	totalSteps := len(migrationModels) + len(indexes) + 1
@@ -236,76 +202,6 @@ func repeatChar(char string, n int) string {
 	return result
 }
 
-// getIndexes returns all index creation SQL statements
-func getIndexes() []string {
-	return []string{
-		// Expand phone_number columns to support group JIDs (e.g., 120363422675615917@g.us)
-		`ALTER TABLE contacts ALTER COLUMN phone_number TYPE varchar(50)`,
-		`ALTER TABLE chatbot_sessions ALTER COLUMN phone_number TYPE varchar(50)`,
-		`ALTER TABLE agent_transfers ALTER COLUMN phone_number TYPE varchar(50)`,
-		`ALTER TABLE bulk_message_recipients ALTER COLUMN phone_number TYPE varchar(50)`,
-		// Indexes
-		`CREATE INDEX IF NOT EXISTS idx_messages_contact_created ON messages(contact_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_org_phone ON contacts(organization_id, phone_number)`,
-		`CREATE INDEX IF NOT EXISTS idx_contacts_assigned_read ON contacts(assigned_user_id, is_read)`,
-		`CREATE INDEX IF NOT EXISTS idx_sessions_phone_status ON chatbot_sessions(organization_id, phone_number, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_keyword_rules_priority ON keyword_rules(organization_id, is_enabled, priority DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_active ON agent_transfers(organization_id, phone_number, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_org_contact ON agent_transfers(organization_id, contact_id, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_agent_active ON agent_transfers(agent_id, status) WHERE status = 'active'`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_transfers_team ON agent_transfers(team_id, status) WHERE team_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_accounts_org_phone ON whatsapp_accounts(organization_id, phone_id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_account_name_lang ON templates(whats_app_account, name, language)`,
-		`CREATE INDEX IF NOT EXISTS idx_keyword_rules_account ON keyword_rules(whats_app_account, is_enabled, priority DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chatbot_flows_account ON chatbot_flows(whats_app_account, is_enabled)`,
-		`CREATE INDEX IF NOT EXISTS idx_ai_contexts_account ON ai_contexts(whats_app_account, is_enabled, priority DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_bulk_campaigns_account ON bulk_message_campaigns(whats_app_account, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_notification_rules_account ON notification_rules(whats_app_account, is_enabled)`,
-		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(whats_app_account, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_contacts_account ON contacts(whats_app_account)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_canned_responses_org_name ON canned_responses(organization_id, name)`,
-		`CREATE INDEX IF NOT EXISTS idx_canned_responses_active ON canned_responses(organization_id, is_active, usage_count DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_webhooks_org_active ON webhooks(organization_id, is_active)`,
-		`CREATE INDEX IF NOT EXISTS idx_availability_logs_user_time ON user_availability_logs(user_id, started_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_availability_logs_org_time ON user_availability_logs(organization_id, started_at DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_providers_org_provider ON sso_providers(organization_id, provider)`,
-		// Teams indexes
-		`CREATE INDEX IF NOT EXISTS idx_teams_org_active ON teams(organization_id, is_active)`,
-		// Create partial unique index (soft-deleted members)
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_unique ON team_members(team_id, user_id) WHERE deleted_at IS NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)`,
-		// Custom roles indexes
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_org_name ON custom_roles(organization_id, name)`,
-		`CREATE INDEX IF NOT EXISTS idx_custom_roles_org_system ON custom_roles(organization_id, is_system)`,
-		`CREATE INDEX IF NOT EXISTS idx_custom_roles_org_default ON custom_roles(organization_id, is_default) WHERE is_default = true`,
-		// GIN index for JSONB tag filtering
-		`CREATE INDEX IF NOT EXISTS idx_contacts_tags ON contacts USING GIN (tags)`,
-		// User organizations
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_org_unique ON user_organizations(user_id, organization_id) WHERE deleted_at IS NULL`,
-		// Conversation notes
-		`CREATE INDEX IF NOT EXISTS idx_conversation_notes_contact ON conversation_notes(organization_id, contact_id, created_at DESC)`,
-		// Call logs
-		`CREATE INDEX IF NOT EXISTS idx_call_logs_org_status ON call_logs(organization_id, status, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_call_logs_contact ON call_logs(contact_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_call_logs_wa_call_id ON call_logs(whatsapp_call_id) WHERE whatsapp_call_id != ''`,
-		// IVR flows
-		`CREATE INDEX IF NOT EXISTS idx_ivr_flows_org_active ON ivr_flows(organization_id, whatsapp_account, is_active)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ivr_flows_org_call_start ON ivr_flows(organization_id, whatsapp_account) WHERE is_call_start = true AND is_active = true AND deleted_at IS NULL`,
-	}
-}
-
-// CreateIndexes creates additional indexes not handled by GORM tags
-func CreateIndexes(db *gorm.DB) error {
-	for _, idx := range getIndexes() {
-		if err := db.Exec(idx).Error; err != nil {
-			return fmt.Errorf("failed to create index: %w", err)
-		}
-	}
-	return nil
-}
-
 // CreateDefaultAdmin creates a default admin user if no users exist
 // This should only be called once during initial setup
 func CreateDefaultAdmin(db *gorm.DB, cfg *config.DefaultAdminConfig) error {
@@ -386,20 +282,27 @@ func CreateDefaultAdmin(db *gorm.DB, cfg *config.DefaultAdminConfig) error {
 
 // MigrateUserOrganizations backfills user_organizations from existing users
 func MigrateUserOrganizations(db *gorm.DB) error {
-	return db.Exec(`
-		INSERT INTO user_organizations (id, user_id, organization_id, role_id, is_default, created_at, updated_at)
-		SELECT gen_random_uuid(), u.id, u.organization_id, u.role_id, true, NOW(), NOW()
-		FROM users u
+	var users []models.User
+	if err := db.Raw(`
+		SELECT u.* FROM users u
 		LEFT JOIN user_organizations uo ON uo.user_id = u.id AND uo.organization_id = u.organization_id AND uo.deleted_at IS NULL
-		WHERE uo.id IS NULL AND u.deleted_at IS NULL
-	`).Error
+		WHERE uo.id IS NULL AND u.deleted_at IS NULL`).Scan(&users).Error; err != nil {
+		return err
+	}
+	for _, u := range users {
+		row := models.UserOrganization{UserID: u.ID, OrganizationID: u.OrganizationID, RoleID: u.RoleID, IsDefault: true}
+		if err := db.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BackfillLastInboundAt sets last_inbound_at for existing contacts from their
 // most recent incoming message. Only updates contacts where the field is NULL.
 func BackfillLastInboundAt(db *gorm.DB) error {
 	return db.Exec(`
-		UPDATE contacts c
+		UPDATE contacts AS c
 		SET last_inbound_at = sub.max_created
 		FROM (
 			SELECT contact_id, MAX(created_at) AS max_created
@@ -527,18 +430,7 @@ func FixSystemRolePermissions(db *gorm.DB) error {
 // This is safe to run on fresh installs - it will simply do nothing if the column doesn't exist
 func MigrateExistingUserRoles(db *gorm.DB) error {
 	// Check if the old 'role' column exists in the users table
-	var columnExists bool
-	err := db.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'users' AND column_name = 'role'
-		)
-	`).Scan(&columnExists).Error
-	if err != nil {
-		return fmt.Errorf("failed to check for role column: %w", err)
-	}
-
-	if !columnExists {
+	if !db.Migrator().HasColumn("users", "role") {
 		return nil // Fresh install, no old role column
 	}
 
@@ -550,7 +442,7 @@ func MigrateExistingUserRoles(db *gorm.DB) error {
 	}
 
 	var usersToMigrate []UserWithLegacyRole
-	err = db.Raw(`
+	err := db.Raw(`
 		SELECT id, organization_id, role as legacy_role
 		FROM users
 		WHERE role_id IS NULL AND role IS NOT NULL AND role != ''
