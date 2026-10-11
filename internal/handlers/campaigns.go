@@ -600,7 +600,7 @@ func (a *App) RetryFailed(r *fastglue.Request) error {
 
 	// Reset failed messages in messages table to pending
 	if err := a.DB.Model(&models.Message{}).
-		Where("metadata->>'campaign_id' = ? AND status = ?", id.String(), models.MessageStatusFailed).
+		Where(dialect.Of(a.DB).JSONText("metadata", "campaign_id")+" = ? AND status = ?", id.String(), models.MessageStatusFailed).
 		Updates(map[string]any{
 			"status":        models.MessageStatusPending,
 			"error_message": "",
@@ -1120,7 +1120,7 @@ func (a *App) recalculateCampaignStats(campaignID uuid.UUID) {
 	}
 
 	if err := a.DB.Model(&models.Message{}).
-		Where("metadata->>'campaign_id' = ?", campaignID.String()).
+		Where(dialect.Of(a.DB).JSONText("metadata", "campaign_id")+" = ?", campaignID.String()).
 		Select(`
 			COUNT(CASE WHEN status IN ('sent','delivered','read') THEN 1 END) as sent,
 			COUNT(CASE WHEN status IN ('delivered','read') THEN 1 END) as delivered,

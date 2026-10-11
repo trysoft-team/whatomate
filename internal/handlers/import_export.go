@@ -246,13 +246,13 @@ func (a *App) ExportData(r *fastglue.Request) error {
 		tagList := strings.Split(tags, ",")
 		conditions := make([]string, 0, len(tagList))
 		args := make([]any, 0, len(tagList))
+		d := dialect.Of(a.DB)
 		for _, tag := range tagList {
 			tag = strings.TrimSpace(tag)
 			if tag != "" {
-				// Use proper JSONB containment with explicit cast
-				conditions = append(conditions, "tags @> ?::jsonb")
-				tagJSON, _ := json.Marshal([]string{tag})
-				args = append(args, string(tagJSON))
+				cond, arg := d.JSONArrayHas("tags", tag)
+				conditions = append(conditions, cond)
+				args = append(args, arg)
 			}
 		}
 		if len(conditions) > 0 {

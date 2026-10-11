@@ -4,9 +4,12 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
+	"gorm.io/gorm"
 )
 
 // TagRequest represents the request body for creating/updating a tag
@@ -161,19 +164,7 @@ func (a *App) UpdateTag(r *fastglue.Request) error {
 	// If renaming, we need to delete old and create new (composite primary key)
 	if req.Name != "" && req.Name != tag.Name {
 		// Update contacts that use this tag
-		// Note: Tags are stored as JSONB array of strings in contacts
-		// This requires a raw SQL update
-		if err := a.DB.Exec(`
-			UPDATE contacts
-			SET tags = (
-				SELECT jsonb_agg(
-					CASE WHEN elem::text = ? THEN ?::jsonb ELSE elem END
-				)
-				FROM jsonb_array_elements(COALESCE(tags, '[]'::jsonb)) elem
-			)
-			WHERE organization_id = ?
-			AND tags @> ?::jsonb
-		`, `"`+tagName+`"`, `"`+req.Name+`"`, orgID, `["`+tagName+`"]`).Error; err != nil {
+		if err := a.rewriteContactTags(orgID, tagName, req.Name); err != nil {
 			a.Log.Error("Failed to update contacts with renamed tag", "error", err)
 			// Continue anyway - tag rename will still work
 		}
@@ -247,16 +238,7 @@ func (a *App) DeleteTag(r *fastglue.Request) error {
 	}
 
 	// Remove tag from all contacts that have it
-	if err := a.DB.Exec(`
-		UPDATE contacts
-		SET tags = (
-			SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
-			FROM jsonb_array_elements(COALESCE(tags, '[]'::jsonb)) elem
-			WHERE elem::text != ?
-		)
-		WHERE organization_id = ?
-		AND tags @> ?::jsonb
-	`, `"`+tagName+`"`, orgID, `["`+tagName+`"]`).Error; err != nil {
+	if err := a.rewriteContactTags(orgID, tagName, ""); err != nil {
 		a.Log.Error("Failed to remove tag from contacts", "error", err)
 		// Continue anyway - tag deletion will still work
 	}
@@ -270,6 +252,43 @@ func (a *App) DeleteTag(r *fastglue.Request) error {
 	a.InvalidateTagsCache(orgID)
 
 	return r.SendEnvelope(map[string]string{"message": "Tag deleted"})
+}
+
+// rewriteContactTags renames (or, with to == "", removes) a tag on every
+// contact in the org, soft-deleted ones included. Done in Go so it works on
+// every database. Renaming onto a tag the contact already has keeps it once.
+func (a *App) rewriteContactTags(orgID uuid.UUID, from, to string) error {
+	cond, arg := dialect.Of(a.DB).JSONArrayHas("tags", from)
+	return a.DB.Transaction(func(tx *gorm.DB) error {
+		var contacts []models.Contact
+		return tx.Unscoped().Select("id", "tags").Where("organization_id = ?", orgID).Where(cond, arg).
+			FindInBatches(&contacts, 500, func(batch *gorm.DB, _ int) error {
+				for _, c := range contacts {
+					next := make(models.JSONBArray, 0, len(c.Tags))
+					seen := map[string]bool{}
+					for _, v := range c.Tags {
+						s, isString := v.(string)
+						if isString && s == from {
+							if to == "" {
+								continue
+							}
+							v, s = to, to
+						}
+						if isString {
+							if seen[s] {
+								continue
+							}
+							seen[s] = true
+						}
+						next = append(next, v)
+					}
+					if err := batch.Unscoped().Model(&models.Contact{}).Where("id = ?", c.ID).Update("tags", next).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}).Error
+	})
 }
 
 func tagToResponse(tag models.Tag) TagResponse {

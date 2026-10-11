@@ -876,6 +876,52 @@ func TestApp_RetryFailed_Success(t *testing.T) {
 	assert.Equal(t, string(models.CampaignStatusProcessing), resp.Data.Status)
 }
 
+func TestApp_RetryFailed_ResetsCampaignMessagesAndStats(t *testing.T) {
+	mockQueue := testutil.NewMockQueue()
+	app := newTestApp(t, withQueue(mockQueue))
+	org := testutil.CreateTestOrganization(t, app.DB)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithEmail(testutil.UniqueEmail("retry-msgs")), testutil.WithPassword("password"))
+	account := testutil.CreateTestWhatsAppAccountWith(t, app.DB, org.ID, testutil.WithAccountName("retry-msgs-"+uuid.NewString()[:8]))
+	template := testutil.CreateTestTemplate(t, app.DB, org.ID, account.Name)
+	campaign := createTestCampaign(t, app, org.ID, template.ID, user.ID, account.Name, models.CampaignStatusCompleted)
+	createTestRecipient(t, app, campaign.ID, "+0987654321", models.MessageStatusFailed)
+	contact := testutil.CreateTestContact(t, app.DB, org.ID)
+
+	newMsg := func(campaignID uuid.UUID, status models.MessageStatus) *models.Message {
+		msg := &models.Message{
+			OrganizationID:  org.ID,
+			ContactID:       contact.ID,
+			WhatsAppAccount: account.Name,
+			Direction:       models.DirectionOutgoing,
+			MessageType:     models.MessageTypeTemplate,
+			Status:          status,
+			Metadata:        models.JSONB{"campaign_id": campaignID.String()},
+		}
+		require.NoError(t, app.DB.Create(msg).Error)
+		return msg
+	}
+	failed := newMsg(campaign.ID, models.MessageStatusFailed)
+	newMsg(campaign.ID, models.MessageStatusSent)
+	otherFailed := newMsg(uuid.New(), models.MessageStatusFailed)
+
+	req := testutil.NewJSONRequest(t, nil)
+	testutil.SetAuthContext(req, org.ID, user.ID)
+	testutil.SetPathParam(req, "id", campaign.ID.String())
+	require.NoError(t, app.RetryFailed(req))
+	require.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var retried, untouched models.Message
+	require.NoError(t, app.DB.First(&retried, "id = ?", failed.ID).Error)
+	assert.Equal(t, models.MessageStatusPending, retried.Status)
+	require.NoError(t, app.DB.First(&untouched, "id = ?", otherFailed.ID).Error)
+	assert.Equal(t, models.MessageStatusFailed, untouched.Status)
+
+	var updated models.BulkMessageCampaign
+	require.NoError(t, app.DB.First(&updated, "id = ?", campaign.ID).Error)
+	assert.Equal(t, 1, updated.SentCount)
+	assert.Equal(t, 0, updated.FailedCount)
+}
+
 func TestApp_RetryFailed_NoFailedRecipients(t *testing.T) {
 	mockQueue := testutil.NewMockQueue()
 	app := newTestApp(t, withQueue(mockQueue))
