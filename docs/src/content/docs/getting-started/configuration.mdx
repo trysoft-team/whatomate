@@ -372,7 +372,7 @@ Times are stored in UTC, with microsecond precision, whatever the server's time 
 Every connection runs at the `READ COMMITTED` isolation level, as on PostgreSQL, whatever the server's default (InnoDB's is `REPEATABLE READ`).
 
 <Aside type="note">
-  Unique names are case-insensitive under a `_ci` collation: `Sales` and `sales` count as the same canned response, custom role or template name, where PostgreSQL allows both. Other unique text, such as user emails and WhatsApp account names, behaves the same way.
+  Unique names are case-insensitive under a `_ci` collation: `Sales` and `sales` count as the same canned response, custom role or template name, where PostgreSQL allows both. Other unique text, such as user emails and WhatsApp account names, behaves the same way. Both recommended collations are also accent-insensitive: `José` and `Jose` collide in unique indexes and match each other in equality checks and search. `utf8mb4_unicode_ci` (MariaDB) also ignores trailing spaces when comparing, so `Sales` and `Sales ` are equal.
 </Aside>
 
 ### SQLite
