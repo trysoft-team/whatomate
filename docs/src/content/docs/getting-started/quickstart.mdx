@@ -41,7 +41,7 @@ open http://localhost:8080
 
 - Go 1.25+ (the module targets `go 1.25.0`)
 - Node.js 20+ — only needed to build the frontend. CI builds it on Node 20; Vite 7 requires 20.19+ or 22.12+.
-- PostgreSQL — CI tests against 15/16, the Docker Compose file ships 17
+- PostgreSQL — CI tests against 15/16, the Docker Compose file ships 17. A single server can use SQLite instead (`[database] driver = "sqlite"`); see [Configuration](/whatomate/getting-started/configuration/#database)
 - Redis 7 (Redis 6+ works; `username` requires 6+ ACLs)
 
 ### Step 1: Clone and Configure
@@ -156,7 +156,7 @@ Each [GitHub release](https://github.com/trysoft/whatomate/releases) includes ar
 | Windows | `amd64`, `arm64` |
 | FreeBSD | `amd64`, `arm64` |
 
-The binary still needs PostgreSQL, Redis and a `config.toml` (start from `config.example.toml`). Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
+The binary still needs PostgreSQL (or SQLite on a single server), Redis and a `config.toml` (start from `config.example.toml`). Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
 
 <Aside type="note">
   **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the dependencies with Homebrew: `brew install postgresql@16 redis ffmpeg espeak-ng opus-tools`.

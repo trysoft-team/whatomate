@@ -20,6 +20,8 @@ public_url = ""  # Optional override for absolute origin (e.g. "https://app.exam
 allowed_origins = ""  # Comma-separated CORS origins (e.g., "https://app.example.com,https://admin.example.com"). Empty = allow all (dev only).
 
 [database]
+driver = "postgres"  # postgres | sqlite (mysql and sqlserver coming)
+# path = "./whatomate.db"  # sqlite only
 host = "db"  # Use "localhost" for local development
 port = 5432
 user = "whatomate"
