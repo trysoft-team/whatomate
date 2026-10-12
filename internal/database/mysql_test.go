@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,15 @@ func TestCheckMySQLServer(t *testing.T) {
 	}
 	_, err := checkMySQLServer("8.4.3", "latin1")
 	assert.EqualError(t, err, `database character set is "latin1"; create it with CHARACTER SET utf8mb4`)
+}
+
+func TestOpen_ClosesMySQLPoolWhenGormOpenFails(t *testing.T) {
+	pool, err := sql.Open("mysql", "u:p@tcp(127.0.0.1:1)/x?timeout=2s")
+	require.NoError(t, err)
+	d := portableDialector{Dialector: mysql.New(mysql.Config{Conn: pool}), types: mysqlTypes, pool: pool}
+	_, err = open(d, &config.DatabaseConfig{Driver: config.DriverMySQL}, false)
+	require.Error(t, err)
+	assert.EqualError(t, pool.Ping(), "sql: database is closed")
 }
 
 func TestMySQLColumnTypes(t *testing.T) {

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"strings"
 
 	"github.com/glebarez/sqlite"
@@ -17,6 +18,8 @@ type portableDialector struct {
 	types map[string]string
 	// columnSuffixes are appended to the type of individual "table.column"s.
 	columnSuffixes map[string]string
+	// pool, if set, is closed by Open when it fails after the dialector opened it.
+	pool *sql.DB
 }
 
 // SQLite ignores decimal precision, but the migrator reads "decimal(3,2)" back

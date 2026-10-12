@@ -71,9 +71,12 @@ func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	}
 	six := 6
 	return portableDialector{
-		Dialector:      mysql.New(mysql.Config{Conn: sqlDB, ServerVersion: version, DefaultDatetimePrecision: &six}),
+		// Initialize reads VERSION() itself: it sets MariaDB-specific flags
+		// such as DontSupportNullAsDefaultValue from it.
+		Dialector:      mysql.New(mysql.Config{Conn: sqlDB, DefaultDatetimePrecision: &six}),
 		types:          types,
 		columnSuffixes: mysqlColumnSuffixes,
+		pool:           sqlDB,
 	}, nil
 }
 

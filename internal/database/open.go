@@ -78,6 +78,16 @@ func Open(cfg *config.DatabaseConfig, debug bool) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	return open(dialector, cfg, debug)
+}
+
+// open closes the pool the dialector owns, if any, when it fails.
+func open(dialector gorm.Dialector, cfg *config.DatabaseConfig, debug bool) (_ *gorm.DB, err error) {
+	defer func() {
+		if d, ok := dialector.(portableDialector); ok && err != nil && d.pool != nil {
+			_ = d.pool.Close()
+		}
+	}()
 
 	logLevel := logger.Silent
 	if debug {
