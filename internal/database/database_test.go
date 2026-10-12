@@ -250,6 +250,41 @@ func TestCreateDefaultAdmin_UsesExistingOrg(t *testing.T) {
 	assert.Equal(t, int64(1), orgCount, "should reuse existing organization")
 }
 
+// --- MigrateUserOrganizations ---
+
+func TestMigrateUserOrganizations_BackfillsMissingRowOnce(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+
+	org := models.Organization{Name: "Backfill Org", Slug: "backfill-org", Settings: models.JSONB{}}
+	require.NoError(t, db.Create(&org).Error)
+	role := models.CustomRole{OrganizationID: org.ID, Name: "agent"}
+	require.NoError(t, db.Create(&role).Error)
+	user := models.User{
+		OrganizationID: org.ID,
+		Email:          "backfill@example.com",
+		FullName:       "Backfill",
+		PasswordHash:   "x",
+		RoleID:         &role.ID,
+	}
+	require.NoError(t, db.Create(&user).Error)
+	var before int64
+	require.NoError(t, db.Model(&models.UserOrganization{}).Where("user_id = ?", user.ID).Count(&before).Error)
+	require.Zero(t, before)
+
+	require.NoError(t, database.MigrateUserOrganizations(db))
+	require.NoError(t, database.MigrateUserOrganizations(db))
+
+	var rows []models.UserOrganization
+	require.NoError(t, db.Where("user_id = ?", user.ID).Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.NotEqual(t, uuid.Nil, rows[0].ID)
+	assert.Equal(t, org.ID, rows[0].OrganizationID)
+	require.NotNil(t, rows[0].RoleID)
+	assert.Equal(t, role.ID, *rows[0].RoleID)
+	assert.True(t, rows[0].IsDefault)
+}
+
 // --- SeedDefaultWidgetsForOrg ---
 
 func TestSeedDefaultWidgetsForOrg_CreatesFullDefaultSet(t *testing.T) {
