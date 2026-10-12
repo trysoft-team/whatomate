@@ -34,10 +34,13 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
   Pre-defined quick replies with slash commands (`/shortcut`) and dynamic placeholders.
 
 - **Voice Calling & IVR**
-  Incoming and outgoing WhatsApp calls with IVR menus, DTMF routing, call transfers to agent teams, hold music, and call recording. See [calling docs](https://trysoft.github.io/whatomate/features/calling/).
+  Incoming and outgoing WhatsApp calls with IVR menus, DTMF routing, call transfers to agent teams, hold music, and call recording. See [calling docs](https://trysoft-team.github.io/whatomate/features/calling/).
 
 - **Analytics Dashboard**
   Track messages, engagement, and campaign performance.
+
+- **Use the Database You Already Have**
+  Run on PostgreSQL, MySQL 8.0.19+ / MariaDB 10.6+, or SQLite (one file, no database server). Pick one with `[database] driver` in `config.toml`. See [database setup](https://trysoft-team.github.io/whatomate/getting-started/configuration/#database-setup).
 
 <details>
 <summary>View more screenshots</summary>
@@ -62,7 +65,7 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
 Prebuilt images are not published yet. Build and run from source with Docker Compose:
 
 ```bash
-git clone https://github.com/trysoft/whatomate.git
+git clone https://github.com/trysoft-team/whatomate.git
 cd whatomate
 
 # Copy and edit config and env (PostgreSQL credentials, timezone)
@@ -79,24 +82,35 @@ __________________
 
 ### Binary
 
-Download the [latest release](https://github.com/trysoft/whatomate/releases) and extract the binary.
+Download the [latest release](https://github.com/trysoft-team/whatomate/releases) for Linux (`amd64`, `arm64`, `armv7`), macOS (one universal binary for Apple Silicon and Intel), Windows or FreeBSD, and extract it.
 
 ```bash
-# Copy and edit config
+# Copy and edit config: choose [database] driver = "sqlite", "postgres" or "mysql"
 cp config.example.toml config.toml
 
 # Run with migrations
 ./whatomate server -migrate
 ```
 
-Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
+Redis is required with every database. Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
+
+__________________
+
+### Homebrew (macOS and Linux)
+
+```bash
+brew install trysoft-team/tap/whatomate
+brew upgrade whatomate   # after a new release
+```
+
+The install output shows where the bundled `config.example.toml` is and how to start the server.
 
 __________________
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/trysoft/whatomate.git
+git clone https://github.com/trysoft-team/whatomate.git
 cd whatomate
 
 # Production build (single binary with embedded frontend)
@@ -104,7 +118,7 @@ make build-prod
 ./whatomate server -migrate
 ```
 
-See [configuration docs](https://trysoft.github.io/whatomate/getting-started/configuration/) for detailed setup options.
+See [configuration docs](https://trysoft-team.github.io/whatomate/getting-started/configuration/) for detailed setup options.
 
 ## CLI Usage
 
@@ -134,6 +148,16 @@ cd frontend && npm run dev # UI on :3000 (proxies /api → :8080)
 ```
 
 Login: `admin@admin.com` / `admin` at http://localhost:3000
+
+### Releases
+
+`main` is the development branch. Every push to `master` runs the full test suite (PostgreSQL, SQLite, MySQL and MariaDB), tags the next version (`v0.2.0`, then `v0.2.1`, ...) and publishes the binaries to [GitHub Releases](https://github.com/trysoft-team/whatomate/releases) and the cask to [trysoft-team/homebrew-tap](https://github.com/trysoft-team/homebrew-tap). To release:
+
+```bash
+git checkout master && git merge --ff-only main && git push origin master
+```
+
+Pushes that only change docs or Markdown don't release. For a minor or major bump, run the **Release** workflow from the Actions tab on `master` and pick the part to bump, or push a `vX.Y.Z` tag yourself. `make release-snapshot` builds the same archives locally into `dist/` without publishing.
 
 ## License
 

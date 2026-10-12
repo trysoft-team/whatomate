@@ -142,7 +142,7 @@ dockers_v2:
 
 release:
   github:
-    owner: trysoft
+    owner: trysoft-team
     name: whatomate
   draft: false
   prerelease: auto
@@ -157,11 +157,11 @@ homebrew_casks:
       - whatomate
     binaries:
       - whatomate
-    homepage: "https://github.com/trysoft/whatomate"
+    homepage: "https://github.com/trysoft-team/whatomate"
     description: "Self-hosted WhatsApp Business platform with chatbots, campaigns and calling"
     skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
     repository:
-      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "trysoft" }}'
+      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "trysoft-team" }}'
       name: homebrew-tap
       token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
     commit_author:
@@ -172,13 +172,19 @@ homebrew_casks:
       - formula: ffmpeg
       - formula: opus-tools
     caveats: |
-      Whatomate needs PostgreSQL and Redis:
-        brew install postgresql@16 redis
-        brew services start postgresql@16
+      Whatomate needs Redis and a database. Start Redis:
+        brew install redis
         brew services start redis
 
-      Create a config from the example shipped with this cask, then start the server:
+      Create a config from the example shipped with this cask:
         cp "#{staged_path}/config.example.toml" ./config.toml
+
+      In config.toml, set [database] driver to the database you already have:
+        "sqlite"   one file, no server needed (set path)
+        "postgres" PostgreSQL
+        "mysql"    MySQL 8.0.19+ or MariaDB 10.6+
+
+      Then start the server:
         whatomate server -config ./config.toml -migrate
       {{- if not (isEnvSet "MACOS_SIGN_P12") }}
 
