@@ -114,8 +114,8 @@ func mysqlTLS(mode string) (string, error) {
 var serverVersion = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)`)
 
 // checkMySQLServer reports whether version is MariaDB, and rejects MySQL
-// before 8.0.13 (expression defaults), MariaDB before 10.6 (SKIP LOCKED)
-// and databases whose character set is not utf8mb4.
+// before 8.0.19 (gorm.io/driver/mysql uses DROP CONSTRAINT), MariaDB before
+// 10.6 (SKIP LOCKED) and databases whose character set is not utf8mb4.
 func checkMySQLServer(version, charset string) (mariaDB bool, err error) {
 	m := serverVersion.FindStringSubmatch(version)
 	if m == nil {
@@ -138,8 +138,8 @@ func checkMySQLServer(version, charset string) (mariaDB bool, err error) {
 	switch {
 	case mariaDB && !atLeast(10, 6, 0):
 		return true, fmt.Errorf("MariaDB 10.6 or later is required (server is %s)", version)
-	case !mariaDB && !atLeast(8, 0, 13):
-		return false, fmt.Errorf("MySQL 8.0.13 or later is required (server is %s)", version)
+	case !mariaDB && !atLeast(8, 0, 19):
+		return false, fmt.Errorf("MySQL 8.0.19 or later is required (server is %s)", version)
 	case charset != "utf8mb4":
 		return mariaDB, fmt.Errorf("database character set is %q; create it with CHARACTER SET utf8mb4", charset)
 	}

@@ -22,7 +22,7 @@ allowed_origins = ""  # Comma-separated CORS origins (e.g., "https://app.example
 [database]
 driver = "postgres"  # postgres | mysql | sqlite (sqlserver coming)
 # path = "./whatomate.db"  # sqlite only
-# MySQL 8.0.13+ / MariaDB 10.6+ (database must be utf8mb4):
+# MySQL 8.0.19+ / MariaDB 10.6+ (database must be utf8mb4):
 # driver = "mysql"
 # host = "localhost"
 # port = 3306

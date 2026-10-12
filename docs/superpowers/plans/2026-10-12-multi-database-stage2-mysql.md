@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Whatomate runs on MySQL 8.0.13+ or MariaDB 10.6+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite and MySQL locally (MAMP), and on MySQL and MariaDB in CI.
+**Goal:** Whatomate runs on MySQL 8.0.19+ or MariaDB 10.6+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite and MySQL locally (MAMP), and on MySQL and MariaDB in CI.
 
 **Architecture:** Same as stage 1. For `mysql`, `database.OpenDialector` opens the connection itself, reads `VERSION()` and the database character set, rejects unsupported servers, and returns a `gorm.io/driver/mysql` dialector (on that connection) wrapped in `portableDialector`. Column types: `uuid` → `char(36)`, `text` → `longtext`, `jsonb` → `json` on MySQL and `longtext` on MariaDB (MariaDB's `JSON` is an alias that reads back as `longtext`). A MySQL migrator wrapper turns literal defaults on JSON/TEXT columns into expression defaults and keeps repeat migrations from altering them. Index definitions become structured so each driver renders its own SQL; partial unique indexes use a hidden generated column on MySQL/MariaDB. `dialect` gains explicit MySQL branches (shared by MariaDB; GORM names both `mysql`) and rejects unknown driver names (bead fwb.7).
 
@@ -21,7 +21,7 @@ Branch: `feat/multi-database-stage2` (off `feat/multi-database`). Merge back int
 
 ## Global Constraints
 
-- Minimum MySQL 8.0.13 (expression defaults) and MariaDB 10.6 (`SKIP LOCKED`). Database character set must be `utf8mb4`. `OpenDialector` checks all three.
+- Minimum MySQL 8.0.19 (expression defaults need 8.0.13; `gorm.io/driver/mysql` uses `DROP CONSTRAINT`, 8.0.19+) and MariaDB 10.6 (`SKIP LOCKED`). Database character set must be `utf8mb4`. `OpenDialector` checks all three.
 - Connection settings (all set by `mysqlDSN`, never by the operator): `parseTime=true`, `loc=UTC`, `time_zone='+00:00'`, `clientFoundRows=true` (RowsAffected counts matched rows like PostgreSQL), `sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'` (valid on both servers; no `NO_ZERO_DATE`, so a zero `time.Time` round-trips as `0000-00-00`).
 - `datetime(6)` for all time columns (`DefaultDatetimePrecision: 6`), matching PostgreSQL microseconds.
 - Existing PostgreSQL and SQLite behaviour and schema unchanged. Their rendered index SQL is frozen by a golden test (Task 3).

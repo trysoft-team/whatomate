@@ -64,7 +64,7 @@ test:
 test-sqlite:
 	TEST_DB_DRIVER=sqlite TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
 
-# Uses TEST_MYSQL_DSN from the environment (MySQL 8.0.13+ or MariaDB 10.6+).
+# Uses TEST_MYSQL_DSN from the environment (MySQL 8.0.19+ or MariaDB 10.6+).
 test-mysql:
 	TEST_DB_DRIVER=mysql TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
 

@@ -57,15 +57,16 @@ func TestCheckMySQLServer(t *testing.T) {
 	ok := []struct {
 		version string
 		mariaDB bool
-	}{{"8.0.13", false}, {"8.0.44", false}, {"8.4.3", false}, {"9.1.0", false}, {"10.6.20-MariaDB", true}, {"11.4.2-MariaDB-ubu2404", true}}
+	}{{"8.0.19", false}, {"8.0.44", false}, {"8.4.3", false}, {"9.1.0", false}, {"10.6.20-MariaDB", true}, {"11.4.2-MariaDB-ubu2404", true}}
 	for _, c := range ok {
 		mariaDB, err := checkMySQLServer(c.version, "utf8mb4")
 		require.NoError(t, err, c.version)
 		assert.Equal(t, c.mariaDB, mariaDB, c.version)
 	}
 	for version, msg := range map[string]string{
-		"8.0.12":         "MySQL 8.0.13 or later is required (server is 8.0.12)",
-		"5.7.44-log":     "MySQL 8.0.13 or later is required (server is 5.7.44-log)",
+		"8.0.18":         "MySQL 8.0.19 or later is required (server is 8.0.18)",
+		"8.0.13":         "MySQL 8.0.19 or later is required (server is 8.0.13)",
+		"5.7.44-log":     "MySQL 8.0.19 or later is required (server is 5.7.44-log)",
 		"10.5.9-MariaDB": "MariaDB 10.6 or later is required (server is 10.5.9-MariaDB)",
 		"garbage":        `cannot parse server version "garbage"`,
 	} {

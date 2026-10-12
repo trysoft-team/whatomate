@@ -62,7 +62,7 @@ All pure Go, so binaries stay CGO-free:
 
 `gorm.io/driver/sqlite` is not used because it needs CGO (mattn/go-sqlite3).
 
-Minimum versions: PostgreSQL 13, MySQL 8.0 / MariaDB 10.6, SQLite 3.38 (bundled
+Minimum versions: PostgreSQL 13, MySQL 8.0.19 / MariaDB 10.6, SQLite 3.38 (bundled
 with modernc), SQL Server 2019.
 
 `internal/database/postgres.go` becomes `internal/database/database.go` with
