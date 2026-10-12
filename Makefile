@@ -1,4 +1,4 @@
-.PHONY: all build build-prod run test test-sqlite test-mysql clean docker-build docker-up docker-down migrate frontend-dev frontend-build release-check release-snapshot
+.PHONY: all build build-prod run test test-sqlite test-mysql test-release clean docker-build docker-up docker-down migrate frontend-dev frontend-build release-check release-snapshot
 
 # Go parameters
 GOCMD=go
@@ -67,6 +67,17 @@ test-sqlite:
 # Uses TEST_MYSQL_DSN from the environment (MySQL 8.0.19+ or MariaDB 10.6+).
 test-mysql:
 	TEST_DB_DRIVER=mysql TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
+
+# The ~1,100 tests the release workflow runs before publishing: the handler
+# API tests (TestApp_*) plus the core packages. Uses the same database
+# environment as `make test`. The full suite runs on pull requests and main.
+RELEASE_TEST_PKGS := ./pkg/whatsapp/... ./internal/database/... ./internal/calling/... \
+	./internal/worker/... ./internal/queue/... ./internal/middleware/... ./internal/assignment/... \
+	./internal/config/... ./internal/crypto/... ./internal/models/...
+
+test-release:
+	go test -p 1 -count=1 -timeout 10m $(RELEASE_TEST_PKGS)
+	go test -p 1 -count=1 -timeout 10m -run '^TestApp_' ./internal/handlers
 
 # Run tests with coverage. Same gotestsum fallback as `make test`.
 test-coverage:

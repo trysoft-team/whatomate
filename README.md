@@ -151,7 +151,7 @@ Login: `admin@admin.com` / `admin` at http://localhost:3000
 
 ### Releases
 
-`main` is the development branch. Every push to `master` runs the full test suite (PostgreSQL, SQLite, MySQL and MariaDB), tags the next version (`v0.2.0`, then `v0.2.1`, ...) and publishes the binaries to [GitHub Releases](https://github.com/trysoft-team/whatomate/releases) and the cask to [trysoft-team/homebrew-tap](https://github.com/trysoft-team/homebrew-tap). To release:
+`main` is the development branch; pull requests and pushes to it run the full test suite on PostgreSQL, SQLite, MySQL and MariaDB. Every push to `master` runs the ~1,100 core tests on PostgreSQL (`make test-release`), tags the next version (`v0.2.0`, then `v0.2.1`, ...) and publishes the binaries to [GitHub Releases](https://github.com/trysoft-team/whatomate/releases) and the cask to [trysoft-team/homebrew-tap](https://github.com/trysoft-team/homebrew-tap). To release:
 
 ```bash
 git checkout master && git merge --ff-only main && git push origin master
