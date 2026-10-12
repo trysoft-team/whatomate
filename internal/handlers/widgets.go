@@ -1258,24 +1258,25 @@ func buildFilterSQL(d dialect.Dialect, dataSource string, filter FilterInput) (s
 	}
 	field := filter.Field
 	value := filter.Value
+	arg := filterArg(dataSource, field, value)
 
 	switch filter.Operator {
 	case "equals", "":
-		return fmt.Sprintf("%s = ?", field), []any{value}, true
+		return fmt.Sprintf("%s = ?", field), []any{arg}, true
 	case "not_equals":
-		return fmt.Sprintf("%s != ?", field), []any{value}, true
+		return fmt.Sprintf("%s != ?", field), []any{arg}, true
 	case "contains":
 		return d.ILike(field), []any{"%" + value + "%"}, true
 	case "starts_with":
 		return d.ILike(field), []any{value + "%"}, true
 	case "gt":
-		return fmt.Sprintf("%s > ?", field), []any{value}, true
+		return fmt.Sprintf("%s > ?", field), []any{arg}, true
 	case "lt":
-		return fmt.Sprintf("%s < ?", field), []any{value}, true
+		return fmt.Sprintf("%s < ?", field), []any{arg}, true
 	case "gte":
-		return fmt.Sprintf("%s >= ?", field), []any{value}, true
+		return fmt.Sprintf("%s >= ?", field), []any{arg}, true
 	case "lte":
-		return fmt.Sprintf("%s <= ?", field), []any{value}, true
+		return fmt.Sprintf("%s <= ?", field), []any{arg}, true
 	case "is_null":
 		return fmt.Sprintf("%s IS NULL", field), nil, true
 	case "is_not_null":
@@ -1289,7 +1290,7 @@ func buildFilterSQL(d dialect.Dialect, dataSource string, filter FilterInput) (s
 		args := make([]any, len(vals))
 		for i, v := range vals {
 			placeholders[i] = "?"
-			args[i] = v
+			args[i] = filterArg(dataSource, field, v)
 		}
 		return fmt.Sprintf("%s IN (%s)", field, strings.Join(placeholders, ",")), args, true
 	case "not_in":
@@ -1301,7 +1302,7 @@ func buildFilterSQL(d dialect.Dialect, dataSource string, filter FilterInput) (s
 		args := make([]any, len(vals))
 		for i, v := range vals {
 			placeholders[i] = "?"
-			args[i] = v
+			args[i] = filterArg(dataSource, field, v)
 		}
 		return fmt.Sprintf("%s NOT IN (%s)", field, strings.Join(placeholders, ",")), args, true
 	case "between":
@@ -1309,9 +1310,9 @@ func buildFilterSQL(d dialect.Dialect, dataSource string, filter FilterInput) (s
 		if len(vals) != 2 {
 			return "", nil, false
 		}
-		return fmt.Sprintf("%s BETWEEN ? AND ?", field), []any{vals[0], vals[1]}, true
+		return fmt.Sprintf("%s BETWEEN ? AND ?", field), []any{filterArg(dataSource, field, vals[0]), filterArg(dataSource, field, vals[1])}, true
 	default:
-		return fmt.Sprintf("%s = ?", field), []any{value}, true
+		return fmt.Sprintf("%s = ?", field), []any{arg}, true
 	}
 }
 

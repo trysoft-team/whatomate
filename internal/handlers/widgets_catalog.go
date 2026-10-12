@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -78,6 +79,16 @@ var allowedFilterFields = func() map[string]map[string]bool {
 	return out
 }()
 
+// booleanFilterFields are filter fields backed by boolean columns. Their values
+// are bound as Go bools: SQLite stores booleans as 0/1, not 'true'/'false'.
+var booleanFilterFields = map[string]map[string]bool{
+	"contacts": {"is_read": true, "marketing_opt_out": true},
+	"agents":   {"is_available": true},
+	"flows":    {"is_enabled": true},
+	"sla":      {"sla_breached": true},
+	"webhooks": {"success": true},
+}
+
 var allowedAggregateFields = map[string]map[string]bool{
 	"messages":  {},
 	"calls":     {"duration": true},
@@ -120,6 +131,16 @@ func isAllowedGroupByField(dataSource, field string) bool {
 		return true
 	}
 	return allowedFilterFields[dataSource][field]
+}
+
+// filterArg returns the bind value for a filter on field.
+func filterArg(dataSource, field, value string) any {
+	if booleanFilterFields[dataSource][field] {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	return value
 }
 
 func parseCSVValues(value string) []string {
