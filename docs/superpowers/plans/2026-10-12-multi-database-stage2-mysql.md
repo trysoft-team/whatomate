@@ -1,12 +1,12 @@
-# Multi-database Stage 2 (MySQL) Implementation Plan
+# Multi-database Stage 2 (MySQL / MariaDB) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Whatomate runs on MySQL 8.0.13+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite and MySQL.
+**Goal:** Whatomate runs on MySQL 8.0.13+ or MariaDB 10.6+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite, MySQL and MariaDB.
 
-**Architecture:** Same as stage 1. `database.OpenDialector` builds a `gorm.io/driver/mysql` dialector wrapped in `portableDialector` (`uuid` → `char(36)`, `jsonb` → `json`, `text` → `longtext`). A MySQL migrator wrapper turns literal defaults on JSON columns into expression defaults and keeps repeat migrations from altering them. Index definitions become structured so each driver renders its own SQL. `dialect` gains explicit MySQL branches and rejects unknown driver names (bead fwb.7).
+**Architecture:** Same as stage 1. For `mysql`, `database.OpenDialector` opens the connection itself, reads `VERSION()` and the database character set, rejects unsupported servers, and returns a `gorm.io/driver/mysql` dialector (on that connection) wrapped in `portableDialector`. Column types: `uuid` → `char(36)`, `text` → `longtext`, `jsonb` → `json` on MySQL and `longtext` on MariaDB (MariaDB's `JSON` is an alias that reads back as `longtext`). A MySQL migrator wrapper turns literal defaults on JSON/TEXT columns into expression defaults and keeps repeat migrations from altering them. Index definitions become structured so each driver renders its own SQL; partial unique indexes use a hidden generated column on MySQL/MariaDB. `dialect` gains explicit MySQL branches (shared by MariaDB; GORM names both `mysql`) and rejects unknown driver names (bead fwb.7).
 
-**Tech Stack:** Go 1.25, GORM v1.25.7, `gorm.io/driver/mysql` v1.5.7 (requires `gorm.io/gorm v1.25.7`, `github.com/go-sql-driver/mysql v1.7.0`: no GORM upgrade), MySQL 8.4 LTS for tests.
+**Tech Stack:** Go 1.25, GORM v1.25.7, `gorm.io/driver/mysql` v1.5.7 (requires `gorm.io/gorm v1.25.7`, `github.com/go-sql-driver/mysql v1.7.0`: no GORM upgrade). Local servers: MAMP Pro MySQL 8.0.44 on `127.0.0.1:3306`; MariaDB 10.6 test container on `127.0.0.1:3308` (Task 2). CI: `mysql:8.4` and `mariadb:10.6`.
 
 **Spec:** `docs/superpowers/specs/2026-10-11-multi-database-design.md`
 
@@ -14,35 +14,37 @@ Branch: `feat/multi-database-stage2` (off `feat/multi-database`). Merge back int
 
 ## Deviations from the spec
 
-- **MariaDB is not supported in this stage.** It lacks functional index key parts (needed to keep partial unique indexes correct) and `utf8mb4_0900_ai_ci`. `Open` rejects MariaDB with a clear error; a follow-up bead covers it.
-- **Partial unique indexes keep their meaning.** The spec said "MySQL gets the index without the `WHERE`"; that would stop a soft-deleted team member from being re-added. Partial *unique* indexes instead get a functional key part `(CASE WHEN <predicate> THEN 1 END)`: rows outside the predicate produce NULL and never conflict. Partial non-unique indexes drop the `WHERE`.
+- **Partial unique indexes keep their meaning.** The spec said "MySQL gets the index without the `WHERE`"; that would stop a soft-deleted team member from being re-added. Each partial *unique* index instead gets a virtual generated column `<index>_active` = `CASE WHEN <predicate> THEN 1 END`, and the unique index includes it: rows outside the predicate hold NULL and never conflict. Works on MySQL and MariaDB (MariaDB has no functional key parts). Partial non-unique indexes drop the `WHERE`.
 - `ILike` on MySQL is `LOWER(col) LIKE LOWER(?)`, so it does not depend on the column collation.
 - `Now()` on MySQL is `UTC_TIMESTAMP(6)`, not `NOW()`.
+- The connection collation is the driver default (`utf8mb4_general_ci`, known to both servers); tables use the database's default collation. The database must be `utf8mb4`.
 
 ## Global Constraints
 
-- Minimum MySQL 8.0.13 (functional key parts, expression defaults). Database character set must be `utf8mb4`; `Open` checks both.
-- Connection settings (all set by `mysqlDSN`, never by the operator): `parseTime=true`, `loc=UTC`, `time_zone='+00:00'`, collation `utf8mb4_0900_ai_ci`, `clientFoundRows=true` (RowsAffected counts matched rows like PostgreSQL), `sql_mode` = MySQL 8 default minus `NO_ZERO_DATE`/`NO_ZERO_IN_DATE` (zero `time.Time` round-trips as `0000-00-00`).
+- Minimum MySQL 8.0.13 (expression defaults) and MariaDB 10.6 (`SKIP LOCKED`). Database character set must be `utf8mb4`. `OpenDialector` checks all three.
+- Connection settings (all set by `mysqlDSN`, never by the operator): `parseTime=true`, `loc=UTC`, `time_zone='+00:00'`, `clientFoundRows=true` (RowsAffected counts matched rows like PostgreSQL), `sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'` (valid on both servers; no `NO_ZERO_DATE`, so a zero `time.Time` round-trips as `0000-00-00`).
 - `datetime(6)` for all time columns (`DefaultDatetimePrecision: 6`), matching PostgreSQL microseconds.
-- Existing PostgreSQL and SQLite behaviour and schema unchanged. The rendered index SQL for both is frozen by a golden test (Task 3).
+- Existing PostgreSQL and SQLite behaviour and schema unchanged. Their rendered index SQL is frozen by a golden test (Task 3).
 - Release binaries stay `CGO_ENABLED=0` (go-sql-driver is pure Go). Never import `gorm.io/driver/sqlite` or `mattn/go-sqlite3`.
 - Go stays at 1.25 (`go 1.25.0`). Do not bump `gorm.io/gorm`.
-- Never point tests at the app database. `TEST_MYSQL_DSN`'s database name must end in `_test` (testutil panics otherwise).
+- Never point tests at the app database or at any MAMP database other than `whatomate_test*`. `TEST_MYSQL_DSN`'s database name must start with `whatomate_test` (testutil panics otherwise); scratch databases are named `whatomate_test_<hex>` and dropped after the test.
+- Never print `TEST_MYSQL_DSN` (it holds a password). Load it with `set -a && . ./.env && set +a`.
 - Test commands:
   - PostgreSQL: `set -a && . ./.env && set +a; TEST_DATABASE_URL="postgres://whatomate:${POSTGRES_PASSWORD}@127.0.0.1:5433/whatomate_test?sslmode=disable" TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
   - SQLite: `TEST_DB_DRIVER=sqlite TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
-  - MySQL: `TEST_DB_DRIVER=mysql TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3307)/whatomate_test' TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
-- The MySQL test container is `whatomate_mysql_test` (compose profile `mysql-test`, `127.0.0.1:3307`, tmpfs data). Start it with `docker compose --profile mysql-test up -d mysql-test`. Never stop or recreate any other container.
+  - MySQL (MAMP): `set -a && . ./.env && set +a; TEST_DB_DRIVER=mysql TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
+  - MariaDB: `TEST_DB_DRIVER=mysql TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test' TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
+- The MariaDB test container is `whatomate_mariadb_test` (compose profile `mariadb-test`). Never stop or recreate any other container, and never restart or reconfigure MAMP.
 - Commit after each task on `feat/multi-database-stage2`. Local git only, never push.
 
 ## Review Focus
 
-1. **Soft-deleted rows and unique indexes**: removing a team member, then adding them back, must work on MySQL; two active memberships must still be rejected. Pinned in Task 3.
+1. **Soft-deleted rows and unique indexes**: removing a team member, then adding them back, must work on MySQL and MariaDB; two active memberships must still be rejected. Pinned in Task 3.
 2. **JSON column defaults**: a contact created without tags reads back `[]`, not `null`. Pinned in Task 2 (`TestOpenMySQL_JSONDefaults`).
-3. **Repeat boots**: a second migration must issue no `ALTER TABLE`. Pinned in Task 2 (`TestOpenMySQL_RepeatMigrationAltersNothing`).
+3. **Repeat boots**: a second migration must issue no `ALTER TABLE` on either server. Pinned in Task 2 (`TestOpenMySQL_RepeatMigrationAltersNothing`).
 4. **Times**: a handler passing a local-zone `time.Now()` still matches UTC rows; microseconds survive a round trip; zero `time.Time` round-trips. Pinned in Task 2.
 5. **"Not found" on unchanged updates**: an UPDATE that sets the same values must report 1 row affected. Pinned in Task 2 (`TestOpenMySQL_RowsAffectedCountsMatchedRows`).
-6. **Case-insensitive unique names (accepted, documented)**: under `utf8mb4_0900_ai_ci`, `Sales` and `sales` collide in unique indexes (canned responses, custom roles, templates) where PostgreSQL allows both. Documented in Task 6.
+6. **Case-insensitive unique names (accepted, documented)**: under a `_ci` collation, `Sales` and `sales` collide in unique indexes (canned responses, custom roles, templates) where PostgreSQL allows both. Documented in Task 6.
 
 ---
 
@@ -60,8 +62,8 @@ Replace `TestHelpers` with a three-driver table, and add:
 func TestHelpers(t *testing.T) {
 	pg, lite, my := dialect.Named("postgres"), dialect.Named("sqlite"), dialect.Named("mysql")
 	cases := []struct {
-		name          string
-		pg, lite, my  string
+		name                     string
+		pg, lite, my             string
 		wantPG, wantLite, wantMy string
 	}{
 		{"ILike", pg.ILike("name"), lite.ILike("name"), my.ILike("name"),
@@ -95,11 +97,10 @@ func TestHelpers(t *testing.T) {
 	}
 }
 
-func TestJSONArrayHas(t *testing.T) {
+func TestJSONArrayHas_MySQL(t *testing.T) {
 	sql, arg := dialect.Named("mysql").JSONArrayHas("tags", `vip"1`)
 	assert.Equal(t, "JSON_CONTAINS(tags, JSON_QUOTE(?))", sql)
 	assert.Equal(t, `vip"1`, arg)
-	// keep the existing postgres and sqlite assertions
 }
 
 func TestCapabilities(t *testing.T) {
@@ -121,15 +122,15 @@ func TestDateTrunc_RejectsUnknownUnit(t *testing.T) {
 }
 ```
 
-Extend `TestDBTimeScan` with: a non-UTC offset string (`"2026-10-12 09:30:00+02:00"` → equals `07:30Z`), fractional seconds (`"2026-10-12 09:30:00.123456"`), a `time.Time` from MySQL (`DATE` → midnight UTC), and a bad type (`42` → error containing `cannot scan int`).
+Keep the existing postgres/sqlite `JSONArrayHas` assertions. Extend `TestDBTimeScan` with: a non-UTC offset string (`"2026-10-12 09:30:00+02:00"` equals `07:30Z`), fractional seconds (`"2026-10-12 09:30:00.123456"`), a `time.Time` (as MySQL returns for `DATE`), and a bad type (`42` → error containing `cannot scan int`).
 
-- [ ] **Step 2: Run, expect FAIL** (`my.DescNullsLast undefined`, mysql strings wrong, no panic on `oracle`)
+- [ ] **Step 2: Run, expect FAIL** (`my.DescNullsLast undefined`, MySQL strings wrong, no panic on `oracle`)
 
 Run: `go test ./internal/database/dialect/`
 
 - [ ] **Step 3: Implement**
 
-Switch every helper on the driver name using the `config.Driver*` constants; no `else` falls back to SQLite. Sketch (apply the same shape to every helper):
+Switch every helper on the driver name using the `config.Driver*` constants. Sketch (same shape for every helper):
 
 ```go
 type Dialect struct{ name string }
@@ -161,7 +162,7 @@ func (d Dialect) ILike(col string) string {
 }
 ```
 
-`default` is allowed only where it means SQLite (`Named` guarantees the three names). MySQL fragments are exactly the `wantMy` strings above; `JSONArrayHas` returns `"JSON_CONTAINS(" + col + ", JSON_QUOTE(?))", value`. New helpers:
+`default` may only mean SQLite (`Named` guarantees the three names). MySQL fragments are exactly the `wantMy` strings above (all valid on MariaDB 10.6); `JSONArrayHas` returns `"JSON_CONTAINS(" + col + ", JSON_QUOTE(?))", value`. New helpers:
 
 ```go
 // DescNullsLast orders col descending with NULLs after values. MySQL already
@@ -172,45 +173,45 @@ func (d Dialect) DescNullsLast(col string) string
 func (d Dialect) AscNullsFirst(col string) string
 ```
 
-`SupportsSkipLocked`: postgres and mysql. `SupportsPercentileCont`: postgres only. In `utc_pool.go`, add to the `utcPool` doc comment: it only sees arguments passed through `QueryContext`/`ExecContext`/`PrepareContext`; a `driver.Valuer` returning a local `time.Time`, or a `*sql.Conn` taken from `db.DB()`, bypasses it.
+`SupportsSkipLocked`: postgres and mysql. `SupportsPercentileCont`: postgres only. Update the package doc's `Of` example list. In `utc_pool.go`, extend the `utcPool` doc comment: it only sees arguments passed through `QueryContext`/`ExecContext`/`PrepareContext`; a `driver.Valuer` returning a local `time.Time`, or a `*sql.Conn` taken from `db.DB()`, bypasses it.
 
 - [ ] **Step 4: Run, expect PASS**; then `go build ./... && go vet ./internal/database/...`
 - [ ] **Step 5: Commit** `feat(dialect): explicit drivers, MySQL fragments, NULLS ordering helpers` and `bd close whatomate-fwb.7`
 
 ---
 
-### Task 2: MySQL connection, column types and migrator
+### Task 2: MySQL/MariaDB connection, column types and migrator
 
 **Files:**
 - Modify: `go.mod`/`go.sum`, `internal/database/open.go`, `internal/database/portable_dialector.go`, `docker-compose.yml`
-- Create: `internal/database/mysql.go` (DSN, version/charset check, migrator wrapper)
+- Create: `internal/database/mysql.go` (DSN, server check, migrator wrapper)
 - Test: `internal/database/mysql_test.go` (package `database`, unit), `internal/database/open_mysql_test.go` (package `database_test`, live; skips without `TEST_MYSQL_DSN`)
 
-- [ ] **Step 1: Test container**
+- [ ] **Step 1: MariaDB test container**
 
 Add to `docker-compose.yml` (profile-gated so `docker compose up` never starts it):
 
 ```yaml
-  mysql-test:
-    image: mysql:8.4
-    container_name: whatomate_mysql_test
-    profiles: ["mysql-test"]
+  mariadb-test:
+    image: mariadb:10.6
+    container_name: whatomate_mariadb_test
+    profiles: ["mariadb-test"]
     environment:
-      MYSQL_ROOT_PASSWORD: whatomate_test
-      MYSQL_DATABASE: whatomate_test
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+      MARIADB_ROOT_PASSWORD: whatomate_test
+      MARIADB_DATABASE: whatomate_test
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     ports:
-      - "127.0.0.1:3307:3306"
+      - "127.0.0.1:3308:3306"
     tmpfs:
       - /var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pwhatomate_test"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 5s
       retries: 20
 ```
 
-Run `docker compose --profile mysql-test up -d mysql-test` and wait until healthy (`docker inspect -f '{{.State.Health.Status}}' whatomate_mysql_test`). The password is a throwaway for a loopback-only test container.
+Run `docker compose --profile mariadb-test up -d mariadb-test`; wait until `docker inspect -f '{{.State.Health.Status}}' whatomate_mariadb_test` is `healthy`. The password is a throwaway for a loopback-only, in-memory test container. Confirm `TEST_MYSQL_DSN` is set in `.env` without printing it: `rg -c '^TEST_MYSQL_DSN=' .env`.
 
 - [ ] **Step 2: `go get gorm.io/driver/mysql@v1.5.7`**; confirm `go.mod` still has `gorm.io/gorm v1.25.7` and `go 1.25.0`.
 
@@ -228,7 +229,6 @@ func TestMySQLDSN(t *testing.T) {
 	assert.True(t, c.ParseTime)
 	assert.Equal(t, time.UTC, c.Loc)
 	assert.True(t, c.ClientFoundRows)
-	assert.Equal(t, "utf8mb4_0900_ai_ci", c.Collation)
 	assert.Equal(t, "'+00:00'", c.Params["time_zone"])
 	assert.NotContains(t, c.Params["sql_mode"], "NO_ZERO_DATE")
 	assert.Equal(t, "false", c.TLSConfig)
@@ -246,12 +246,26 @@ func TestMySQLDSN_SSLModes(t *testing.T) {
 }
 
 func TestCheckMySQLServer(t *testing.T) {
-	assert.NoError(t, checkMySQLServer("8.0.13", "utf8mb4"))
-	assert.NoError(t, checkMySQLServer("8.4.3", "utf8mb4"))
-	assert.EqualError(t, checkMySQLServer("8.0.12", "utf8mb4"), "MySQL 8.0.13 or later is required (server is 8.0.12)")
-	assert.EqualError(t, checkMySQLServer("5.7.44-log", "utf8mb4"), "MySQL 8.0.13 or later is required (server is 5.7.44-log)")
-	assert.EqualError(t, checkMySQLServer("10.11.6-MariaDB", "utf8mb4"), "MariaDB is not supported yet; use MySQL 8.0.13 or later")
-	assert.EqualError(t, checkMySQLServer("8.4.3", "latin1"), `database character set is "latin1"; create it with CHARACTER SET utf8mb4`)
+	ok := []struct {
+		version string
+		mariaDB bool
+	}{{"8.0.13", false}, {"8.0.44", false}, {"8.4.3", false}, {"9.1.0", false}, {"10.6.20-MariaDB", true}, {"11.4.2-MariaDB-ubu2404", true}}
+	for _, c := range ok {
+		mariaDB, err := checkMySQLServer(c.version, "utf8mb4")
+		require.NoError(t, err, c.version)
+		assert.Equal(t, c.mariaDB, mariaDB, c.version)
+	}
+	for version, msg := range map[string]string{
+		"8.0.12":           "MySQL 8.0.13 or later is required (server is 8.0.12)",
+		"5.7.44-log":       "MySQL 8.0.13 or later is required (server is 5.7.44-log)",
+		"10.5.9-MariaDB":   "MariaDB 10.6 or later is required (server is 10.5.9-MariaDB)",
+		"garbage":          `cannot parse server version "garbage"`,
+	} {
+		_, err := checkMySQLServer(version, "utf8mb4")
+		assert.EqualError(t, err, msg, version)
+	}
+	_, err := checkMySQLServer("8.4.3", "latin1")
+	assert.EqualError(t, err, `database character set is "latin1"; create it with CHARACTER SET utf8mb4`)
 }
 
 func TestNormalizeMySQLDefault(t *testing.T) {
@@ -263,32 +277,35 @@ func TestNormalizeMySQLDefault(t *testing.T) {
 
 - [ ] **Step 4: Write the failing live tests** (`open_mysql_test.go`)
 
-`openMySQL(t)` parses `TEST_MYSQL_DSN` (skip if empty), creates a fresh database `wt_<8 random hex>` with `CREATE DATABASE ... CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci` over a plain `sql.Open("mysql", ...)`, drops it in `t.Cleanup`, and returns `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name: "wt_...", SSLMode: "disable"}, false)` after `RunMigrationWithProgress`. Tests:
+`openMySQL(t)` parses `TEST_MYSQL_DSN` (skip if empty) with `mysqldrv.ParseDSN`, creates a scratch database `whatomate_test_<8 random hex>` with `CREATE DATABASE ... CHARACTER SET utf8mb4` over a plain `sql.Open("mysql", ...)` (DSN with empty `DBName`), drops it in `t.Cleanup`, and returns `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name: <scratch>, SSLMode: "disable"}, false)` after `RunMigrationWithProgress`. A helper `isMariaDB(db)` reads `VERSION()`. Tests (all run against MAMP MySQL and MariaDB):
 
-- `TestOpenMySQL_MigratesAndSeeds`: `dialect.Of(db).Name() == "mysql"`; admin seeded; `information_schema.columns` shows `contacts.id` = `char(36)`, `contacts.tags` = `json`, `messages.content` = `longtext`, `contacts.created_at` = `datetime(6)`.
-- `TestOpenMySQL_RepeatMigrationAltersNothing`: same capture callback as the SQLite test, pattern `(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)`; second `RunMigrationWithProgress` captures nothing.
+- `TestOpenMySQL_MigratesAndSeeds`: `dialect.Of(db).Name() == "mysql"`; admin seeded; `information_schema.columns` shows `contacts.id` = `char(36)`, `contacts.tags` = `json` (MySQL) or `longtext` (MariaDB), `messages.content` = `longtext`, `contacts.created_at` = `datetime(6)`.
+- `TestOpenMySQL_RepeatMigrationAltersNothing`: same capture callback as the SQLite test, pattern `(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)`; a second `RunMigrationWithProgress` captures nothing.
 - `TestOpenMySQL_JSONDefaults`: create a `models.Contact` without `Tags`; reload; `Tags` is non-nil and empty; raw `SELECT CAST(tags AS CHAR)` = `[]`.
 - `TestOpenMySQL_TimeArgsAreUTC`: as the SQLite version (local-zone `since` still matches).
-- `TestOpenMySQL_TimePrecisionAndZero`: a row with `time.Date(2026,10,12,9,30,0,123456000,time.UTC)` reloads equal; a zero `time.Time` field (pick one non-pointer `time.Time` column in the models, or a temp table via `AutoMigrate` of a local struct) round-trips as zero.
+- `TestOpenMySQL_TimePrecisionAndZero`: `time.Date(2026,10,12,9,30,0,123456000,time.UTC)` reloads equal; a zero `time.Time` round-trips as zero (use a local struct migrated into the scratch database).
 - `TestOpenMySQL_RowsAffectedCountsMatchedRows`: `UPDATE organizations SET name = name WHERE id = ?` reports `RowsAffected == 1`.
 - `TestOpenMySQL_NestedTransactionRollsBackToSavepoint`: as the SQLite version.
 
-- [ ] **Step 5: Run, expect FAIL**
+- [ ] **Step 5: Run, expect FAIL** (MAMP, then MariaDB)
 
-Run: `TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3307)/whatomate_test' go test ./internal/database/ -run 'MySQL'`
+Run: `set -a && . ./.env && set +a; go test ./internal/database/ -run 'MySQL'` and `TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test' go test ./internal/database/ -run 'MySQL'`
 
 - [ ] **Step 6: Implement**
 
 `mysql.go`:
 
 ```go
-const mysqlCollation = "utf8mb4_0900_ai_ci"
-
-// MySQL 8's default sql_mode without NO_ZERO_DATE/NO_ZERO_IN_DATE: the driver
-// writes a zero time.Time as 0000-00-00 and reads it back as zero.
+// Valid on MySQL 8 and MariaDB 10.6. Leaves out NO_ZERO_DATE/NO_ZERO_IN_DATE:
+// the driver writes a zero time.Time as 0000-00-00 and reads it back as zero.
 const mysqlSQLMode = "'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
 
-var mysqlTypes = map[string]string{"uuid": "char(36)", "jsonb": "json", "text": "longtext"}
+// MariaDB's JSON is an alias of LONGTEXT and reads back as longtext, so
+// mapping to json there would alter the column on every migration.
+var (
+	mysqlTypes   = map[string]string{"uuid": "char(36)", "jsonb": "json", "text": "longtext"}
+	mariaDBTypes = map[string]string{"uuid": "char(36)", "jsonb": "longtext", "text": "longtext"}
+)
 
 func mysqlDSN(cfg *config.DatabaseConfig) (string, error) {
 	tls, err := mysqlTLS(cfg.SSLMode)
@@ -300,7 +317,6 @@ func mysqlDSN(cfg *config.DatabaseConfig) (string, error) {
 	c.Net, c.Addr = "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	c.DBName = cfg.Name
 	c.ParseTime, c.Loc = true, time.UTC
-	c.Collation = mysqlCollation
 	c.ClientFoundRows = true // RowsAffected counts matched rows, as on PostgreSQL
 	c.TLSConfig = tls
 	c.Params = map[string]string{"time_zone": "'+00:00'", "sql_mode": mysqlSQLMode}
@@ -322,12 +338,23 @@ func mysqlTLS(mode string) (string, error) {
 	return "", fmt.Errorf("unsupported ssl_mode %q for mysql", mode)
 }
 
-// checkMySQLServer rejects servers without functional key parts and
-// expression defaults (MySQL < 8.0.13), MariaDB, and non-utf8mb4 databases.
-func checkMySQLServer(version, charset string) error
+// checkMySQLServer reports whether version is MariaDB, and rejects MySQL
+// before 8.0.13 (expression defaults), MariaDB before 10.6 (SKIP LOCKED)
+// and databases whose character set is not utf8mb4.
+func checkMySQLServer(version, charset string) (mariaDB bool, err error)
 ```
 
-`checkMySQLServer` parses the leading `major.minor.patch` of `VERSION()`; the error strings are exactly those in the test. `OpenDialector`'s `case config.DriverMySQL:` builds the DSN and returns `portableDialector{Dialector: mysql.New(mysql.Config{DSN: dsn, DefaultDatetimePrecision: &six}), types: mysqlTypes}`. In `Open`, after `gorm.Open` and pool settings, for MySQL run `SELECT VERSION(), @@character_set_database` and return `checkMySQLServer`'s error (closing the pool first).
+`checkMySQLServer` parses the leading `major.minor.patch`; MariaDB when the version contains `MariaDB`; error strings exactly as in the test. `OpenDialector`'s `case config.DriverMySQL:` builds the DSN, `sql.Open("mysql", dsn)`, `PingContext` (5 s timeout), reads `SELECT VERSION(), @@character_set_database`, runs `checkMySQLServer` (closing the pool on any error), and returns:
+
+```go
+six := 6
+return portableDialector{
+	Dialector: mysql.New(mysql.Config{Conn: sqlDB, ServerVersion: version, DefaultDatetimePrecision: &six}),
+	types:     types, // mysqlTypes or mariaDBTypes
+}, nil
+```
+
+`Open` already applies pool settings to non-SQLite drivers through `db.DB()`.
 
 Migrator wrapper (in `mysql.go`) and the `portableDialector.Migrator` switch:
 
@@ -348,7 +375,7 @@ func (d portableDialector) Migrator(db *gorm.DB) gorm.Migrator {
 }
 
 // mysqlMigrator writes literal defaults on JSON and TEXT columns as
-// expression defaults, which MySQL requires, and treats the value MySQL
+// expression defaults, which MySQL requires, and treats the value the server
 // reports back for them as equal to the model's, so boots don't re-alter.
 type mysqlMigrator struct{ mysql.Migrator }
 
@@ -372,12 +399,12 @@ func (m mysqlMigrator) MigrateColumn(value any, field *schema.Field, ct gorm.Col
 
 `needsExprDefault` is true when the base type is `json` or `longtext` and `field.DefaultValue` starts with `'`. `reportedDefault` embeds `gorm.ColumnType` and overrides `DefaultValue() (string, bool)`. `normalizeMySQLDefault` strips a `_utf8mb4` introducer, backslashes, one pair of surrounding parentheses and one pair of single quotes.
 
-If `TestOpenMySQL_RepeatMigrationAltersNothing` still captures ALTERs, print them, find which comparison in `gorm.io/gorm@v1.25.7/migrator/migrator.go` `MigrateColumn` fires, and fix it in `mysqlMigrator` (add each normalisation as a `TestNormalizeMySQLDefault` row). Do not change model tags.
+If `TestOpenMySQL_RepeatMigrationAltersNothing` still captures ALTERs on either server, print them, find which comparison in `gorm.io/gorm@v1.25.7/migrator/migrator.go` `MigrateColumn` fires, and fix it in `mysqlMigrator` (add each normalisation as a `TestNormalizeMySQLDefault` row). Do not change model tags.
 
 Update `TestOpen_RejectsUnsupportedDrivers` to `{"sqlserver", "oracle"}`.
 
-- [ ] **Step 7: Run, expect PASS**: the MySQL run from Step 5, then the SQLite and PostgreSQL `./internal/database/...` runs.
-- [ ] **Step 8: Commit** `feat(database): MySQL driver, column types and migrator`
+- [ ] **Step 7: Run, expect PASS**: both runs from Step 5, then the SQLite and PostgreSQL `./internal/database/...` runs.
+- [ ] **Step 8: Commit** `feat(database): MySQL/MariaDB driver, column types and migrator`
 
 ---
 
@@ -388,7 +415,7 @@ Update `TestOpen_RejectsUnsupportedDrivers` to `{"sqlserver", "oracle"}`.
 - Create: `internal/database/testdata/indexes_postgres.golden`, `internal/database/testdata/indexes_sqlite.golden`
 - Test: `internal/database/indexes_test.go`, `internal/database/open_mysql_test.go`
 
-- [ ] **Step 1: Freeze current output before refactoring.** With the existing code, write `strings.Join(indexesFor("postgres"), "\n")` and the sqlite equivalent to the two golden files (a throwaway test or `go run`), and commit nothing else yet.
+- [ ] **Step 1: Freeze current output before refactoring.** With the existing code, write `strings.Join(indexesFor("postgres"), "\n")` and the sqlite equivalent to the two golden files (a throwaway test), and commit nothing else yet.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -406,25 +433,29 @@ func TestIndexes_PostgresAndSQLiteUnchanged(t *testing.T) {
 }
 
 func TestIndexes_MySQL(t *testing.T) {
-	byName := map[string]string{}
-	for _, s := range indexesFor("mysql") {
-		require.NotEmpty(t, s.name, s.sql)
+	stmts := indexesFor("mysql")
+	byName := map[string]indexStmt{}
+	for _, s := range stmts {
 		assert.NotContains(t, s.sql, "IF NOT EXISTS")
 		assert.NotContains(t, s.sql, " WHERE ")
-		assert.NotContains(t, s.sql, "ALTER TABLE")
 		assert.NotContains(t, s.sql, "GIN")
-		byName[s.name] = s.sql
+		assert.NotContains(t, s.sql, "ALTER COLUMN")
+		byName[s.name] = s
 	}
-	assert.Equal(t, "CREATE UNIQUE INDEX idx_team_members_unique ON team_members(team_id, user_id, (CASE WHEN deleted_at IS NULL THEN 1 END))", byName["idx_team_members_unique"])
-	assert.Equal(t, "CREATE INDEX idx_agent_transfers_agent_active ON agent_transfers(agent_id, status)", byName["idx_agent_transfers_agent_active"])
-	assert.Contains(t, byName["idx_ivr_flows_org_call_start"], "(CASE WHEN is_call_start = true AND is_active = true AND deleted_at IS NULL THEN 1 END)")
+	col := byName["idx_team_members_unique_active"]
+	assert.Equal(t, "team_members", col.table)
+	assert.True(t, col.isColumn)
+	assert.Equal(t, "ALTER TABLE team_members ADD COLUMN idx_team_members_unique_active TINYINT AS (CASE WHEN deleted_at IS NULL THEN 1 END) VIRTUAL", col.sql)
+	assert.Equal(t, "CREATE UNIQUE INDEX idx_team_members_unique ON team_members(team_id, user_id, idx_team_members_unique_active)", byName["idx_team_members_unique"].sql)
+	assert.Equal(t, "CREATE INDEX idx_agent_transfers_agent_active ON agent_transfers(agent_id, status)", byName["idx_agent_transfers_agent_active"].sql)
+	assert.Contains(t, byName["idx_ivr_flows_org_call_start_active"].sql, "CASE WHEN is_call_start = true AND is_active = true AND deleted_at IS NULL THEN 1 END")
 }
 ```
 
-Live (`open_mysql_test.go`):
+Live (`open_mysql_test.go`, both servers):
 
-- `TestOpenMySQL_PartialUniqueIndexes`: add a team member, soft-delete it, add the same `(team_id, user_id)` again → succeeds; add a third active duplicate → error. Same pattern for `user_organizations`.
-- `TestOpenMySQL_IndexesIdempotent`: `database.CreateIndexes(db)` twice → no error.
+- `TestOpenMySQL_PartialUniqueIndexes`: add a team member, soft-delete it, add the same `(team_id, user_id)` again → succeeds; add another active duplicate → error. Same for `user_organizations`. For `ivr_flows`: two inactive call-start flows for one account → allowed; two active → error.
+- `TestOpenMySQL_IndexesIdempotent`: `database.CreateIndexes(db)` twice → no error, and GORM's `Find` on `TeamMember` still works (the hidden column is ignored).
 
 - [ ] **Step 3: Run, expect FAIL**
 - [ ] **Step 4: Implement**
@@ -436,35 +467,45 @@ type index struct {
 	where                string // partial-index predicate
 }
 
-// indexStmt is one statement to run; name and table are empty for ALTERs.
-type indexStmt struct{ name, table, sql string }
+// indexStmt is one statement to run. name is the index (or, when isColumn,
+// the generated column) it creates, so MySQL can skip existing ones; it is
+// empty for the PostgreSQL ALTERs.
+type indexStmt struct {
+	name, table, sql string
+	isColumn         bool
+}
 
-func (i index) render(driver string) indexStmt {
+func (i index) render(driver string) []indexStmt {
 	kind := "INDEX"
 	if i.unique {
 		kind = "UNIQUE INDEX"
 	}
-	if driver == config.DriverMySQL {
-		cols := i.columns
-		if i.where != "" && i.unique {
-			// Rows outside the predicate get NULL here and never conflict,
-			// so the unique index keeps its partial meaning.
-			cols += ", (CASE WHEN " + i.where + " THEN 1 END)"
+	if driver != config.DriverMySQL {
+		sql := fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s(%s)", kind, i.name, i.table, i.columns)
+		if i.where != "" {
+			sql += " WHERE " + i.where
 		}
-		return indexStmt{i.name, i.table, fmt.Sprintf("CREATE %s %s ON %s(%s)", kind, i.name, i.table, cols)}
+		return []indexStmt{{name: i.name, table: i.table, sql: sql}}
 	}
-	sql := fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s(%s)", kind, i.name, i.table, i.columns)
-	if i.where != "" {
-		sql += " WHERE " + i.where
+	if i.where == "" || !i.unique {
+		return []indexStmt{{name: i.name, table: i.table, sql: fmt.Sprintf("CREATE %s %s ON %s(%s)", kind, i.name, i.table, i.columns)}}
 	}
-	return indexStmt{i.name, i.table, sql}
+	// MySQL and MariaDB have no partial indexes. Rows outside the predicate
+	// hold NULL in this column and never conflict.
+	col := i.name + "_active"
+	return []indexStmt{
+		{name: col, table: i.table, isColumn: true, sql: fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TINYINT AS (CASE WHEN %s THEN 1 END) VIRTUAL", i.table, col, i.where)},
+		{name: i.name, table: i.table, sql: fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s(%s, %s)", i.name, i.table, i.columns, col)},
+	}
 }
 ```
 
-Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []index{...}` in the same order, keeping each comment (`RunMigrationWithProgress` already has a local named `indexes`). Update `TestIndexesFor_PostgresOnlyStatements` to read `.sql`. `indexesFor(driver) []indexStmt` = PostgreSQL ALTERs (as today), then each `render(driver)`, then the PostgreSQL GIN statement (as today). `createIndex(db, s indexStmt) error`: on MySQL, skip when `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?` is non-zero; otherwise `db.Exec(s.sql)`. `CreateIndexes` and the `RunMigrationWithProgress` loop both call `createIndex`.
+Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []index{...}` in the same order, keeping each comment (`RunMigrationWithProgress` already has a local named `indexes`). `indexesFor(driver) []indexStmt` = the PostgreSQL ALTERs (as today), then each `render(driver)`, then the PostgreSQL GIN statement (as today). Update `TestIndexesFor_PostgresOnlyStatements` to read `.sql`.
 
-- [ ] **Step 5: Run, expect PASS** on all three drivers for `./internal/database/...`
-- [ ] **Step 6: Commit** `feat(database): render indexes per driver; MySQL partial unique via CASE key part`
+`createIndex(db, s indexStmt) error`: on MySQL, skip when it already exists. For an index, check `information_schema.statistics` (`table_schema = DATABASE() AND table_name = ? AND index_name = ?`); for a column, check `information_schema.columns`. Otherwise run `db.Exec(s.sql)`. `CreateIndexes` and the `RunMigrationWithProgress` loop both call `createIndex`.
+
+- [ ] **Step 5: Run, expect PASS** on PostgreSQL, SQLite, MAMP MySQL and MariaDB for `./internal/database/...`
+- [ ] **Step 6: Commit** `feat(database): render indexes per driver; generated column for MySQL partial unique indexes`
 
 ---
 
@@ -474,9 +515,9 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
 - Modify: `internal/database/database.go` (`BackfillLastInboundAt`), `internal/handlers/webhook_delivery_retention.go`, `internal/handlers/agent_transfers.go:166`, `internal/handlers/contacts.go:143`, `internal/assignment/assigner.go:79`
 - Test: `internal/database/database_test.go`, existing handler/assigner tests
 
-- [ ] **Step 1: Write the failing test** (`database_test.go`, runs on every driver via testutil): `TestBackfillLastInboundAt` creates a contact with two incoming messages and one outgoing, plus a soft-deleted contact; after `database.BackfillLastInboundAt(db)` the live contact's `last_inbound_at` equals the newest incoming `created_at` (truncate to microseconds) and the deleted contact stays NULL. A second call changes nothing.
+- [ ] **Step 1: Write the test** (`database_test.go`, runs on every driver via testutil): `TestBackfillLastInboundAt` creates a contact with two incoming messages and one outgoing, plus a soft-deleted contact; after `database.BackfillLastInboundAt(db)` the live contact's `last_inbound_at` equals the newest incoming `created_at` (truncated to microseconds) and the deleted contact stays NULL. A second call changes nothing.
 
-- [ ] **Step 2: Run on SQLite and PostgreSQL, expect PASS** (it pins current behaviour). MySQL is checked in Task 5.
+- [ ] **Step 2: Run on SQLite and PostgreSQL, expect PASS** (it pins current behaviour). MySQL/MariaDB are checked in Task 5.
 
 - [ ] **Step 3: Implement**
   - `BackfillLastInboundAt`: when `db.Dialector.Name() == config.DriverMySQL`, run
@@ -508,7 +549,7 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
 
 - [ ] **Step 1: testutil**
   - `Driver()` accepts `config.DriverMySQL`; the panic message lists all three.
-  - `SetupTestDB` mysql branch: skip if `TEST_MYSQL_DSN` is empty; `mysqldrv.ParseDSN`; panic unless `DBName` ends in `_test`; split `Addr` into host/port; `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name, SSLMode: "disable"}, false)`; `runMigrations`; `cleanupTables` (same `testDBOnce` pattern as postgres).
+  - `SetupTestDB` mysql branch: skip if `TEST_MYSQL_DSN` is empty; `mysqldrv.ParseDSN`; panic unless `DBName` starts with `whatomate_test`; split `Addr` into host/port; `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name, SSLMode: "disable"}, false)`; `runMigrations`; `cleanupTables` (same `testDBOnce` pattern as postgres).
   - `clearTables` switches on the driver; MySQL pins one connection:
     ```go
     _ = db.Connection(func(conn *gorm.DB) error {
@@ -523,44 +564,46 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
 
 - [ ] **Step 2: Makefile**
   ```make
+  # Uses TEST_MYSQL_DSN from the environment (MySQL 8.0.13+ or MariaDB 10.6+).
   test-mysql:
-  	TEST_DB_DRIVER=mysql TEST_MYSQL_DSN="$${TEST_MYSQL_DSN:-root:whatomate_test@tcp(127.0.0.1:3307)/whatomate_test}" TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
+  	TEST_DB_DRIVER=mysql TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
+
+  test-mariadb:
+  	TEST_DB_DRIVER=mysql TEST_MYSQL_DSN="root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test" TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
   ```
 
-- [ ] **Step 3: CI.** Add a `test-mysql` job copied from `test-sqlite`, with a `mysql:8.4` service (`MYSQL_ROOT_PASSWORD: whatomate_test`, `MYSQL_DATABASE: whatomate_test`, port `3306:3306`, health cmd `mysqladmin ping -h 127.0.0.1 -pwhatomate_test`), env `TEST_DB_DRIVER: mysql`, `TEST_MYSQL_DSN: root:whatomate_test@tcp(localhost:3306)/whatomate_test`. Same `-race -p 1 -timeout 25m` and `timeout-minutes: 35`. Not optional.
+- [ ] **Step 3: CI.** Add a `test-mysql` job copied from `test-sqlite`, with a matrix over `mysql:8.4` and `mariadb:10.6` as the `db` service (root password `whatomate_test`, database `whatomate_test`, port `3306:3306`, MySQL health cmd `mysqladmin ping -h 127.0.0.1 -pwhatomate_test`, MariaDB `healthcheck.sh --connect --innodb_initialized`; set both `MYSQL_*` and `MARIADB_*` env names via the matrix). Env `TEST_DB_DRIVER: mysql`, `TEST_MYSQL_DSN: root:whatomate_test@tcp(localhost:3306)/whatomate_test`. Same `-race -p 1 -timeout 25m` and `timeout-minutes: 35`. Not optional.
 
-- [ ] **Step 4: Run the full MySQL suite** and fix every failure. Rules:
-  - Fix at the source with `dialect` helpers or a driver switch; never weaken an assertion or skip a test on MySQL. A test may change only if it asserted PostgreSQL-specific representation (for example, exact JSON text formatting); say so in the commit message.
+- [ ] **Step 4: Run the full suite on MAMP MySQL, then MariaDB**, and fix every failure. Rules:
+  - Fix at the source with `dialect` helpers or a driver switch; never weaken an assertion or skip a test on MySQL. A test may change only if it asserted a PostgreSQL-specific representation (for example, exact JSON text formatting); say so in the commit message.
   - Expected categories: JSON text from MySQL is normalised (key order, `", "` spacing); `JSON_UNQUOTE` of a JSON `null` is the string `"null"`; booleans from raw queries come back as `int64` (use the existing `groupLabel`/`booleanFilterFields` path); reserved words used unquoted in raw SQL; `ONLY_FULL_GROUP_BY` on raw GROUP BY queries.
   - Anything that cannot be fixed without a design decision: stop and report it.
 
-- [ ] **Step 5: Run all three suites green**, then the MySQL suite with `-race`.
-- [ ] **Step 6: Commit** `test: MySQL harness, make test-mysql, CI job` (plus one commit per fix group)
+- [ ] **Step 5: Run all four suites green**, then MySQL with `-race`.
+- [ ] **Step 6: Commit** `test: MySQL/MariaDB harness, make targets, CI job` (plus one commit per fix group)
 
 ---
 
 ### Task 6: Docs and config example
 
 **Files:**
-- Modify: `docs/src/content/docs/getting-started/configuration.mdx`, `config.example.toml`, the spec (MySQL section: link the deviations above)
-- Beads: create the MariaDB follow-up
+- Modify: `docs/src/content/docs/getting-started/configuration.mdx`, `config.example.toml`, the spec (MySQL section: point to the deviations above)
 
-- [ ] **Step 1:** In the `[database]` docs, add a MySQL section:
-  - MySQL 8.0.13+; MariaDB not yet supported.
-  - Create the database with `CREATE DATABASE whatomate CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;`
+- [ ] **Step 1:** In the `[database]` docs, add a MySQL / MariaDB section:
+  - MySQL 8.0.13+ or MariaDB 10.6+, `driver = "mysql"` for both.
+  - Create the database with `CREATE DATABASE whatomate CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;` (MySQL) or `... COLLATE utf8mb4_unicode_ci;` (MariaDB).
   - `ssl_mode` mapping table (disable/require/verify-ca/verify-full/preferred).
   - Times are stored in UTC.
-  - Unique names (canned responses, roles, templates) are case-insensitive on MySQL.
+  - Unique names (canned responses, roles, templates) are case-insensitive under a `_ci` collation.
 - [ ] **Step 2:** `config.example.toml`: commented MySQL example next to the SQLite one.
-- [ ] **Step 3:** `bd create "Multi-db: MariaDB support (generated columns for partial unique indexes, collation)" -t feature -p 3 --parent whatomate-fwb`
-- [ ] **Step 4: Commit** `docs: MySQL configuration`
+- [ ] **Step 3: Commit** `docs: MySQL and MariaDB configuration`
 
 ---
 
 ### Task 7: Final verification and merge
 
-- [ ] PostgreSQL, SQLite and MySQL suites all green (commands above); MySQL with `-race`.
+- [ ] PostgreSQL, SQLite, MAMP MySQL and MariaDB suites all green (commands above); MySQL with `-race`.
 - [ ] `go vet ./...`, `golangci-lint run` (if installed), `CGO_ENABLED=0 go build ./...`, `goreleaser release --snapshot --clean --skip=publish` builds.
-- [ ] Manual end-to-end: a fresh database `whatomate_e2e` on the test container; config copied from `config.local.toml` to `/tmp/whatomate-mysql/config.toml` (0600) with `driver = "mysql"`, port 3307, server port 8092, Redis db 13. Start the server as a background shell; log in; create a contact with tags, filter by tag, search by name, open the dashboard, rename a tag; restart the server and confirm the log shows no `ALTER TABLE`. Stop it and drop `whatomate_e2e`. No Meta-changing actions, no messages to real contacts.
+- [ ] Manual end-to-end on MAMP: scratch database `whatomate_test_e2e`; config copied from `config.local.toml` to `/tmp/whatomate-mysql/config.toml` (0600) with `driver = "mysql"` and the test user's credentials, server port 8092, Redis db 13. Start the server as a background shell; log in; create a contact with tags, filter by tag, search by name, open the dashboard, rename a tag; restart and confirm no `ALTER TABLE` in the debug log. Stop it, drop `whatomate_test_e2e`, remove `/tmp/whatomate-mysql`. No Meta-changing actions, no messages to real contacts.
 - [ ] Final whole-branch code review; fix findings.
 - [ ] Merge `feat/multi-database-stage2` into `feat/multi-database` (local, `--no-ff`); `bd close whatomate-fwb.2`.
