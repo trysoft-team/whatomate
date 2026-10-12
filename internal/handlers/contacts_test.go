@@ -1171,6 +1171,10 @@ func TestApp_SendReaction(t *testing.T) {
 		require.Len(t, resp.Data.Reactions, 1)
 		assert.Equal(t, "\U0001F44D", resp.Data.Reactions[0].Emoji)
 		assert.Equal(t, user.ID.String(), resp.Data.Reactions[0].FromUser)
+
+		var stored models.Message
+		require.NoError(t, app.DB.First(&stored, "id = ?", msg.ID).Error)
+		assert.Equal(t, []any{map[string]any{"emoji": "\U0001F44D", "from_user": user.ID.String()}}, stored.Metadata["reactions"])
 	})
 
 	t.Run("success - remove reaction", func(t *testing.T) {

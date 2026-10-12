@@ -1677,11 +1677,9 @@ func (a *App) handleIncomingReaction(account *models.WhatsAppAccount, fromPhone,
 	contact, _, _ := contactutil.GetOrCreateContact(a.DB, account.OrganizationID, fromPhone, profileName)
 
 	// Parse existing reactions from Metadata
-	var metadata map[string]any
-	if message.Metadata != nil {
-		metadata = message.Metadata
-	} else {
-		metadata = make(map[string]any)
+	metadata := message.Metadata
+	if metadata == nil {
+		metadata = models.JSONB{}
 	}
 
 	// Get or initialize reactions array

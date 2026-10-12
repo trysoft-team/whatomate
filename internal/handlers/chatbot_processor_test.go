@@ -861,3 +861,27 @@ func TestDefaultChatbotFlowForAccount_SkipsDisabled(t *testing.T) {
 // =============================================================================
 // evaluateExpression (package-level, not on App)
 // =============================================================================
+
+func TestHandleIncomingReaction_StoresReaction(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	contact := testutil.CreateTestContactWith(t, app.DB, org.ID, testutil.WithContactAccount(account.Name))
+
+	msg := &models.Message{
+		OrganizationID:    org.ID,
+		WhatsAppAccount:   account.Name,
+		ContactID:         contact.ID,
+		WhatsAppMessageID: "wamid.incoming-react",
+		Direction:         models.DirectionOutgoing,
+		MessageType:       models.MessageTypeText,
+		Content:           "Hello",
+		Status:            models.MessageStatusDelivered,
+	}
+	require.NoError(t, app.DB.Create(msg).Error)
+
+	app.handleIncomingReaction(account, contact.PhoneNumber, msg.WhatsAppMessageID, "\u2764", "Someone")
+
+	var stored models.Message
+	require.NoError(t, app.DB.First(&stored, "id = ?", msg.ID).Error)
+	assert.Equal(t, []any{map[string]any{"emoji": "\u2764", "from_phone": contact.PhoneNumber}}, stored.Metadata["reactions"])
+}

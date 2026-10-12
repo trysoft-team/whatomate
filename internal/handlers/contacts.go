@@ -1182,11 +1182,9 @@ func (a *App) SendReaction(r *fastglue.Request) error {
 	}
 
 	// Parse existing reactions from Metadata
-	var metadata map[string]any
-	if message.Metadata != nil {
-		metadata = message.Metadata
-	} else {
-		metadata = make(map[string]any)
+	metadata := message.Metadata
+	if metadata == nil {
+		metadata = models.JSONB{}
 	}
 
 	// Get or initialize reactions array
