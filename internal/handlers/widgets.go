@@ -1107,6 +1107,12 @@ func (a *App) getGroupedTimeSeriesData(orgID uuid.UUID, widget models.Widget, fi
 		return result
 	}
 
+	// Validate GroupByField against whitelist to prevent SQL injection
+	if !isAllowedGroupByField(widget.DataSource, widget.GroupByField) {
+		a.Log.Error("Invalid GroupByField", "field", widget.GroupByField, "source", widget.DataSource)
+		return result
+	}
+
 	d := dialect.Of(a.DB)
 	query := fmt.Sprintf(`
 		SELECT %s as date, %s as group_value, COUNT(*) as count

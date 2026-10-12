@@ -2,9 +2,13 @@ package handlers
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/database/dialect"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/test/testutil"
 )
 
 func TestBuildFilterSQL_BindsBooleanFieldsAsBool(t *testing.T) {
@@ -27,4 +31,24 @@ func TestBuildFilterSQL_BindsBooleanFieldsAsBool(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, c.want, args, "%s.%s %s %q", c.source, c.filter.Field, c.filter.Operator, c.filter.Value)
 	}
+}
+
+func TestGetGroupedTimeSeriesData_RejectsUnknownGroupByField(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	contact := testutil.CreateTestContactWith(t, app.DB, org.ID, testutil.WithContactAccount(account.Name))
+	require.NoError(t, app.DB.Create(&models.Message{
+		OrganizationID: org.ID, WhatsAppAccount: account.Name, ContactID: contact.ID,
+		Direction: models.DirectionIncoming, MessageType: models.MessageTypeText, Content: "hi",
+	}).Error)
+
+	now := time.Now().UTC()
+	series := func(groupBy string) GroupedSeriesData {
+		widget := models.Widget{OrganizationID: org.ID, DataSource: "messages", GroupByField: groupBy}
+		return app.getGroupedTimeSeriesData(org.ID, widget, nil, now.Add(-time.Hour), now.Add(time.Hour))
+	}
+
+	assert.Len(t, series("direction").Datasets, 1, "allowed field is grouped")
+	assert.Empty(t, series("organization_id").Datasets, "field outside the allow-list is ignored")
+	assert.Empty(t, series("1) AS group_value, COUNT(*) AS count FROM users --").Datasets)
 }
