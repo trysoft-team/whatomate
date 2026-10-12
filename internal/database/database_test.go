@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -283,6 +284,99 @@ func TestMigrateUserOrganizations_BackfillsMissingRowOnce(t *testing.T) {
 	require.NotNil(t, rows[0].RoleID)
 	assert.Equal(t, role.ID, *rows[0].RoleID)
 	assert.True(t, rows[0].IsDefault)
+}
+
+// --- BackfillLastInboundAt ---
+
+func TestBackfillLastInboundAt(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+	checkBackfillLastInboundAt(t, db)
+}
+
+// checkBackfillLastInboundAt is shared with the MySQL live test.
+func checkBackfillLastInboundAt(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	org := models.Organization{Name: "Backfill Org", Slug: "backfill-inbound", Settings: models.JSONB{}}
+	require.NoError(t, db.Create(&org).Error)
+	live := models.Contact{OrganizationID: org.ID, PhoneNumber: "1001"}
+	deleted := models.Contact{OrganizationID: org.ID, PhoneNumber: "1002"}
+	require.NoError(t, db.Create(&live).Error)
+	require.NoError(t, db.Create(&deleted).Error)
+
+	base := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	message := func(contactID uuid.UUID, dir models.Direction, at time.Time) {
+		require.NoError(t, db.Create(&models.Message{
+			BaseModel:      models.BaseModel{CreatedAt: at},
+			OrganizationID: org.ID, WhatsAppAccount: "acc", ContactID: contactID,
+			Direction: dir, MessageType: models.MessageTypeText,
+		}).Error)
+	}
+	message(live.ID, models.DirectionIncoming, base)
+	newest := base.Add(10*time.Minute + 123*time.Microsecond)
+	message(live.ID, models.DirectionIncoming, newest)
+	message(live.ID, models.DirectionOutgoing, base.Add(20*time.Minute))
+	message(deleted.ID, models.DirectionIncoming, base)
+	require.NoError(t, db.Delete(&deleted).Error)
+
+	require.NoError(t, database.BackfillLastInboundAt(db))
+
+	var got models.Contact
+	require.NoError(t, db.First(&got, "id = ?", live.ID).Error)
+	require.NotNil(t, got.LastInboundAt)
+	assert.True(t, newest.Equal(*got.LastInboundAt), "got %s, want %s", got.LastInboundAt, newest)
+	var gotDeleted models.Contact
+	require.NoError(t, db.Unscoped().First(&gotDeleted, "id = ?", deleted.ID).Error)
+	assert.Nil(t, gotDeleted.LastInboundAt)
+
+	// Contacts that already have a value are left alone.
+	message(live.ID, models.DirectionIncoming, base.Add(30*time.Minute))
+	require.NoError(t, database.BackfillLastInboundAt(db))
+	require.NoError(t, db.First(&got, "id = ?", live.ID).Error)
+	require.NotNil(t, got.LastInboundAt)
+	assert.True(t, newest.Equal(*got.LastInboundAt), "got %s, want %s", got.LastInboundAt, newest)
+}
+
+// --- Literal JSON defaults on Create ---
+
+func TestCreate_SetsLiteralJSONDefaultsOnStruct(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+
+	org := models.Organization{Name: "JSON Defaults Org", Slug: "json-defaults"}
+	require.NoError(t, db.Create(&org).Error)
+	assert.NotNil(t, org.Settings)
+
+	c := models.Contact{OrganizationID: org.ID, PhoneNumber: "2001"}
+	require.NoError(t, db.Create(&c).Error)
+	assert.NotNil(t, c.Tags)
+	assert.Empty(t, c.Tags)
+	assert.NotNil(t, c.Metadata)
+	assert.Empty(t, c.Metadata)
+
+	batch := []models.Contact{{OrganizationID: org.ID, PhoneNumber: "2002"}, {OrganizationID: org.ID, PhoneNumber: "2003"}}
+	require.NoError(t, db.Create(&batch).Error)
+	for _, b := range batch {
+		assert.NotNil(t, b.Tags, b.PhoneNumber)
+		assert.Empty(t, b.Tags, b.PhoneNumber)
+		assert.NotNil(t, b.Metadata, b.PhoneNumber)
+	}
+
+	ptrs := []*models.Contact{{OrganizationID: org.ID, PhoneNumber: "2004"}, {OrganizationID: org.ID, PhoneNumber: "2005"}}
+	require.NoError(t, db.Create(&ptrs).Error)
+	for _, p := range ptrs {
+		assert.NotNil(t, p.Tags, p.PhoneNumber)
+		require.NotNil(t, p.Metadata, p.PhoneNumber)
+	}
+	ptrs[0].Metadata["k"] = "v"
+	assert.Empty(t, ptrs[1].Metadata, "each row gets its own default value")
+
+	var raw []string
+	require.NoError(t, db.Model(&models.Contact{}).Where("organization_id = ?", org.ID).Pluck("tags", &raw).Error)
+	require.Len(t, raw, 5)
+	for _, r := range raw {
+		assert.JSONEq(t, "[]", r)
+	}
 }
 
 // --- SeedDefaultWidgetsForOrg ---

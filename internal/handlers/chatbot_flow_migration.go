@@ -9,6 +9,7 @@ import (
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 )
 
@@ -57,11 +58,13 @@ func BackfillChatbotFlowGraph(db *gorm.DB, lo logf.Logger) error {
 		return nil
 	}
 
+	// MySQL compares a JSON column with a string literal as a JSON string
+	// scalar, so compare the text form.
 	var pending []legacyFlowMeta
 	err := db.Raw(`
 		SELECT id, name, canvas_layout
 		FROM chatbot_flows
-		WHERE deleted_at IS NULL AND (graph IS NULL OR graph = '{}')
+		WHERE deleted_at IS NULL AND (graph IS NULL OR ` + dialect.Of(db).AsText("graph") + ` = '{}')
 	`).Scan(&pending).Error
 	if err != nil {
 		return fmt.Errorf("load flows for graph backfill: %w", err)

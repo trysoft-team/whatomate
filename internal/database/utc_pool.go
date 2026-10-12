@@ -9,7 +9,10 @@ import (
 )
 
 // utcPool converts time arguments to UTC before they reach SQLite, which
-// compares timestamps as text including the zone offset.
+// compares timestamps as text including the zone offset. It only sees
+// arguments passed through QueryContext, ExecContext and PrepareContext: a
+// driver.Valuer returning a local time.Time, or a *sql.Conn taken from
+// db.DB(), bypasses it.
 type utcPool struct{ db *sql.DB }
 
 func utcArgs(args []any) []any {

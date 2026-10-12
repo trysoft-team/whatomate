@@ -20,8 +20,16 @@ public_url = ""  # Optional override for absolute origin (e.g. "https://app.exam
 allowed_origins = ""  # Comma-separated CORS origins (e.g., "https://app.example.com,https://admin.example.com"). Empty = allow all (dev only).
 
 [database]
-driver = "postgres"  # postgres | sqlite (mysql and sqlserver coming)
+driver = "postgres"  # postgres | mysql | sqlite (sqlserver coming)
 # path = "./whatomate.db"  # sqlite only
+# MySQL 8.0.19+ / MariaDB 10.6+ (database must be utf8mb4):
+# driver = "mysql"
+# host = "localhost"
+# port = 3306
+# user = "whatomate"
+# password = "change-me"
+# name = "whatomate"
+# ssl_mode = "disable"  # disable, require, verify-ca, verify-full, preferred
 host = "db"  # Use "localhost" for local development
 port = 5432
 user = "whatomate"

@@ -140,7 +140,7 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 	// Create indexes
 	for _, idx := range indexes {
 		printProgress(currentStep, totalSteps)
-		if err := silentDB.Exec(idx).Error; err != nil {
+		if err := createIndex(silentDB, idx); err != nil {
 			fmt.Printf("\n  \033[31m✗ Index creation failed\033[0m\n\n")
 			return fmt.Errorf("failed to create index: %w", err)
 		}
@@ -301,6 +301,20 @@ func MigrateUserOrganizations(db *gorm.DB) error {
 // BackfillLastInboundAt sets last_inbound_at for existing contacts from their
 // most recent incoming message. Only updates contacts where the field is NULL.
 func BackfillLastInboundAt(db *gorm.DB) error {
+	if db.Dialector.Name() == config.DriverMySQL {
+		// MySQL has no UPDATE ... FROM.
+		return db.Exec(`
+		UPDATE contacts c
+		JOIN (
+			SELECT contact_id, MAX(created_at) AS max_created
+			FROM messages
+			WHERE direction = 'incoming' AND deleted_at IS NULL
+			GROUP BY contact_id
+		) sub ON c.id = sub.contact_id
+		SET c.last_inbound_at = sub.max_created
+		WHERE c.last_inbound_at IS NULL AND c.deleted_at IS NULL
+	`).Error
+	}
 	return db.Exec(`
 		UPDATE contacts AS c
 		SET last_inbound_at = sub.max_created

@@ -29,7 +29,7 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 // SQLite's LIKE folds ASCII letters only; documented limitation.
 func TestSearch_NonASCIIFolding(t *testing.T) {
 	if testutil.Driver() != "sqlite" {
-		t.Skip("postgres folds non-ASCII")
+		t.Skip("postgres and mysql fold non-ASCII")
 	}
 	t.Parallel()
 

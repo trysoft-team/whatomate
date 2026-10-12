@@ -2,12 +2,15 @@ package testutil
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	mysqldrv "github.com/go-sql-driver/mysql"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/models"
@@ -28,21 +31,25 @@ func Driver() string {
 	switch d := strings.ToLower(strings.TrimSpace(os.Getenv("TEST_DB_DRIVER"))); d {
 	case "", config.DriverPostgres:
 		return config.DriverPostgres
-	case config.DriverSQLite:
+	case config.DriverSQLite, config.DriverMySQL:
 		return d
 	default:
-		panic(fmt.Sprintf("TEST_DB_DRIVER=%q is not supported; use %q or %q", d, config.DriverPostgres, config.DriverSQLite))
+		panic(fmt.Sprintf("TEST_DB_DRIVER=%q is not supported; use %q, %q or %q", d, config.DriverPostgres, config.DriverSQLite, config.DriverMySQL))
 	}
 }
 
 // SetupTestDB creates a connection to the test database selected by TEST_DB_DRIVER.
 // For sqlite, a fresh database file is created in a temporary directory.
 // For postgres, TEST_DATABASE_URL must be set; if not, the test is skipped.
+// For mysql, TEST_MYSQL_DSN must be set; if not, the test is skipped.
 // Migrations are run only once across all tests to avoid conflicts.
 func SetupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
 	driver := Driver()
+	if driver == config.DriverMySQL {
+		return setupMySQLTestDB(t)
+	}
 	if driver == config.DriverSQLite {
 		testDBOnce.Do(func() {
 			dir, err := os.MkdirTemp("", "whatomate-test-*")
@@ -93,6 +100,65 @@ func SetupTestDB(t *testing.T) *gorm.DB {
 
 	// Return a new session for this test to avoid connection conflicts
 	return testDB.Session(&gorm.Session{})
+}
+
+// setupMySQLTestDB connects to TEST_MYSQL_DSN, whose database name must start
+// with whatomate_test: the DSN user may have server-wide privileges and the
+// tables are truncated.
+func setupMySQLTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	raw := os.Getenv("TEST_MYSQL_DSN")
+	if raw == "" {
+		t.Skip("TEST_MYSQL_DSN not set, skipping database test")
+	}
+
+	cfg, err := MySQLConfigFromDSN(raw)
+	if err != nil {
+		panic(err.Error())
+	}
+	testDBOnce.Do(func() {
+		testDB, err = database.Open(cfg, false)
+		if err != nil {
+			testDBInitErr = fmt.Errorf("failed to connect to test mysql: %w", err)
+			return
+		}
+		if err := runMigrations(testDB); err != nil {
+			testDBInitErr = fmt.Errorf("failed to run migrations: %w", err)
+			return
+		}
+		cleanupTables(testDB)
+	})
+
+	if testDBInitErr != nil {
+		t.Fatalf("failed to initialize test database: %v", testDBInitErr)
+	}
+	return testDB.Session(&gorm.Session{})
+}
+
+// MySQLConfigFromDSN turns a go-sql-driver DSN such as TEST_MYSQL_DSN into a
+// mysql DatabaseConfig. The database name must start with whatomate_test.
+func MySQLConfigFromDSN(raw string) (*config.DatabaseConfig, error) {
+	dsn, err := mysqldrv.ParseDSN(raw)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN does not parse: %w", err)
+	}
+	if !strings.HasPrefix(dsn.DBName, "whatomate_test") {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN names database %q; it must start with whatomate_test", dsn.DBName)
+	}
+	host, portStr, err := net.SplitHostPort(dsn.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN address: %w", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN port: %w", err)
+	}
+	return &config.DatabaseConfig{
+		Driver: config.DriverMySQL, Host: host, Port: port,
+		User: dsn.User, Password: dsn.Passwd, Name: dsn.DBName, SSLMode: "disable",
+		MaxOpenConns: config.DefaultMaxOpenConns, MaxIdleConns: 5, ConnMaxLifetime: 300,
+	}, nil
 }
 
 // SetupTestDBWithCleanup is like SetupTestDB but allows controlling cleanup behavior.
@@ -240,7 +306,7 @@ func cleanupTables(db *gorm.DB) {
 	clearTables(db, tables)
 }
 
-// TruncateTables empties all tables (TRUNCATE on PostgreSQL, DELETE on SQLite).
+// TruncateTables empties all tables (TRUNCATE on PostgreSQL and MySQL, DELETE on SQLite).
 func TruncateTables(db *gorm.DB) {
 	tables := []string{
 		"widgets",
@@ -285,21 +351,31 @@ func TruncateTables(db *gorm.DB) {
 
 // clearTables empties tables, ignoring errors (e.g. a table not migrated).
 func clearTables(db *gorm.DB, tables []string) {
-	if db.Dialector.Name() != config.DriverSQLite {
+	switch db.Dialector.Name() {
+	case config.DriverSQLite:
+		// PRAGMA foreign_keys is a no-op inside a transaction, so pin one
+		// connection and run the statements outside any transaction.
+		_ = db.Connection(func(conn *gorm.DB) error {
+			conn.Exec("PRAGMA foreign_keys = OFF")
+			for _, table := range tables {
+				conn.Exec(fmt.Sprintf("DELETE FROM %s", table))
+			}
+			conn.Exec("PRAGMA foreign_keys = ON")
+			return nil
+		})
+	case config.DriverMySQL:
+		// FOREIGN_KEY_CHECKS is per session, so pin one connection.
+		_ = db.Connection(func(conn *gorm.DB) error {
+			conn.Exec("SET FOREIGN_KEY_CHECKS = 0")
+			for _, table := range tables {
+				conn.Exec("TRUNCATE TABLE `" + table + "`")
+			}
+			conn.Exec("SET FOREIGN_KEY_CHECKS = 1")
+			return nil
+		})
+	default:
 		for _, table := range tables {
 			db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
 		}
-		return
 	}
-
-	// PRAGMA foreign_keys is a no-op inside a transaction, so pin one
-	// connection and run the statements outside any transaction.
-	_ = db.Connection(func(conn *gorm.DB) error {
-		conn.Exec("PRAGMA foreign_keys = OFF")
-		for _, table := range tables {
-			conn.Exec(fmt.Sprintf("DELETE FROM %s", table))
-		}
-		conn.Exec("PRAGMA foreign_keys = ON")
-		return nil
-	})
 }

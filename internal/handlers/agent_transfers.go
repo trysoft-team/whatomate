@@ -163,7 +163,7 @@ func (a *App) ListAgentTransfers(r *fastglue.Request) error {
 	// transfer; history is browsed by recency, so newest-resumed first.
 	orderBy := "agent_transfers.transferred_at ASC" // FIFO for queue
 	if status == string(models.TransferStatusResumed) {
-		orderBy = "agent_transfers.resumed_at DESC NULLS LAST, agent_transfers.transferred_at DESC"
+		orderBy = dialect.Of(a.DB).DescNullsLast("agent_transfers.resumed_at") + ", agent_transfers.transferred_at DESC"
 	}
 
 	// Build query with conditional JOINs for better performance

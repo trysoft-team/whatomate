@@ -51,6 +51,8 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 			Dialector: sqlite.Dialector{DriverName: "sqlite", DSN: dsn, Conn: utcPool{sqlDB}},
 			types:     sqliteTypes,
 		}, nil
+	case config.DriverMySQL:
+		return openMySQL(cfg)
 	}
 	return nil, fmt.Errorf("database driver %q is not supported yet", cfg.Driver)
 }
@@ -76,6 +78,16 @@ func Open(cfg *config.DatabaseConfig, debug bool) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	return open(dialector, cfg, debug)
+}
+
+// open closes the pool the dialector owns, if any, when it fails.
+func open(dialector gorm.Dialector, cfg *config.DatabaseConfig, debug bool) (_ *gorm.DB, err error) {
+	defer func() {
+		if d, ok := dialector.(portableDialector); ok && err != nil && d.pool != nil {
+			_ = d.pool.Close()
+		}
+	}()
 
 	logLevel := logger.Silent
 	if debug {
@@ -88,6 +100,12 @@ func Open(cfg *config.DatabaseConfig, debug bool) (*gorm.DB, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	if cfg.Driver == config.DriverMySQL {
+		if err := db.Callback().Create().Before("gorm:create").Register("whatomate:literal_json_defaults", fillLiteralJSONDefaults); err != nil {
+			return nil, err
+		}
 	}
 
 	if cfg.Driver != config.DriverSQLite {
