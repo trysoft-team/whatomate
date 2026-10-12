@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/test/testutil"
 )
@@ -235,33 +236,58 @@ func TestStepsToGraph_CanvasPositionsApplied(t *testing.T) {
 // the integration test: legacy rows (Graph IS NULL with chatbot_flow_steps
 // + canvas_layout backing them) get migrated; already-v2 rows are
 // untouched; second run is a no-op.
-func TestBackfillChatbotFlowGraph_FillsNullGraphsAndLeavesOthersAlone(t *testing.T) {
-	app := newProcessorTestApp(t)
-	org, account := createProcessorTestOrg(t, app)
+// legacyChatbotFlowColumns describes the canvas_layout column that
+// AutoMigrate no longer creates on chatbot_flows.
+type legacyChatbotFlowColumns struct {
+	CanvasLayout models.JSONB `gorm:"type:jsonb"`
+}
 
-	// AutoMigrate no longer creates the legacy canvas_layout column or
-	// the chatbot_flow_steps table — the model has moved fully to graph.
-	// Recreate just enough of the legacy schema so we can exercise the
-	// backfill against representative legacy data.
-	require.NoError(t, app.DB.Exec(`ALTER TABLE chatbot_flows ADD COLUMN IF NOT EXISTS canvas_layout JSONB`).Error)
+func (legacyChatbotFlowColumns) TableName() string { return "chatbot_flows" }
+
+// setupLegacyFlowSchema recreates just enough of the legacy schema (the
+// canvas_layout column and the chatbot_flow_steps table) to exercise the
+// backfill against representative legacy data.
+func setupLegacyFlowSchema(t *testing.T, app *App) {
+	t.Helper()
+	mig := app.DB.Migrator()
+	if !mig.HasColumn(&legacyChatbotFlowColumns{}, "canvas_layout") {
+		require.NoError(t, mig.AddColumn(&legacyChatbotFlowColumns{}, "CanvasLayout"))
+	}
 	require.NoError(t, app.DB.AutoMigrate(&models.ChatbotFlowStep{}))
+}
 
-	// Legacy: stored as a row in chatbot_flows with steps in
-	// chatbot_flow_steps. canvas_layout column carries the position.
-	legacyID := uuid.New()
-	require.NoError(t, app.DB.Exec(`
-		INSERT INTO chatbot_flows
-		(id, organization_id, whats_app_account, name, is_enabled, canvas_layout, graph, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?::jsonb, NULL, NOW(), NOW())
-	`, legacyID, org.ID, account.Name, "legacy", true, `{"node_positions":{"step_1":{"x":100,"y":200}}}`).Error)
+// createLegacyFlow stores a flow with a single legacy text step and the
+// given graph (nil for SQL NULL).
+func createLegacyFlow(t *testing.T, app *App, orgID uuid.UUID, account, name string, graph models.JSONB) uuid.UUID {
+	t.Helper()
+	flow := &models.ChatbotFlow{
+		OrganizationID:  orgID,
+		WhatsAppAccount: account,
+		Name:            name,
+		IsEnabled:       true,
+		Graph:           graph,
+	}
+	require.NoError(t, app.DB.Create(flow).Error)
+	require.NoError(t, app.DB.Table("chatbot_flows").Where("id = ?", flow.ID).
+		Update("canvas_layout", models.JSONB{"node_positions": map[string]any{"step_1": map[string]any{"x": 100, "y": 200}}}).Error)
 	require.NoError(t, app.DB.Create(&models.ChatbotFlowStep{
-		BaseModel:   models.BaseModel{ID: uuid.New()},
-		FlowID:      legacyID,
+		FlowID:      flow.ID,
 		StepName:    "step_1",
 		StepOrder:   1,
 		MessageType: "text",
 		Message:     "Hello!",
 	}).Error)
+	return flow.ID
+}
+
+func TestBackfillChatbotFlowGraph_FillsNullGraphsAndLeavesOthersAlone(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	setupLegacyFlowSchema(t, app)
+
+	// Legacy: stored as a row in chatbot_flows with steps in
+	// chatbot_flow_steps. canvas_layout column carries the position.
+	legacyID := createLegacyFlow(t, app, org.ID, account.Name, "legacy", nil)
 
 	// Already-v2: explicit Graph, no steps.
 	preExisting := models.JSONB{
@@ -285,13 +311,17 @@ func TestBackfillChatbotFlowGraph_FillsNullGraphsAndLeavesOthersAlone(t *testing
 	require.NoError(t, BackfillChatbotFlowGraph(app.DB, app.Log))
 
 	var legacyAfter models.ChatbotFlow
-	require.NoError(t, app.DB.First(&legacyAfter, legacyID).Error)
+	require.NoError(t, app.DB.First(&legacyAfter, "id = ?", legacyID).Error)
 	require.NotNil(t, legacyAfter.Graph)
 	assert.EqualValues(t, 2, legacyAfter.Graph["version"])
 	assert.Equal(t, "__start__", legacyAfter.Graph["entry_node"])
+	legacyNodes, _ := legacyAfter.Graph["nodes"].([]any)
+	require.Len(t, legacyNodes, 2)
+	step, _ := legacyNodes[1].(map[string]any)
+	assert.Equal(t, map[string]any{"x": float64(100), "y": float64(200)}, step["position"], "canvas_layout position carried over")
 
 	var v2After models.ChatbotFlow
-	require.NoError(t, app.DB.First(&v2After, v2flow.ID).Error)
+	require.NoError(t, app.DB.First(&v2After, "id = ?", v2flow.ID).Error)
 	require.NotNil(t, v2After.Graph)
 	nodes, _ := v2After.Graph["nodes"].([]any)
 	require.Len(t, nodes, 1)
@@ -300,6 +330,33 @@ func TestBackfillChatbotFlowGraph_FillsNullGraphsAndLeavesOthersAlone(t *testing
 
 	// Idempotent.
 	require.NoError(t, BackfillChatbotFlowGraph(app.DB, app.Log))
+}
+
+func TestBackfillChatbotFlowGraph_EmptyObjectNonObjectAndDeletedGraphs(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	setupLegacyFlowSchema(t, app)
+
+	emptyID := createLegacyFlow(t, app, org.ID, account.Name, "empty-object", models.JSONB{})
+	arrayID := createLegacyFlow(t, app, org.ID, account.Name, "non-object", nil)
+	require.NoError(t, app.DB.Table("chatbot_flows").Where("id = ?", arrayID).Update("graph", models.JSONBArray{}).Error)
+	t.Cleanup(func() { app.DB.Unscoped().Delete(&models.ChatbotFlow{}, "id = ?", arrayID) })
+	deletedID := createLegacyFlow(t, app, org.ID, account.Name, "deleted", nil)
+	require.NoError(t, app.DB.Delete(&models.ChatbotFlow{}, "id = ?", deletedID).Error)
+
+	require.NoError(t, BackfillChatbotFlowGraph(app.DB, app.Log))
+
+	var empty models.ChatbotFlow
+	require.NoError(t, app.DB.First(&empty, "id = ?", emptyID).Error)
+	assert.Equal(t, "__start__", empty.Graph["entry_node"], "an empty-object graph is backfilled")
+
+	var arrayGraph string
+	require.NoError(t, app.DB.Raw("SELECT "+dialect.Of(app.DB).AsText("graph")+" FROM chatbot_flows WHERE id = ?", arrayID).Scan(&arrayGraph).Error)
+	assert.Equal(t, "[]", arrayGraph, "a non-object graph is left alone")
+
+	var deleted models.ChatbotFlow
+	require.NoError(t, app.DB.Unscoped().First(&deleted, "id = ?", deletedID).Error)
+	assert.Nil(t, deleted.Graph, "a deleted flow is left alone")
 }
 
 var _ = testutil.NopLogger // silence unused-import warning when read in isolation

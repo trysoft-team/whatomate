@@ -57,25 +57,14 @@ func BackfillChatbotFlowGraph(db *gorm.DB, lo logf.Logger) error {
 		return nil
 	}
 
-	var flows []legacyFlowMeta
+	var pending []legacyFlowMeta
 	err := db.Raw(`
-		SELECT id, name, canvas_layout, graph
+		SELECT id, name, canvas_layout
 		FROM chatbot_flows
-		WHERE deleted_at IS NULL
-	`).Scan(&flows).Error
+		WHERE deleted_at IS NULL AND (graph IS NULL OR graph = '{}')
+	`).Scan(&pending).Error
 	if err != nil {
 		return fmt.Errorf("load flows for graph backfill: %w", err)
-	}
-
-	var pending []legacyFlowMeta
-	for _, f := range flows {
-		if len(f.Graph) != 0 {
-			continue
-		}
-		if f.CanvasLayout == nil {
-			f.CanvasLayout = models.JSONB{}
-		}
-		pending = append(pending, f)
 	}
 
 	if len(pending) == 0 {
@@ -110,8 +99,7 @@ func BackfillChatbotFlowGraph(db *gorm.DB, lo logf.Logger) error {
 type legacyFlowMeta struct {
 	ID           uuid.UUID
 	Name         string
-	CanvasLayout models.JSONB `gorm:"column:canvas_layout"`
-	Graph        models.JSONB `gorm:"column:graph"`
+	CanvasLayout models.JSONB `gorm:"column:canvas_layout;type:jsonb"`
 }
 
 // stepsToGraph converts a legacy slice of ChatbotFlowStep rows plus an
