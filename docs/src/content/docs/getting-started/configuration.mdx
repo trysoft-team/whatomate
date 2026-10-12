@@ -155,7 +155,7 @@ full_name = "Admin"
 | Field | Notes |
 |---|---|
 | `driver` | `postgres` (default) \| `sqlite`. `mysql` and `sqlserver` are not supported yet; the server refuses to start with them. |
-| `path` | SQLite database file. Default `./whatomate.db`. Only read when `driver = "sqlite"`. |
+| `path` | SQLite database file. Default `./whatomate.db`, relative to the directory the server is started from — use an absolute path in production. The parent directory must already exist. Only read when `driver = "sqlite"`. |
 | `host`, `port`, `user`, `password`, `name`, `ssl_mode` | PostgreSQL connection. Ignored for SQLite. |
 
 The `max_open_conns` / `max_idle_conns` / `conn_max_lifetime` knobs map directly to `database/sql` pool settings — defaults are tuned for a single API process; raise `max_open_conns` if you run many workers against the same DB.
@@ -312,6 +312,8 @@ The separator between the section and the key is a **double underscore (`__`)**;
 |---|---|
 | `WHATOMATE_APP__ENVIRONMENT` | `app.environment` |
 | `WHATOMATE_APP__ENCRYPTION_KEY` | `app.encryption_key` |
+| `WHATOMATE_DATABASE__DRIVER` | `database.driver` |
+| `WHATOMATE_DATABASE__PATH` | `database.path` |
 | `WHATOMATE_DATABASE__HOST` | `database.host` |
 | `WHATOMATE_DATABASE__SSL_MODE` | `database.ssl_mode` |
 | `WHATOMATE_REDIS__HOST` | `redis.host` |
@@ -342,7 +344,9 @@ psql -c "CREATE DATABASE whatomate;"
 
 ### SQLite
 
-Set `driver = "sqlite"` and, optionally, `path` in `[database]`. The file is created on the first `-migrate` run; no database server is needed.
+Set `driver = "sqlite"` and, optionally, `path` in `[database]`. No database server is needed. The file is created the first time the server starts; run once with `-migrate` to create the schema. New files are readable by their owner only (`0600`); an existing file keeps its permissions.
+
+The parent directory of `path` must already exist — the server refuses to start if it does not. The default `./whatomate.db` is relative to the working directory, so use an absolute path in production (for example `/var/lib/whatomate/whatomate.db`).
 
 ### Run Migrations
 

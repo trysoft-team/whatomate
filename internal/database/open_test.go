@@ -217,6 +217,14 @@ func TestOpenSQLite_KeepsExistingFileMode(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
 }
 
+func TestOpenSQLite_MissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	_, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: filepath.Join(dir, "w.db")}, false)
+	assert.EqualError(t, err, fmt.Sprintf("sqlite database directory %q does not exist", dir))
+	_, statErr := os.Stat(dir)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "directory must not be created")
+}
+
 func TestOpenSQLite_PoolSize(t *testing.T) {
 	for _, tc := range []struct{ configured, want int }{{0, 10}, {4, 4}} {
 		db, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: filepath.Join(t.TempDir(), "w.db"), MaxOpenConns: tc.configured}, false)

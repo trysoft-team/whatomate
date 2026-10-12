@@ -2,8 +2,11 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -58,6 +61,10 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 // SQLite gives the -wal and -shm files the main file's mode. An existing file
 // keeps whatever mode the operator gave it.
 func createSQLiteFile(path string) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("sqlite database directory %q does not exist", dir)
+	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create sqlite database file: %w", err)
