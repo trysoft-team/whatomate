@@ -155,21 +155,53 @@ func TestOpenMySQL_RepeatMigrationAltersNothing(t *testing.T) {
 		return cols
 	}
 
+	before := snapshot()
+	altered := captureMySQLDDL(t, db)
+	migrateMySQL(t, db)
+	assert.Empty(t, altered(), "second migration must not create, alter or drop tables or indexes")
+	assert.Equal(t, before, snapshot())
+}
+
+// captureMySQLDDL records the DDL statements db runs from now on.
+func captureMySQLDDL(t *testing.T, db *gorm.DB) func() []string {
+	t.Helper()
 	ddl := regexp.MustCompile(`(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE|CREATE\s+(UNIQUE\s+)?INDEX|DROP INDEX)`)
 	var mu sync.Mutex
-	var altered []string
+	var statements []string
 	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register("test:capture_ddl", func(tx *gorm.DB) {
 		if sql := tx.Statement.SQL.String(); ddl.MatchString(sql) {
 			mu.Lock()
-			altered = append(altered, sql)
+			statements = append(statements, sql)
 			mu.Unlock()
 		}
 	}))
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), statements...)
+	}
+}
 
-	before := snapshot()
-	migrateMySQL(t, db)
-	assert.Empty(t, altered, "second migration must not create, alter or drop tables or indexes")
-	assert.Equal(t, before, snapshot())
+func TestOpenMySQL_StringDefaultOnTextColumn(t *testing.T) {
+	db := openMySQLEmpty(t)
+	type textDefault struct {
+		ID    uuid.UUID `gorm:"type:uuid;primaryKey"`
+		Body  string    `gorm:"type:text;default:'hello'"`
+		Label string    `gorm:"default:'x'"`
+	}
+	require.NoError(t, db.AutoMigrate(&textDefault{}))
+	assert.Equal(t, "longtext", mysqlColumnType(t, db, "text_defaults", "body"))
+
+	altered := captureMySQLDDL(t, db)
+	require.NoError(t, db.AutoMigrate(&textDefault{}))
+	assert.Empty(t, altered(), "second migration must not alter the table")
+
+	id := uuid.New()
+	require.NoError(t, db.Exec("INSERT INTO text_defaults (id) VALUES (?)", id).Error)
+	var got textDefault
+	require.NoError(t, db.First(&got, "id = ?", id).Error)
+	assert.Equal(t, "hello", got.Body)
+	assert.Equal(t, "x", got.Label)
 }
 
 func assertDuplicateKey(t *testing.T, err error) {

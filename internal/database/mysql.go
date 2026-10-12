@@ -207,7 +207,9 @@ type mysqlMigrator struct{ mysql.Migrator }
 func (m mysqlMigrator) needsExprDefault(field *schema.Field) bool {
 	switch m.Migrator.Migrator.DataTypeOf(field) {
 	case "json", "longtext":
-		return strings.HasPrefix(field.DefaultValue, "'")
+		// GORM strips the quotes from a string field's default.
+		_, isString := field.DefaultValueInterface.(string)
+		return isString || strings.HasPrefix(field.DefaultValue, "'")
 	}
 	return false
 }
@@ -215,7 +217,12 @@ func (m mysqlMigrator) needsExprDefault(field *schema.Field) bool {
 func (m mysqlMigrator) FullDataTypeOf(field *schema.Field) clause.Expr {
 	if m.needsExprDefault(field) {
 		f := *field
-		f.DefaultValue = "(" + field.DefaultValue + ")"
+		if s, ok := field.DefaultValueInterface.(string); ok {
+			f.DefaultValueInterface = nil
+			f.DefaultValue = "(" + mysqlStringLiteral(s) + ")"
+		} else {
+			f.DefaultValue = "(" + field.DefaultValue + ")"
+		}
 		return m.Migrator.FullDataTypeOf(&f)
 	}
 	return m.Migrator.FullDataTypeOf(field)
@@ -291,6 +298,11 @@ type reportedDefault struct {
 }
 
 func (c reportedDefault) DefaultValue() (string, bool) { return c.dv, true }
+
+// mysqlStringLiteral quotes s for SQL; backslash escapes are on in mysqlSQLMode.
+func mysqlStringLiteral(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(s) + "'"
+}
 
 // normalizeMySQLDefault reduces the forms MySQL and MariaDB report a literal
 // default in (_utf8mb4\'[]\', ('[]'), '[]') to the bare literal.

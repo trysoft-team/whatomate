@@ -110,6 +110,12 @@ func TestMySQLColumnSuffixes(t *testing.T) {
 	assert.Equal(t, "varchar(255)", d.DataTypeOf(s.LookUpField("RPID")))
 }
 
+func TestMySQLStringLiteral(t *testing.T) {
+	for in, want := range map[string]string{"hello": `'hello'`, "it's": `'it''s'`, `a\b`: `'a\\b'`, "": `''`} {
+		assert.Equal(t, want, mysqlStringLiteral(in), in)
+	}
+}
+
 func TestNormalizeMySQLDefault(t *testing.T) {
 	for in, want := range map[string]string{`_utf8mb4\'[]\'`: "[]", `'[]'`: "[]", `('{}')`: "{}", `_utf8mb4\'{}\'`: "{}"} {
 		assert.Equal(t, want, normalizeMySQLDefault(in), in)
