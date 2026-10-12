@@ -102,9 +102,8 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 		}
 		row.SharedOrgIDs = arr
 	}
-	if row.ShareMode == models.MetaAppShareSelected && len(row.SharedOrgIDStrings()) == 0 {
-		// Allow empty selected list (inherits nothing until orgs are chosen).
-	}
+	// An empty "selected" share list is allowed: it shares with no organization
+	// until some are chosen.
 
 	uid := userID
 	row.UpdatedByID = &uid

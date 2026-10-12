@@ -116,7 +116,7 @@ func indexesFor(driver string) []indexStmt {
 // createIndex runs s. MySQL has no IF NOT EXISTS for indexes or columns, so
 // there it skips what already exists.
 func createIndex(db *gorm.DB, s indexStmt) error {
-	if db.Dialector.Name() == config.DriverMySQL {
+	if db.Name() == config.DriverMySQL {
 		query := `SELECT count(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`
 		if s.isColumn {
 			query = `SELECT count(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`
@@ -134,7 +134,7 @@ func createIndex(db *gorm.DB, s indexStmt) error {
 
 // CreateIndexes creates additional indexes not handled by GORM tags
 func CreateIndexes(db *gorm.DB) error {
-	for _, s := range indexesFor(db.Dialector.Name()) {
+	for _, s := range indexesFor(db.Name()) {
 		if err := createIndex(db, s); err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}

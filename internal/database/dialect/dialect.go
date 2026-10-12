@@ -21,7 +21,7 @@ type Dialect struct{ name string }
 // Of returns the dialect of db's driver ("postgres", "sqlite" or "mysql",
 // which MariaDB shares). It panics on a driver this package has no SQL for;
 // Open rejects those first.
-func Of(db *gorm.DB) Dialect { return Named(db.Dialector.Name()) }
+func Of(db *gorm.DB) Dialect { return Named(db.Name()) }
 
 func Named(name string) Dialect {
 	switch name {

@@ -110,7 +110,7 @@ func TestDocsReadParsesParagraphs(t *testing.T) {
 	}
 	resp, err := http.Get(srv.URL + "/v1/documents/doc123")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	var b strings.Builder
 	for _, block := range doc.Body.Content {

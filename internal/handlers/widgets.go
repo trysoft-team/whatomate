@@ -898,9 +898,8 @@ func (a *App) executeWidgetQuery(orgID uuid.UUID, widget models.Widget, fromStr,
 		}
 	}
 
-	if widget.DisplayType == "gauge" {
-		// value already set; target comes from config on the client
-	}
+	// Gauges need nothing more: the value is set and the client reads the
+	// target from the widget config.
 
 	return response, nil
 }

@@ -351,7 +351,7 @@ func TruncateTables(db *gorm.DB) {
 
 // clearTables empties tables, ignoring errors (e.g. a table not migrated).
 func clearTables(db *gorm.DB, tables []string) {
-	switch db.Dialector.Name() {
+	switch db.Name() {
 	case config.DriverSQLite:
 		// PRAGMA foreign_keys is a no-op inside a transaction, so pin one
 		// connection and run the statements outside any transaction.

@@ -123,6 +123,7 @@ func SynthesizeGeminiWAV(ctx context.Context, apiKey, text, voice string, client
 			lastErr = err
 			continue
 		}
+		var decodeErr error
 		for _, c := range parsed.Candidates {
 			for _, p := range c.Content.Parts {
 				if p.InlineData == nil || p.InlineData.Data == "" {
@@ -130,7 +131,7 @@ func SynthesizeGeminiWAV(ctx context.Context, apiKey, text, voice string, client
 				}
 				decoded, err := base64.StdEncoding.DecodeString(p.InlineData.Data)
 				if err != nil {
-					lastErr = err
+					decodeErr = err
 					continue
 				}
 				pcm := geminiAudioToPCM24(decoded, p.InlineData.MimeType)
@@ -140,7 +141,11 @@ func SynthesizeGeminiWAV(ctx context.Context, apiKey, text, voice string, client
 				return pcm16ToWAV(pcm, GeminiTTSSampleRate), nil
 			}
 		}
-		lastErr = fmt.Errorf("%s: no audio in response", model)
+		if decodeErr != nil {
+			lastErr = fmt.Errorf("%s: decode audio: %w", model, decodeErr)
+		} else {
+			lastErr = fmt.Errorf("%s: no audio in response", model)
+		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("gemini TTS failed")
