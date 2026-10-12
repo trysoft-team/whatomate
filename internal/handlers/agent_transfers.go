@@ -887,7 +887,9 @@ func (a *App) PickNextTransfer(r *fastglue.Request) error {
 		userTeamIDs = append(userTeamIDs, m.TeamID)
 	}
 
-	// Use transaction with FOR UPDATE lock to prevent race conditions
+	// Pick inside a transaction so two agents cannot take the same transfer.
+	// PostgreSQL locks the row with FOR UPDATE SKIP LOCKED; SQLite has no row
+	// locks and relies on the IMMEDIATE transaction lock, which serialises writers.
 	tx := a.DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {
