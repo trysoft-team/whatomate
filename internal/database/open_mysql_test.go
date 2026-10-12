@@ -6,10 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"net"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +21,7 @@ import (
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/test/testutil"
 	"gorm.io/gorm"
 )
 
@@ -32,25 +31,23 @@ var mysqlScratchName = regexp.MustCompile(`^whatomate_test_[0-9a-f]{8}$`)
 
 var mysqlAdmin = &config.DefaultAdminConfig{Email: "a@b.c", Password: "pw", FullName: "A"}
 
-// createMySQLScratch creates an empty utf8mb4 database and drops it when t ends.
-func createMySQLScratch(t *testing.T) (*mysqldrv.Config, string) {
+// createMySQLScratch creates an empty utf8mb4 database, drops it when t ends
+// and returns its config.
+func createMySQLScratch(t *testing.T) *config.DatabaseConfig {
 	t.Helper()
 	raw := os.Getenv("TEST_MYSQL_DSN")
 	if raw == "" {
 		t.Skip("TEST_MYSQL_DSN not set")
 	}
-	base, err := mysqldrv.ParseDSN(raw)
-	require.NoError(t, err, "TEST_MYSQL_DSN does not parse")
-	require.True(t, strings.HasPrefix(base.DBName, "whatomate_test"), "TEST_MYSQL_DSN must name a whatomate_test* database")
+	cfg, err := testutil.MySQLConfigFromDSN(raw)
+	require.NoError(t, err)
 
 	suffix := make([]byte, 4)
 	_, err = rand.Read(suffix)
 	require.NoError(t, err)
 	name := "whatomate_test_" + hex.EncodeToString(suffix)
 
-	server := base.Clone()
-	server.DBName = ""
-	admin, err := sql.Open("mysql", server.FormatDSN())
+	admin, err := sql.Open("mysql", raw)
 	require.NoError(t, err)
 	_, err = admin.Exec("CREATE DATABASE `" + name + "` CHARACTER SET utf8mb4")
 	if err != nil {
@@ -66,21 +63,14 @@ func createMySQLScratch(t *testing.T) (*mysqldrv.Config, string) {
 		_, err := admin.Exec("DROP DATABASE `" + name + "`")
 		assert.NoError(t, err)
 	})
-	return base, name
+	cfg.Name = name
+	return cfg
 }
 
 // openMySQLEmpty opens a fresh scratch database without migrating it.
 func openMySQLEmpty(t *testing.T) *gorm.DB {
 	t.Helper()
-	base, name := createMySQLScratch(t)
-	host, portStr, err := net.SplitHostPort(base.Addr)
-	require.NoError(t, err)
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err)
-	db, err := database.Open(&config.DatabaseConfig{
-		Driver: "mysql", Host: host, Port: port, User: base.User, Password: base.Passwd, Name: name, SSLMode: "disable",
-		MaxOpenConns: config.DefaultMaxOpenConns, MaxIdleConns: 5,
-	}, false)
+	db, err := database.Open(createMySQLScratch(t), false)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if sqlDB, err := db.DB(); err == nil {

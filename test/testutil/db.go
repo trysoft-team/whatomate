@@ -113,31 +113,12 @@ func setupMySQLTestDB(t *testing.T) *gorm.DB {
 		t.Skip("TEST_MYSQL_DSN not set, skipping database test")
 	}
 
+	cfg, err := MySQLConfigFromDSN(raw)
+	if err != nil {
+		panic(err.Error())
+	}
 	testDBOnce.Do(func() {
-		dsn, err := mysqldrv.ParseDSN(raw)
-		if err != nil {
-			testDBInitErr = fmt.Errorf("TEST_MYSQL_DSN does not parse: %w", err)
-			return
-		}
-		if !strings.HasPrefix(dsn.DBName, "whatomate_test") {
-			panic(fmt.Sprintf("TEST_MYSQL_DSN names database %q; it must start with whatomate_test", dsn.DBName))
-		}
-		host, portStr, err := net.SplitHostPort(dsn.Addr)
-		if err != nil {
-			testDBInitErr = fmt.Errorf("TEST_MYSQL_DSN address: %w", err)
-			return
-		}
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			testDBInitErr = fmt.Errorf("TEST_MYSQL_DSN port: %w", err)
-			return
-		}
-
-		testDB, err = database.Open(&config.DatabaseConfig{
-			Driver: config.DriverMySQL, Host: host, Port: port,
-			User: dsn.User, Password: dsn.Passwd, Name: dsn.DBName, SSLMode: "disable",
-			MaxOpenConns: config.DefaultMaxOpenConns, MaxIdleConns: 5, ConnMaxLifetime: 300,
-		}, false)
+		testDB, err = database.Open(cfg, false)
 		if err != nil {
 			testDBInitErr = fmt.Errorf("failed to connect to test mysql: %w", err)
 			return
@@ -153,6 +134,31 @@ func setupMySQLTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to initialize test database: %v", testDBInitErr)
 	}
 	return testDB.Session(&gorm.Session{})
+}
+
+// MySQLConfigFromDSN turns a go-sql-driver DSN such as TEST_MYSQL_DSN into a
+// mysql DatabaseConfig. The database name must start with whatomate_test.
+func MySQLConfigFromDSN(raw string) (*config.DatabaseConfig, error) {
+	dsn, err := mysqldrv.ParseDSN(raw)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN does not parse: %w", err)
+	}
+	if !strings.HasPrefix(dsn.DBName, "whatomate_test") {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN names database %q; it must start with whatomate_test", dsn.DBName)
+	}
+	host, portStr, err := net.SplitHostPort(dsn.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN address: %w", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_MYSQL_DSN port: %w", err)
+	}
+	return &config.DatabaseConfig{
+		Driver: config.DriverMySQL, Host: host, Port: port,
+		User: dsn.User, Password: dsn.Passwd, Name: dsn.DBName, SSLMode: "disable",
+		MaxOpenConns: config.DefaultMaxOpenConns, MaxIdleConns: 5, ConnMaxLifetime: 300,
+	}, nil
 }
 
 // SetupTestDBWithCleanup is like SetupTestDB but allows controlling cleanup behavior.
