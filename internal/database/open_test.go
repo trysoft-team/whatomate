@@ -88,7 +88,7 @@ func TestOpenSQLite_RepeatMigrationRebuildsNothing(t *testing.T) {
 		return objs
 	}
 
-	ddl := regexp.MustCompile("(?i)^\\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)|__temp")
+	ddl := regexp.MustCompile(`(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)|__temp`)
 	var mu sync.Mutex
 	var rebuilds []string
 	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register("test:capture_ddl", func(tx *gorm.DB) {

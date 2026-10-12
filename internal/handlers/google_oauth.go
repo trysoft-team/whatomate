@@ -273,7 +273,7 @@ func fetchGoogleEmail(ctx context.Context, cfg *oauth2.Config, token *oauth2.Tok
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("userinfo returned %d", resp.StatusCode)

@@ -120,7 +120,7 @@ func (c *Client) doJSON(ctx context.Context, method, rawURL string, body any) ([
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	return data, resp.StatusCode, nil
 }
@@ -412,7 +412,7 @@ func (c *Client) UploadTextFile(ctx context.Context, name, content, parentID str
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if err := checkStatus(resp.StatusCode, data, "drive upload"); err != nil {
 		return "", err

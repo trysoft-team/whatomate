@@ -1064,7 +1064,7 @@ func ensureWhatsAppAudio(data []byte, mimeType, filename string) ([]byte, string
 	if err != nil {
 		return nil, "", "", err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	inPath := filepath.Join(tmpDir, "in"+ext)
 	outPath := filepath.Join(tmpDir, "out.ogg")

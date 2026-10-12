@@ -64,8 +64,8 @@ func (s *softAuthenticator) register(t *testing.T, options map[string]any, origi
 	require.NoError(t, err)
 	s.userID = userID
 
-	x := s.key.PublicKey.X.FillBytes(make([]byte, 32))
-	y := s.key.PublicKey.Y.FillBytes(make([]byte, 32))
+	x := s.key.X.FillBytes(make([]byte, 32))
+	y := s.key.Y.FillBytes(make([]byte, 32))
 	coseKey, err := webauthncbor.Marshal(map[int]any{1: 2, 3: -7, -1: 1, -2: x, -3: y})
 	require.NoError(t, err)
 

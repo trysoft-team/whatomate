@@ -108,7 +108,7 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 	silentDB := db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)})
 
 	migrationModels := GetMigrationModels()
-	indexes := indexesFor(db.Dialector.Name())
+	indexes := indexesFor(db.Name())
 
 	// Total steps: models + indexes + default admin check
 	totalSteps := len(migrationModels) + len(indexes) + 1
@@ -301,7 +301,7 @@ func MigrateUserOrganizations(db *gorm.DB) error {
 // BackfillLastInboundAt sets last_inbound_at for existing contacts from their
 // most recent incoming message. Only updates contacts where the field is NULL.
 func BackfillLastInboundAt(db *gorm.DB) error {
-	if db.Dialector.Name() == config.DriverMySQL {
+	if db.Name() == config.DriverMySQL {
 		// MySQL has no UPDATE ... FROM.
 		return db.Exec(`
 		UPDATE contacts c

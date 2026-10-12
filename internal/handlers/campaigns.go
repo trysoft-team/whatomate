@@ -18,7 +18,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // CampaignRequest represents campaign create/update request
@@ -1084,9 +1083,7 @@ func (a *App) incrementCampaignStat(campaignID string, status string) {
 	var campaign models.BulkMessageCampaign
 	campaign.ID = campaignUUID
 
-	// atomic update and return updated record
 	result := a.DB.Model(&campaign).
-		Clauses(clause.Returning{}).
 		Update(column, gorm.Expr(column+" + 1"))
 
 	if result.Error != nil {
@@ -1094,8 +1091,13 @@ func (a *App) incrementCampaignStat(campaignID string, status string) {
 		return
 	}
 
-	// Broadcast stats update via WebSocket
+	// Broadcast stats update via WebSocket. The counts are read back rather
+	// than through UPDATE ... RETURNING, which MySQL and MariaDB lack.
 	if a.WSHub != nil && result.RowsAffected > 0 {
+		if err := a.DB.First(&campaign, "id = ?", campaignUUID).Error; err != nil {
+			a.Log.Error("Failed to reload campaign stats", "error", err, "campaign_id", campaignID)
+			return
+		}
 		a.WSHub.BroadcastToOrg(campaign.OrganizationID, websocket.WSMessage{
 			Type: websocket.TypeCampaignStatsUpdate,
 			Payload: map[string]any{

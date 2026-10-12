@@ -48,9 +48,9 @@ func Send(cfg SMTPConfig, msg Message) error {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	header := strings.Builder{}
-	header.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	header.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(msg.To, ", ")))
-	header.WriteString(fmt.Sprintf("Subject: %s\r\n", msg.Subject))
+	fmt.Fprintf(&header, "From: %s\r\n", from)
+	fmt.Fprintf(&header, "To: %s\r\n", strings.Join(msg.To, ", "))
+	fmt.Fprintf(&header, "Subject: %s\r\n", msg.Subject)
 	header.WriteString("MIME-Version: 1.0\r\n")
 	header.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	header.WriteString("\r\n")
@@ -82,13 +82,13 @@ func sendSTARTTLS(addr, host string, auth smtp.Auth, from string, to []string, b
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
@@ -110,13 +110,13 @@ func sendSSL(addr, host string, auth smtp.Auth, from string, to []string, body [
 	if err != nil {
 		return err
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	c, err := smtp.NewClient(tlsConn, host)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if auth != nil {
 		if ok, _ := c.Extension("AUTH"); ok {

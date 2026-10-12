@@ -17,11 +17,11 @@ import (
 func fakeBin(t *testing.T, name, body string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("fake binary trick assumes /bin/sh")
+		t.Skip("fake binary trick assumes /bin/bash")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0755))
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/bash\n"+body+"\n"), 0755))
 	return path
 }
 

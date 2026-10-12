@@ -84,12 +84,7 @@ func (a *App) getAgentStatusItems(orgID uuid.UUID, filters []FilterInput) []Agen
 
 	out := make([]AgentStatusItem, len(rows))
 	for i, r := range rows {
-		out[i] = AgentStatusItem{
-			ID:              r.ID,
-			Name:            r.Name,
-			IsAvailable:     r.IsAvailable,
-			ActiveTransfers: r.ActiveTransfers,
-		}
+		out[i] = AgentStatusItem(r)
 	}
 	return out
 }
