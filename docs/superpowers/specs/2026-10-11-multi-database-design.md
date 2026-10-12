@@ -175,6 +175,19 @@ that already exercise the call sites.
   reaches the driver, and GORM's `NowFunc` returns UTC. Date helpers above
   assume UTC.
 
+## MySQL / MariaDB specifics
+
+Stage 2 departs from this spec in a few places; see "Deviations from the
+spec" in `docs/superpowers/plans/2026-10-12-multi-database-stage2-mysql.md`:
+
+- Partial unique indexes keep their `WHERE` meaning through a virtual
+  generated column in the key, instead of dropping the `WHERE`.
+- `ILike` is `LOWER(col) LIKE LOWER(?)`, independent of the collation.
+- `Now()` is `UTC_TIMESTAMP(6)`, not `NOW()`.
+- The connection collation is not forced; tables use the database default.
+- `jsonb` maps to `longtext` on MariaDB, whose `JSON` is an alias that reads
+  back as `longtext`.
+
 ## Testing
 
 - `test/testutil` reads `TEST_DB_DRIVER` (default `postgres`) and the matching
