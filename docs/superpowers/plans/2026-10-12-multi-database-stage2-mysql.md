@@ -22,7 +22,7 @@ Branch: `feat/multi-database-stage2` (off `feat/multi-database`). Merge back int
 ## Global Constraints
 
 - Minimum MySQL 8.0.19 (expression defaults need 8.0.13; `gorm.io/driver/mysql` uses `DROP CONSTRAINT`, 8.0.19+) and MariaDB 10.6 (`SKIP LOCKED`). Database character set must be `utf8mb4`. `OpenDialector` checks all three.
-- Connection settings (all set by `mysqlDSN`, never by the operator): `parseTime=true`, `loc=UTC`, `time_zone='+00:00'`, `clientFoundRows=true` (RowsAffected counts matched rows like PostgreSQL), `sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'` (valid on both servers; no `NO_ZERO_DATE`, so a zero `time.Time` round-trips as `0000-00-00`).
+- Connection settings (all set by `mysqlDSN`, never by the operator): `parseTime=true`, `loc=UTC`, `time_zone='+00:00'`, `clientFoundRows=true` (RowsAffected counts matched rows like PostgreSQL), `sql_mode='ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'` (valid on both servers; no `NO_ZERO_DATE`, so a zero `time.Time` round-trips as `0000-00-00`). `READ-COMMITTED` isolation through `transaction_isolation` (MySQL) or `tx_isolation` (MariaDB 10.6), chosen after a probe connection reads `VERSION()`.
 - `datetime(6)` for all time columns (`DefaultDatetimePrecision: 6`), matching PostgreSQL microseconds.
 - Existing PostgreSQL and SQLite behaviour and schema unchanged. Their rendered index SQL is frozen by a golden test (Task 3).
 - Release binaries stay `CGO_ENABLED=0` (go-sql-driver is pure Go). Never import `gorm.io/driver/sqlite` or `mattn/go-sqlite3`.

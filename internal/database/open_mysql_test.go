@@ -1,6 +1,7 @@
 package database_test
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -378,6 +379,58 @@ func TestOpenMySQL_RowsAffectedCountsMatchedRows(t *testing.T) {
 	res := db.Exec("UPDATE organizations SET name = name WHERE id = ?", org.ID)
 	require.NoError(t, res.Error)
 	assert.EqualValues(t, 1, res.RowsAffected)
+}
+
+func TestOpenMySQL_ReadCommittedOnEveryConnection(t *testing.T) {
+	db := openMySQLEmpty(t)
+	// MariaDB 10.6 has no transaction_isolation alias.
+	query := "SELECT @@transaction_isolation"
+	if isMariaDB(t, db) {
+		query = "SELECT @@tx_isolation"
+	}
+
+	require.NoError(t, db.Connection(func(conn *gorm.DB) error {
+		var level string
+		require.NoError(t, conn.Raw(query).Row().Scan(&level))
+		assert.Equal(t, "READ-COMMITTED", level)
+		return nil
+	}))
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conns := make([]*sql.Conn, 4)
+	for i := range conns {
+		conns[i], err = sqlDB.Conn(ctx)
+		require.NoError(t, err)
+		defer func(c *sql.Conn) { _ = c.Close() }(conns[i])
+	}
+	for i, c := range conns {
+		var level string
+		require.NoError(t, c.QueryRowContext(ctx, query).Scan(&level))
+		assert.Equal(t, "READ-COMMITTED", level, "connection %d", i)
+	}
+	assert.GreaterOrEqual(t, sqlDB.Stats().OpenConnections, len(conns))
+
+	var wg sync.WaitGroup
+	levels := make(chan string, 8)
+	for i := 0; i < cap(levels); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var level string
+			assert.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+				return tx.Raw(query).Row().Scan(&level)
+			}))
+			levels <- level
+		}()
+	}
+	wg.Wait()
+	close(levels)
+	for level := range levels {
+		assert.Equal(t, "READ-COMMITTED", level)
+	}
 }
 
 func TestOpenMySQL_NestedTransactionRollsBackToSavepoint(t *testing.T) {

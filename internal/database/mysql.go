@@ -38,10 +38,14 @@ var mysqlColumnSuffixes = map[string]string{
 	"user_passkeys.credential_id": " CHARACTER SET ascii COLLATE ascii_bin", // base64url, size 1400
 }
 
-// openMySQL connects, rejects unsupported servers and databases, and returns
-// a dialector on that connection.
+// openMySQL rejects unsupported servers and databases, then returns a
+// dialector on a pool whose connections run at READ COMMITTED.
 func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
-	dsn, err := mysqlDSN(cfg)
+	mariaDB, err := probeMySQL(cfg)
+	if err != nil {
+		return nil, err
+	}
+	dsn, err := mysqlDSN(cfg, mysqlIsolationVar(mariaDB))
 	if err != nil {
 		return nil, err
 	}
@@ -51,19 +55,9 @@ func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var version, charset string
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-	if err := sqlDB.QueryRowContext(ctx, "SELECT VERSION(), @@character_set_database").Scan(&version, &charset); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("failed to read server version: %w", err)
-	}
-	mariaDB, err := checkMySQLServer(version, charset)
-	if err != nil {
-		_ = sqlDB.Close()
-		return nil, err
 	}
 	types := mysqlTypes
 	if mariaDB {
@@ -80,7 +74,45 @@ func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	}, nil
 }
 
-func mysqlDSN(cfg *config.DatabaseConfig) (string, error) {
+// probeMySQL checks the server and database on a throwaway connection and
+// reports whether the server is MariaDB.
+func probeMySQL(cfg *config.DatabaseConfig) (mariaDB bool, err error) {
+	dsn, err := mysqlDSN(cfg, "")
+	if err != nil {
+		return false, err
+	}
+	probe, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = probe.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := probe.PingContext(ctx); err != nil {
+		return false, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	var version, charset string
+	if err := probe.QueryRowContext(ctx, "SELECT VERSION(), @@character_set_database").Scan(&version, &charset); err != nil {
+		return false, fmt.Errorf("failed to read server version: %w", err)
+	}
+	return checkMySQLServer(version, charset)
+}
+
+// mysqlIsolationVar names the session isolation variable: MySQL 8 knows only
+// transaction_isolation, MariaDB 10.6 only tx_isolation. InnoDB defaults to
+// REPEATABLE READ, whose gap locks can block or deadlock locking reads (SKIP
+// LOCKED pickups, DELETE ... LIMIT prunes) that PostgreSQL's READ COMMITTED
+// lets through.
+func mysqlIsolationVar(mariaDB bool) string {
+	if mariaDB {
+		return "tx_isolation"
+	}
+	return "transaction_isolation"
+}
+
+// mysqlDSN builds the connection DSN; if isolationVar is set, every new
+// connection sets it to READ-COMMITTED.
+func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string) (string, error) {
 	tls, err := mysqlTLS(cfg.SSLMode)
 	if err != nil {
 		return "", err
@@ -93,6 +125,9 @@ func mysqlDSN(cfg *config.DatabaseConfig) (string, error) {
 	c.ClientFoundRows = true // RowsAffected counts matched rows, as on PostgreSQL
 	c.TLSConfig = tls
 	c.Params = map[string]string{"time_zone": "'+00:00'", "sql_mode": mysqlSQLMode}
+	if isolationVar != "" {
+		c.Params[isolationVar] = "'READ-COMMITTED'"
+	}
 	return c.FormatDSN(), nil
 }
 
