@@ -1,5 +1,9 @@
 // Package dialect returns SQL fragments for the database driver in use, so
 // handlers don't hard-code PostgreSQL syntax.
+//
+// Column, key and unit arguments are pasted into the SQL unescaped: they must
+// be constant identifiers or fields checked against an allow-list, never user
+// input. Only the values bound to the returned placeholders may come from users.
 package dialect
 
 import (
@@ -9,6 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
+// Dialect builds SQL fragments for one driver. Its column and key arguments
+// must never be user input (see the package doc).
 type Dialect struct{ name string }
 
 // Of returns the dialect of db's driver ("postgres", "sqlite", ...).
