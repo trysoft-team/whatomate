@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,7 +43,7 @@ func TestCreateBooking_HTTPSuccess2xx(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	m := &Manager{log: testLogger()}
-	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "263774166961"}}
+	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "15550001234"}}
 	res, xfer, hang := m.runAICallTool(
 		createBookingDef(srv.URL, "POST"),
 		`{"date":"2026-09-25","time":"14:00","guest_name":"Ada"}`,
@@ -69,7 +71,7 @@ func TestCreateBooking_HTTPFailNon2xx(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	m := &Manager{log: testLogger()}
-	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "263774166961"}}
+	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "15550001234"}}
 	res, _, _ := m.runAICallTool(
 		createBookingDef(srv.URL, "POST"),
 		`{"date":"2026-09-25","time":"14:00","guest_name":"Ada"}`,
@@ -85,10 +87,15 @@ func TestCreateBooking_HTTPFailNon2xx(t *testing.T) {
 	assert.Contains(t, payload["message"], "failed")
 }
 
+// LIVE_BOOKING_URL is a public URL of a running Whatomate, e.g. an ngrok tunnel.
 func TestCreateBooking_LiveNgrokReportsFail(t *testing.T) {
-	url := "https://overfit-jessika-bicephalous.ngrok-free.dev/api/bookings"
+	base := os.Getenv("LIVE_BOOKING_URL")
+	if base == "" {
+		t.Skip("set LIVE_BOOKING_URL to run against a live endpoint")
+	}
+	url := strings.TrimRight(base, "/") + "/api/bookings"
 	m := &Manager{log: testLogger()}
-	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "263774166961"}}
+	ctx := &IVRContext{Variables: map[string]string{"caller_phone": "15550001234"}}
 	def := createBookingDef(url, "POST")
 	if def.HTTP.Headers == nil {
 		def.HTTP.Headers = map[string]string{}

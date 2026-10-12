@@ -29,7 +29,7 @@ func TestLivePiperGenerate(t *testing.T) {
 		OpusencBinary: opusenc,
 		AudioDir:      dir,
 	}
-	name, err := p.Generate("Welcome to Shakim Beauty Bar. Soft glam is twenty dollars.")
+	name, err := p.Generate("Welcome to the salon. Soft glam is twenty dollars.")
 	require.NoError(t, err)
 	require.FileExists(t, filepath.Join(dir, name))
 	info, err := os.Stat(filepath.Join(dir, name))

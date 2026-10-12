@@ -53,10 +53,10 @@ func TestResolveSendMessagePhone(t *testing.T) {
 	))
 
 	// Tool arg phone overrides caller when config to is empty / unresolved
-	assert.Equal(t, "263774166961", resolveSendMessagePhone(
+	assert.Equal(t, "15550001234", resolveSendMessagePhone(
 		&IVRNode{Config: map[string]any{"to": "{{phone}}"}},
 		session,
-		map[string]string{"phone": "263774166961", "caller_phone": "+15550001"},
+		map[string]string{"phone": "15550001234", "caller_phone": "+15550001"},
 	))
 	assert.Equal(t, "+15550001", resolveSendMessagePhone(
 		&IVRNode{Config: map[string]any{"to": "{{phone}}"}},

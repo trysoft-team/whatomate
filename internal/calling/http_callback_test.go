@@ -10,12 +10,12 @@ func TestInterpolateTemplate_CallerVars(t *testing.T) {
 	got := interpolateTemplate(
 		`{"phone":"{{caller_phone}}","name":"{{caller_name}}","call":"{{call_id}}"}`,
 		map[string]string{
-			"caller_phone": "263774166961",
-			"caller_name":  "Trynos Muchemwa",
+			"caller_phone": "15550001234",
+			"caller_name":  "Test Customer",
 			"call_id":      "wacid.123",
 		},
 	)
-	assert.Equal(t, `{"phone":"263774166961","name":"Trynos Muchemwa","call":"wacid.123"}`, got)
+	assert.Equal(t, `{"phone":"15550001234","name":"Test Customer","call":"wacid.123"}`, got)
 }
 
 func TestWithCallerName(t *testing.T) {

@@ -48,7 +48,7 @@ func TestProcessTemplate_InboundIsRawJSON(t *testing.T) {
 		"object": "whatsapp_business_account",
 		"entry": []any{
 			map[string]any{
-				"id": "1766680270548288",
+				"id": "100000000000001",
 				"changes": []any{
 					map[string]any{
 						"field": "messages",
@@ -56,7 +56,7 @@ func TestProcessTemplate_InboundIsRawJSON(t *testing.T) {
 							"messaging_product": "whatsapp",
 							"metadata": map[string]any{
 								"display_phone_number": "15557693047",
-								"phone_number_id":      "661577767046854",
+								"phone_number_id":      "200000000000002",
 							},
 							"contacts": []any{
 								map[string]any{
@@ -83,7 +83,7 @@ func TestProcessTemplate_InboundIsRawJSON(t *testing.T) {
 	got := processTemplate("{{{inbound}}}", data)
 	assert.Contains(t, got, `"object":"whatsapp_business_account"`)
 	assert.Contains(t, got, `"messaging_product":"whatsapp"`)
-	assert.Contains(t, got, `"phone_number_id":"661577767046854"`)
+	assert.Contains(t, got, `"phone_number_id":"200000000000002"`)
 	assert.Equal(t, "Hello", processTemplate("{{inbound.entry[0].changes[0].value.messages[0].text.body}}", data))
 	assert.NotContains(t, got, "message_type")
 	assert.NotContains(t, got, "button_id")
@@ -118,8 +118,8 @@ func TestMetaInboundMessageMap_MatchesMetaMessage(t *testing.T) {
 func TestBuildMetaWebhookInboundEnvelope_FullBody(t *testing.T) {
 	t.Parallel()
 	msg := IncomingTextMessage{
-		From:       "263774166961",
-		FromUserID: "ZW.26428647883422989",
+		From:       "15550001234",
+		FromUserID: "ZW.10000000000000001",
 		ID:         "wamid.test",
 		Timestamp:  "1790293174",
 		Type:       "text",
@@ -129,28 +129,28 @@ func TestBuildMetaWebhookInboundEnvelope_FullBody(t *testing.T) {
 	}
 	contacts := []map[string]any{
 		{
-			"profile": map[string]any{"name": "Trynos Muchemwa"},
-			"wa_id":   "263774166961",
-			"user_id": "ZW.26428647883422989",
+			"profile": map[string]any{"name": "Test Customer"},
+			"wa_id":   "15550001234",
+			"user_id": "ZW.10000000000000001",
 		},
 	}
 	env := buildMetaWebhookInboundEnvelope(
 		"whatsapp_business_account",
-		"1766680270548288",
+		"100000000000001",
 		"whatsapp",
 		"15557693047",
-		"661577767046854",
+		"200000000000002",
 		contacts,
 		msg,
 	)
 	assert.Equal(t, "whatsapp_business_account", env["object"])
 	got := processTemplate("{{{inbound}}}", map[string]any{"inbound": env})
 	assert.Contains(t, got, `"object":"whatsapp_business_account"`)
-	assert.Contains(t, got, `"id":"1766680270548288"`)
-	assert.Contains(t, got, `"phone_number_id":"661577767046854"`)
+	assert.Contains(t, got, `"id":"100000000000001"`)
+	assert.Contains(t, got, `"phone_number_id":"200000000000002"`)
 	assert.Contains(t, got, `"display_phone_number":"15557693047"`)
 	assert.Contains(t, got, `"body":"Xxx"`)
-	assert.Contains(t, got, `"from_user_id":"ZW.26428647883422989"`)
+	assert.Contains(t, got, `"from_user_id":"ZW.10000000000000001"`)
 	assert.Equal(t, "Xxx", processTemplate("{{inbound.entry[0].changes[0].value.messages[0].text.body}}", map[string]any{"inbound": env}))
 }
 
