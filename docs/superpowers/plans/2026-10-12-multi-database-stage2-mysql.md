@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Whatomate runs on MySQL 8.0.13+ or MariaDB 10.6+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite, MySQL and MariaDB.
+**Goal:** Whatomate runs on MySQL 8.0.13+ or MariaDB 10.6+ with `[database] driver = "mysql"`, with the full Go test suite green on PostgreSQL, SQLite and MySQL locally (MAMP), and on MySQL and MariaDB in CI.
 
 **Architecture:** Same as stage 1. For `mysql`, `database.OpenDialector` opens the connection itself, reads `VERSION()` and the database character set, rejects unsupported servers, and returns a `gorm.io/driver/mysql` dialector (on that connection) wrapped in `portableDialector`. Column types: `uuid` → `char(36)`, `text` → `longtext`, `jsonb` → `json` on MySQL and `longtext` on MariaDB (MariaDB's `JSON` is an alias that reads back as `longtext`). A MySQL migrator wrapper turns literal defaults on JSON/TEXT columns into expression defaults and keeps repeat migrations from altering them. Index definitions become structured so each driver renders its own SQL; partial unique indexes use a hidden generated column on MySQL/MariaDB. `dialect` gains explicit MySQL branches (shared by MariaDB; GORM names both `mysql`) and rejects unknown driver names (bead fwb.7).
 
-**Tech Stack:** Go 1.25, GORM v1.25.7, `gorm.io/driver/mysql` v1.5.7 (requires `gorm.io/gorm v1.25.7`, `github.com/go-sql-driver/mysql v1.7.0`: no GORM upgrade). Local servers: MAMP Pro MySQL 8.0.44 on `127.0.0.1:3306`; MariaDB 10.6 test container on `127.0.0.1:3308` (Task 2). CI: `mysql:8.4` and `mariadb:10.6`.
+**Tech Stack:** Go 1.25, GORM v1.25.7, `gorm.io/driver/mysql` v1.5.7 (requires `gorm.io/gorm v1.25.7`, `github.com/go-sql-driver/mysql v1.7.0`: no GORM upgrade). Local server: MAMP Pro MySQL 8.0.44 on `127.0.0.1:3306`. No local MariaDB for now: MariaDB is verified only by the CI matrix (`mysql:8.4`, `mariadb:10.6`), and every live test must also pass there.
 
 **Spec:** `docs/superpowers/specs/2026-10-11-multi-database-design.md`
 
@@ -27,19 +27,18 @@ Branch: `feat/multi-database-stage2` (off `feat/multi-database`). Merge back int
 - Existing PostgreSQL and SQLite behaviour and schema unchanged. Their rendered index SQL is frozen by a golden test (Task 3).
 - Release binaries stay `CGO_ENABLED=0` (go-sql-driver is pure Go). Never import `gorm.io/driver/sqlite` or `mattn/go-sqlite3`.
 - Go stays at 1.25 (`go 1.25.0`). Do not bump `gorm.io/gorm`.
-- Never point tests at the app database or at any MAMP database other than `whatomate_test*`. `TEST_MYSQL_DSN`'s database name must start with `whatomate_test` (testutil panics otherwise); scratch databases are named `whatomate_test_<hex>` and dropped after the test.
+- Never point tests at the app database or at any MAMP database other than `whatomate_test*`. The MAMP server holds ~50 unrelated databases and the `TEST_MYSQL_DSN` user has server-wide DROP: `TEST_MYSQL_DSN`'s database name must start with `whatomate_test` (testutil panics otherwise); scratch databases are named `whatomate_test_<8 hex>`, and the cleanup that drops them must refuse any name not matching `^whatomate_test_[0-9a-f]{8}$`. Never run `DROP DATABASE` on anything else. The `whatomate` database on MAMP is reserved for running the app; tests never touch it.
 - Never print `TEST_MYSQL_DSN` (it holds a password). Load it with `set -a && . ./.env && set +a`.
 - Test commands:
   - PostgreSQL: `set -a && . ./.env && set +a; TEST_DATABASE_URL="postgres://whatomate:${POSTGRES_PASSWORD}@127.0.0.1:5433/whatomate_test?sslmode=disable" TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
   - SQLite: `TEST_DB_DRIVER=sqlite TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
   - MySQL (MAMP): `set -a && . ./.env && set +a; TEST_DB_DRIVER=mysql TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
-  - MariaDB: `TEST_DB_DRIVER=mysql TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test' TEST_REDIS_URL="redis://127.0.0.1:6379/15" go test -p 1 -count=1 ./...`
-- The MariaDB test container is `whatomate_mariadb_test` (compose profile `mariadb-test`). Never stop or recreate any other container, and never restart or reconfigure MAMP.
+- Never start, stop or recreate Docker containers in this stage, and never restart or reconfigure MAMP.
 - Commit after each task on `feat/multi-database-stage2`. Local git only, never push.
 
 ## Review Focus
 
-1. **Soft-deleted rows and unique indexes**: removing a team member, then adding them back, must work on MySQL and MariaDB; two active memberships must still be rejected. Pinned in Task 3.
+1. **Soft-deleted rows and unique indexes**: removing a team member, then adding them back, must work on MySQL (and MariaDB in CI); two active memberships must still be rejected. Pinned in Task 3.
 2. **JSON column defaults**: a contact created without tags reads back `[]`, not `null`. Pinned in Task 2 (`TestOpenMySQL_JSONDefaults`).
 3. **Repeat boots**: a second migration must issue no `ALTER TABLE` on either server. Pinned in Task 2 (`TestOpenMySQL_RepeatMigrationAltersNothing`).
 4. **Times**: a handler passing a local-zone `time.Now()` still matches UTC rows; microseconds survive a round trip; zero `time.Time` round-trips. Pinned in Task 2.
@@ -183,35 +182,11 @@ func (d Dialect) AscNullsFirst(col string) string
 ### Task 2: MySQL/MariaDB connection, column types and migrator
 
 **Files:**
-- Modify: `go.mod`/`go.sum`, `internal/database/open.go`, `internal/database/portable_dialector.go`, `docker-compose.yml`
+- Modify: `go.mod`/`go.sum`, `internal/database/open.go`, `internal/database/portable_dialector.go`
 - Create: `internal/database/mysql.go` (DSN, server check, migrator wrapper)
 - Test: `internal/database/mysql_test.go` (package `database`, unit), `internal/database/open_mysql_test.go` (package `database_test`, live; skips without `TEST_MYSQL_DSN`)
 
-- [ ] **Step 1: MariaDB test container**
-
-Add to `docker-compose.yml` (profile-gated so `docker compose up` never starts it):
-
-```yaml
-  mariadb-test:
-    image: mariadb:10.6
-    container_name: whatomate_mariadb_test
-    profiles: ["mariadb-test"]
-    environment:
-      MARIADB_ROOT_PASSWORD: whatomate_test
-      MARIADB_DATABASE: whatomate_test
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
-    ports:
-      - "127.0.0.1:3308:3306"
-    tmpfs:
-      - /var/lib/mysql
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-```
-
-Run `docker compose --profile mariadb-test up -d mariadb-test`; wait until `docker inspect -f '{{.State.Health.Status}}' whatomate_mariadb_test` is `healthy`. The password is a throwaway for a loopback-only, in-memory test container. Confirm `TEST_MYSQL_DSN` is set in `.env` without printing it: `rg -c '^TEST_MYSQL_DSN=' .env`.
+- [ ] **Step 1:** Confirm `TEST_MYSQL_DSN` is set in `.env` without printing it: `rg -c '^TEST_MYSQL_DSN=' .env` prints `1`.
 
 - [ ] **Step 2: `go get gorm.io/driver/mysql@v1.5.7`**; confirm `go.mod` still has `gorm.io/gorm v1.25.7` and `go 1.25.0`.
 
@@ -277,7 +252,7 @@ func TestNormalizeMySQLDefault(t *testing.T) {
 
 - [ ] **Step 4: Write the failing live tests** (`open_mysql_test.go`)
 
-`openMySQL(t)` parses `TEST_MYSQL_DSN` (skip if empty) with `mysqldrv.ParseDSN`, creates a scratch database `whatomate_test_<8 random hex>` with `CREATE DATABASE ... CHARACTER SET utf8mb4` over a plain `sql.Open("mysql", ...)` (DSN with empty `DBName`), drops it in `t.Cleanup`, and returns `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name: <scratch>, SSLMode: "disable"}, false)` after `RunMigrationWithProgress`. A helper `isMariaDB(db)` reads `VERSION()`. Tests (all run against MAMP MySQL and MariaDB):
+`openMySQL(t)` parses `TEST_MYSQL_DSN` (skip if empty) with `mysqldrv.ParseDSN`, creates a scratch database `whatomate_test_<8 random hex>` with `CREATE DATABASE ... CHARACTER SET utf8mb4` over a plain `sql.Open("mysql", ...)` (DSN with empty `DBName`), drops it in `t.Cleanup`, and returns `database.Open(&config.DatabaseConfig{Driver: "mysql", Host, Port, User, Password, Name: <scratch>, SSLMode: "disable"}, false)` after `RunMigrationWithProgress`. A helper `isMariaDB(db)` reads `VERSION()`. Tests (MAMP MySQL locally; MySQL and MariaDB in CI):
 
 - `TestOpenMySQL_MigratesAndSeeds`: `dialect.Of(db).Name() == "mysql"`; admin seeded; `information_schema.columns` shows `contacts.id` = `char(36)`, `contacts.tags` = `json` (MySQL) or `longtext` (MariaDB), `messages.content` = `longtext`, `contacts.created_at` = `datetime(6)`.
 - `TestOpenMySQL_RepeatMigrationAltersNothing`: same capture callback as the SQLite test, pattern `(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)`; a second `RunMigrationWithProgress` captures nothing.
@@ -287,9 +262,9 @@ func TestNormalizeMySQLDefault(t *testing.T) {
 - `TestOpenMySQL_RowsAffectedCountsMatchedRows`: `UPDATE organizations SET name = name WHERE id = ?` reports `RowsAffected == 1`.
 - `TestOpenMySQL_NestedTransactionRollsBackToSavepoint`: as the SQLite version.
 
-- [ ] **Step 5: Run, expect FAIL** (MAMP, then MariaDB)
+- [ ] **Step 5: Run, expect FAIL**
 
-Run: `set -a && . ./.env && set +a; go test ./internal/database/ -run 'MySQL'` and `TEST_MYSQL_DSN='root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test' go test ./internal/database/ -run 'MySQL'`
+Run: `set -a && . ./.env && set +a; go test -count=1 ./internal/database/ -run 'MySQL'`
 
 - [ ] **Step 6: Implement**
 
@@ -403,7 +378,7 @@ If `TestOpenMySQL_RepeatMigrationAltersNothing` still captures ALTERs on either 
 
 Update `TestOpen_RejectsUnsupportedDrivers` to `{"sqlserver", "oracle"}`.
 
-- [ ] **Step 7: Run, expect PASS**: both runs from Step 5, then the SQLite and PostgreSQL `./internal/database/...` runs.
+- [ ] **Step 7: Run, expect PASS**: the run from Step 5, then the SQLite and PostgreSQL `./internal/database/...` runs. MariaDB-only branches (`mariaDBTypes`, version check) are covered by unit tests here and live by CI.
 - [ ] **Step 8: Commit** `feat(database): MySQL/MariaDB driver, column types and migrator`
 
 ---
@@ -452,7 +427,7 @@ func TestIndexes_MySQL(t *testing.T) {
 }
 ```
 
-Live (`open_mysql_test.go`, both servers):
+Live (`open_mysql_test.go`; MAMP locally, MySQL and MariaDB in CI):
 
 - `TestOpenMySQL_PartialUniqueIndexes`: add a team member, soft-delete it, add the same `(team_id, user_id)` again → succeeds; add another active duplicate → error. Same for `user_organizations`. For `ivr_flows`: two inactive call-start flows for one account → allowed; two active → error.
 - `TestOpenMySQL_IndexesIdempotent`: `database.CreateIndexes(db)` twice → no error, and GORM's `Find` on `TeamMember` still works (the hidden column is ignored).
@@ -504,7 +479,7 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
 
 `createIndex(db, s indexStmt) error`: on MySQL, skip when it already exists. For an index, check `information_schema.statistics` (`table_schema = DATABASE() AND table_name = ? AND index_name = ?`); for a column, check `information_schema.columns`. Otherwise run `db.Exec(s.sql)`. `CreateIndexes` and the `RunMigrationWithProgress` loop both call `createIndex`.
 
-- [ ] **Step 5: Run, expect PASS** on PostgreSQL, SQLite, MAMP MySQL and MariaDB for `./internal/database/...`
+- [ ] **Step 5: Run, expect PASS** on PostgreSQL, SQLite and MAMP MySQL for `./internal/database/...`
 - [ ] **Step 6: Commit** `feat(database): render indexes per driver; generated column for MySQL partial unique indexes`
 
 ---
@@ -567,19 +542,16 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
   # Uses TEST_MYSQL_DSN from the environment (MySQL 8.0.13+ or MariaDB 10.6+).
   test-mysql:
   	TEST_DB_DRIVER=mysql TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
-
-  test-mariadb:
-  	TEST_DB_DRIVER=mysql TEST_MYSQL_DSN="root:whatomate_test@tcp(127.0.0.1:3308)/whatomate_test" TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
   ```
 
 - [ ] **Step 3: CI.** Add a `test-mysql` job copied from `test-sqlite`, with a matrix over `mysql:8.4` and `mariadb:10.6` as the `db` service (root password `whatomate_test`, database `whatomate_test`, port `3306:3306`, MySQL health cmd `mysqladmin ping -h 127.0.0.1 -pwhatomate_test`, MariaDB `healthcheck.sh --connect --innodb_initialized`; set both `MYSQL_*` and `MARIADB_*` env names via the matrix). Env `TEST_DB_DRIVER: mysql`, `TEST_MYSQL_DSN: root:whatomate_test@tcp(localhost:3306)/whatomate_test`. Same `-race -p 1 -timeout 25m` and `timeout-minutes: 35`. Not optional.
 
-- [ ] **Step 4: Run the full suite on MAMP MySQL, then MariaDB**, and fix every failure. Rules:
+- [ ] **Step 4: Run the full suite on MAMP MySQL** and fix every failure; keep fixes valid on MariaDB 10.6 too (check the MariaDB docs for any function you add). Rules:
   - Fix at the source with `dialect` helpers or a driver switch; never weaken an assertion or skip a test on MySQL. A test may change only if it asserted a PostgreSQL-specific representation (for example, exact JSON text formatting); say so in the commit message.
   - Expected categories: JSON text from MySQL is normalised (key order, `", "` spacing); `JSON_UNQUOTE` of a JSON `null` is the string `"null"`; booleans from raw queries come back as `int64` (use the existing `groupLabel`/`booleanFilterFields` path); reserved words used unquoted in raw SQL; `ONLY_FULL_GROUP_BY` on raw GROUP BY queries.
   - Anything that cannot be fixed without a design decision: stop and report it.
 
-- [ ] **Step 5: Run all four suites green**, then MySQL with `-race`.
+- [ ] **Step 5: Run all three local suites green**, then MySQL with `-race`.
 - [ ] **Step 6: Commit** `test: MySQL/MariaDB harness, make targets, CI job` (plus one commit per fix group)
 
 ---
@@ -602,7 +574,8 @@ Move every `CREATE ... INDEX` statement into a package-level `var indexDefs = []
 
 ### Task 7: Final verification and merge
 
-- [ ] PostgreSQL, SQLite, MAMP MySQL and MariaDB suites all green (commands above); MySQL with `-race`.
+- [ ] PostgreSQL, SQLite and MAMP MySQL suites all green (commands above); MySQL with `-race`. Report that MariaDB is verified only once CI runs (never pushed from here).
+- [ ] `bd create "Multi-db: run the MariaDB suite locally (no local server yet)" -t task -p 3 --parent whatomate-fwb`
 - [ ] `go vet ./...`, `golangci-lint run` (if installed), `CGO_ENABLED=0 go build ./...`, `goreleaser release --snapshot --clean --skip=publish` builds.
 - [ ] Manual end-to-end on MAMP: scratch database `whatomate_test_e2e`; config copied from `config.local.toml` to `/tmp/whatomate-mysql/config.toml` (0600) with `driver = "mysql"` and the test user's credentials, server port 8092, Redis db 13. Start the server as a background shell; log in; create a contact with tags, filter by tag, search by name, open the dashboard, rename a tag; restart and confirm no `ALTER TABLE` in the debug log. Stop it, drop `whatomate_test_e2e`, remove `/tmp/whatomate-mysql`. No Meta-changing actions, no messages to real contacts.
 - [ ] Final whole-branch code review; fix findings.
