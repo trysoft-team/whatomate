@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/assignment"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/utils"
 	"github.com/trysoft/whatomate/internal/websocket"
@@ -895,9 +896,11 @@ func (a *App) PickNextTransfer(r *fastglue.Request) error {
 	}()
 
 	// Build query for picking transfer with row-level locking
-	query := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-		Where("organization_id = ? AND status = ? AND agent_id IS NULL", orgID, models.TransferStatusActive).
+	query := tx.Where("organization_id = ? AND status = ? AND agent_id IS NULL", orgID, models.TransferStatusActive).
 		Order("transferred_at ASC")
+	if dialect.Of(tx).SupportsSkipLocked() {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
+	}
 
 	if teamIDStr != "" {
 		// Pick from specific team
