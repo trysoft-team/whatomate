@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -171,6 +172,49 @@ func TestOpenSQLite_QueryWhileRowsOpen(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	assert.Positive(t, seen)
+}
+
+func TestOpenSQLite_NewFileIsPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.db")
+	db, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: path}, false)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	require.NoError(t, db.Exec("CREATE TABLE t (x INTEGER)").Error)
+	require.NoError(t, db.Exec("INSERT INTO t VALUES (1)").Error)
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file modes")
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(p)
+		if p != path && errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), p)
+	}
+}
+
+func TestOpenSQLite_KeepsExistingFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file modes")
+	}
+	path := filepath.Join(t.TempDir(), "w.db")
+	require.NoError(t, os.WriteFile(path, nil, 0o640))
+	require.NoError(t, os.Chmod(path, 0o640))
+	db, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: path}, false)
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
 }
 
 func TestOpenSQLite_PoolSize(t *testing.T) {

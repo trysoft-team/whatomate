@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -23,6 +24,9 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode,
 		)), nil
 	case config.DriverSQLite:
+		if err := createSQLiteFile(cfg.Path); err != nil {
+			return nil, err
+		}
 		dsn := cfg.Path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 		sqlDB, err := sql.Open("sqlite", dsn)
 		if err != nil {
@@ -48,6 +52,17 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 		}, nil
 	}
 	return nil, fmt.Errorf("database driver %q is not supported yet", cfg.Driver)
+}
+
+// createSQLiteFile creates the database file owner-only if it does not exist yet.
+// SQLite gives the -wal and -shm files the main file's mode. An existing file
+// keeps whatever mode the operator gave it.
+func createSQLiteFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create sqlite database file: %w", err)
+	}
+	return f.Close()
 }
 
 // Open connects to the configured database.
