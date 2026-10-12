@@ -11,9 +11,10 @@ import (
 )
 
 func (a *App) getQueueItems(orgID uuid.UUID, filters []FilterInput) []QueueItem {
+	d := dialect.Of(a.DB)
 	query := a.DB.Table("agent_transfers t").
 		Select(`t.id, t.contact_id, COALESCE(c.profile_name, c.phone_number) as label, t.source,
-			EXTRACT(EPOCH FROM (NOW() - t.transferred_at))/60 as wait_mins, t.transferred_at`).
+			`+d.MinutesBetween("t.transferred_at", d.Now())+` as wait_mins, t.transferred_at`).
 		Joins("LEFT JOIN contacts c ON c.id = t.contact_id").
 		Where("t.organization_id = ? AND t.status = ?", orgID, models.TransferStatusActive).
 		Order("t.transferred_at ASC").
@@ -21,7 +22,7 @@ func (a *App) getQueueItems(orgID uuid.UUID, filters []FilterInput) []QueueItem 
 
 	for _, f := range filters {
 		if f.Field == "team_id" || f.Field == "agent_id" || f.Field == "source" {
-			condition, values, ok := buildFilterSQL(dialect.Of(a.DB), "transfers", f)
+			condition, values, ok := buildFilterSQL(d, "transfers", f)
 			if ok {
 				query = query.Where("t."+condition, values...)
 			}
@@ -222,17 +223,18 @@ func (a *App) getHeatmapData(orgID uuid.UUID, widget models.Widget, filters []Fi
 		return HeatmapData{XLabels: xLabels, YLabels: yLabels, Cells: cells}
 	}
 
+	d := dialect.Of(a.DB)
 	query := fmt.Sprintf(`
-		SELECT EXTRACT(DOW FROM %s)::int as dow, EXTRACT(HOUR FROM %s)::int as hour, COUNT(*) as count
+		SELECT %s as dow, %s as hour, COUNT(*) as count
 		FROM %s
 		WHERE organization_id = ? AND %s >= ? AND %s <= ?
-	`, dateField, dateField, tableName, dateField, dateField)
+	`, d.DayOfWeek(dateField), d.HourOf(dateField), tableName, dateField, dateField)
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(d, widget.DataSource, query, args, filters)
 	if widget.DataSource == "media" {
 		query += ` AND (message_type IN ('image','audio','video','document','sticker','voice') OR (media_url IS NOT NULL AND media_url != ''))`
 	}
-	query += fmt.Sprintf(` GROUP BY EXTRACT(DOW FROM %s), EXTRACT(HOUR FROM %s)`, dateField, dateField)
+	query += fmt.Sprintf(` GROUP BY %s, %s`, d.DayOfWeek(dateField), d.HourOf(dateField))
 
 	type row struct {
 		Dow   int

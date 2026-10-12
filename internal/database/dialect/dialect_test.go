@@ -1,6 +1,7 @@
 package dialect_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -64,4 +65,17 @@ func TestDBTimeScan(t *testing.T) {
 	require.NoError(t, d.Scan(nil))
 	assert.True(t, d.IsZero())
 	assert.Error(t, d.Scan("not a date"))
+}
+
+func TestDBTimeValueAndJSON(t *testing.T) {
+	at := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	v, err := dialect.DBTime{Time: at}.Value()
+	require.NoError(t, err)
+	assert.Equal(t, at, v)
+
+	got, err := json.Marshal(dialect.DBTime{Time: at})
+	require.NoError(t, err)
+	want, err := json.Marshal(at)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), string(got))
 }

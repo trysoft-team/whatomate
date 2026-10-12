@@ -914,14 +914,15 @@ func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []Filt
 	}
 
 	// Build raw query for daily aggregation
+	d := dialect.Of(a.DB)
 	query := fmt.Sprintf(`
-		SELECT DATE_TRUNC('day', %s) as date, COUNT(*) as count
+		SELECT %s as date, COUNT(*) as count
 		FROM %s
 		WHERE organization_id = ? AND %s >= ? AND %s <= ?
-	`, dateField, tableName, dateField, dateField)
+	`, d.DateTrunc("day", dateField), tableName, dateField, dateField)
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(d, widget.DataSource, query, args, filters)
 
 	switch widget.DataSource {
 	case "media":
@@ -936,10 +937,10 @@ func (a *App) getChartData(orgID uuid.UUID, widget models.Widget, filters []Filt
 		query += fmt.Sprintf(` AND team_members.role = '%s'`, models.TeamRoleAgent)
 	}
 
-	query += fmt.Sprintf(" GROUP BY DATE_TRUNC('day', %s) ORDER BY date ASC", dateField)
+	query += fmt.Sprintf(" GROUP BY %s ORDER BY date ASC", d.DateTrunc("day", dateField))
 
 	type DailyCount struct {
-		Date  time.Time
+		Date  dialect.DBTime
 		Count int64
 	}
 
@@ -1106,19 +1107,20 @@ func (a *App) getGroupedTimeSeriesData(orgID uuid.UUID, widget models.Widget, fi
 		return result
 	}
 
+	d := dialect.Of(a.DB)
 	query := fmt.Sprintf(`
-		SELECT DATE_TRUNC('day', %s) as date, %s as group_value, COUNT(*) as count
+		SELECT %s as date, %s as group_value, COUNT(*) as count
 		FROM %s
 		WHERE organization_id = ? AND %s >= ? AND %s <= ?
-	`, dateField, widget.GroupByField, tableName, dateField, dateField)
+	`, d.DateTrunc("day", dateField), widget.GroupByField, tableName, dateField, dateField)
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(dialect.Of(a.DB), widget.DataSource, query, args, filters)
+	query, args = appendFilterSQL(d, widget.DataSource, query, args, filters)
 
-	query += fmt.Sprintf(" GROUP BY DATE_TRUNC('day', %s), %s ORDER BY date ASC", dateField, widget.GroupByField)
+	query += fmt.Sprintf(" GROUP BY %s, %s ORDER BY date ASC", d.DateTrunc("day", dateField), widget.GroupByField)
 
 	type GroupedRow struct {
-		Date       time.Time
+		Date       dialect.DBTime
 		GroupValue string
 		Count      int64
 	}
@@ -1186,8 +1188,9 @@ func (a *App) getCampaignMessageStatusTimeSeries(orgID uuid.UUID, filters []Filt
 		Datasets: make([]GroupedSeriesDataset, 0),
 	}
 
+	d := dialect.Of(a.DB)
 	query := `
-		SELECT DATE_TRUNC('day', created_at) as date,
+		SELECT ` + d.DateTrunc("day", "created_at") + ` as date,
 			COALESCE(SUM(sent_count), 0) as sent,
 			COALESCE(SUM(delivered_count), 0) as delivered,
 			COALESCE(SUM(read_count), 0) as read_count,
@@ -1197,12 +1200,12 @@ func (a *App) getCampaignMessageStatusTimeSeries(orgID uuid.UUID, filters []Filt
 	`
 
 	args := []any{orgID, start, end}
-	query, args = appendFilterSQL(dialect.Of(a.DB), "campaigns", query, args, filters)
+	query, args = appendFilterSQL(d, "campaigns", query, args, filters)
 
-	query += " GROUP BY DATE_TRUNC('day', created_at) ORDER BY date ASC"
+	query += " GROUP BY " + d.DateTrunc("day", "created_at") + " ORDER BY date ASC"
 
 	type DailyCampaignCounts struct {
-		Date      time.Time
+		Date      dialect.DBTime
 		Sent      int64
 		Delivered int64
 		ReadCount int64 `gorm:"column:read_count"`

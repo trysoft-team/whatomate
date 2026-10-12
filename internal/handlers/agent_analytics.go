@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -229,12 +230,13 @@ func (a *App) calculateSummaryStats(orgID uuid.UUID, start, end time.Time, summa
 		Count(&summary.ActiveTransfers)
 
 	// Average queue time (time from transfer to pickup/assignment)
+	d := dialect.Of(a.DB)
 	type AvgResult struct {
 		Avg float64
 	}
 	var queueTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (picked_up_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "picked_up_at")+") as avg").
 		Where("organization_id = ? AND picked_up_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, start, end).
 		Scan(&queueTimeResult)
@@ -243,7 +245,7 @@ func (a *App) calculateSummaryStats(orgID uuid.UUID, start, end time.Time, summa
 	// Average first response time (transfer → first agent reply)
 	var firstResponseResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "first_response_at")+") as avg").
 		Where("organization_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, start, end).
 		Scan(&firstResponseResult)
@@ -252,7 +254,7 @@ func (a *App) calculateSummaryStats(orgID uuid.UUID, start, end time.Time, summa
 	// Average resolution time (time from transfer to resume)
 	var resolutionTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "resumed_at")+") as avg").
 		Where("organization_id = ? AND status = ? AND resumed_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, models.TransferStatusResumed, start, end).
 		Scan(&resolutionTimeResult)
@@ -288,12 +290,13 @@ func (a *App) calculateAgentSummaryStats(orgID, agentID uuid.UUID, start, end ti
 		Count(&summary.ActiveTransfers)
 
 	// Average first response time for this agent
+	d := dialect.Of(a.DB)
 	type AvgResult struct {
 		Avg float64
 	}
 	var firstResponseResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "first_response_at")+") as avg").
 		Where("organization_id = ? AND agent_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, agentID, start, end).
 		Scan(&firstResponseResult)
@@ -302,7 +305,7 @@ func (a *App) calculateAgentSummaryStats(orgID, agentID uuid.UUID, start, end ti
 	// Average resolution time for this agent
 	var resolutionTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "resumed_at")+") as avg").
 		Where("organization_id = ? AND agent_id = ? AND status = ? AND resumed_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, agentID, models.TransferStatusResumed, start, end).
 		Scan(&resolutionTimeResult)
@@ -359,12 +362,13 @@ func (a *App) calculateAgentStats(orgID, agentID uuid.UUID, start, end time.Time
 		Count(&stats.MessagesSent)
 
 	// Average first response / resolution times
+	d := dialect.Of(a.DB)
 	type AvgResult struct {
 		Avg float64
 	}
 	var firstResponseResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "first_response_at")+") as avg").
 		Where("organization_id = ? AND agent_id = ? AND first_response_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, agentID, start, end).
 		Scan(&firstResponseResult)
@@ -372,7 +376,7 @@ func (a *App) calculateAgentStats(orgID, agentID uuid.UUID, start, end time.Time
 
 	var resolutionTimeResult AvgResult
 	a.DB.Model(&models.AgentTransfer{}).
-		Select("AVG(EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60) as avg").
+		Select("AVG("+d.MinutesBetween("transferred_at", "resumed_at")+") as avg").
 		Where("organization_id = ? AND agent_id = ? AND status = ? AND resumed_at IS NOT NULL AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, agentID, models.TransferStatusResumed, start, end).
 		Scan(&resolutionTimeResult)
@@ -470,12 +474,13 @@ func (a *App) calculateTrendData(orgID uuid.UUID, start, end time.Time, groupBy 
 	}
 
 	type TrendResult struct {
-		Date  time.Time
+		Date  dialect.DBTime
 		Count int64
 	}
 
+	d := dialect.Of(a.DB)
 	query := a.DB.Model(&models.AgentTransfer{}).
-		Select("DATE_TRUNC('"+dateTrunc+"', transferred_at) as date, COUNT(*) as count").
+		Select(d.DateTrunc(dateTrunc, "transferred_at")+" as date, COUNT(*) as count").
 		Where("organization_id = ? AND status = ? AND transferred_at >= ? AND transferred_at <= ?",
 			orgID, models.TransferStatusResumed, start, end)
 
@@ -484,7 +489,7 @@ func (a *App) calculateTrendData(orgID uuid.UUID, start, end time.Time, groupBy 
 	}
 
 	var results []TrendResult
-	query.Group("DATE_TRUNC('" + dateTrunc + "', transferred_at)").
+	query.Group(d.DateTrunc(dateTrunc, "transferred_at")).
 		Order("date ASC").
 		Scan(&results)
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"gorm.io/gorm"
 )
@@ -290,16 +291,17 @@ func (a *App) aggregateQuery(query *gorm.DB, dataSource, metric, field, uniqueCo
 }
 
 func (a *App) aggregateDuration(query *gorm.DB, metric, field string) float64 {
+	d := dialect.Of(a.DB)
 	expr := ""
 	switch field {
 	case "resolution_time":
-		expr = "EXTRACT(EPOCH FROM (resumed_at - transferred_at))/60"
+		expr = d.MinutesBetween("transferred_at", "resumed_at")
 		query = query.Where("resumed_at IS NOT NULL")
 	case "queue_time":
-		expr = "EXTRACT(EPOCH FROM (picked_up_at - transferred_at))/60"
+		expr = d.MinutesBetween("transferred_at", "picked_up_at")
 		query = query.Where("picked_up_at IS NOT NULL")
 	case "first_response_time":
-		expr = "EXTRACT(EPOCH FROM (first_response_at - transferred_at))/60"
+		expr = d.MinutesBetween("transferred_at", "first_response_at")
 		query = query.Where("first_response_at IS NOT NULL")
 	default:
 		return 0

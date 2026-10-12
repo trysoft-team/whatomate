@@ -1,6 +1,7 @@
 package dialect
 
 import (
+	"database/sql/driver"
 	"fmt"
 	"time"
 )
@@ -30,6 +31,9 @@ func (t *DBTime) Scan(value any) error {
 	}
 	return fmt.Errorf("dialect: cannot scan %T into DBTime", value)
 }
+
+// Value makes GORM treat DBTime fields as time columns rather than relations.
+func (t DBTime) Value() (driver.Value, error) { return t.Time, nil }
 
 func (t *DBTime) parse(s string) error {
 	for _, layout := range dbTimeLayouts {
