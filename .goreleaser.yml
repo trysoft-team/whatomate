@@ -163,7 +163,7 @@ homebrew_casks:
     repository:
       owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "trysoft-team" }}'
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
