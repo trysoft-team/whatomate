@@ -39,7 +39,7 @@ func openSQLite(t *testing.T) *gorm.DB {
 }
 
 func TestOpen_RejectsUnsupportedDrivers(t *testing.T) {
-	for _, d := range []string{"mysql", "sqlserver", "oracle"} {
+	for _, d := range []string{"sqlserver", "oracle"} {
 		_, err := database.Open(&config.DatabaseConfig{Driver: d}, false)
 		assert.EqualError(t, err, `database driver "`+d+`" is not supported yet`)
 	}

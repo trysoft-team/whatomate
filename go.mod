@@ -10,6 +10,7 @@ require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/fasthttp/websocket v1.5.12
 	github.com/glebarez/sqlite v1.11.0
+	github.com/go-sql-driver/mysql v1.7.0
 	github.com/go-webauthn/webauthn v0.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
@@ -26,6 +27,7 @@ require (
 	github.com/zerodha/logf v0.5.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.34.0
+	gorm.io/driver/mysql v1.5.7
 	gorm.io/driver/postgres v1.5.6
 	gorm.io/gorm v1.25.7
 )
