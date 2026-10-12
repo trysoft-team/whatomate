@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
@@ -76,7 +77,7 @@ func (a *Assigner) assignRoundRobin(teamID, orgID uuid.UUID, memberIDs []uuid.UU
 	var members []models.TeamMember
 	err := a.db.
 		Where("team_id = ? AND user_id IN ?", teamID, available).
-		Order("last_assigned_at ASC NULLS FIRST").
+		Order(dialect.Of(a.db).AscNullsFirst("last_assigned_at")).
 		Find(&members).Error
 	if err != nil || len(members) == 0 {
 		a.log.Debug("No team members found for round-robin", "team_id", teamID)

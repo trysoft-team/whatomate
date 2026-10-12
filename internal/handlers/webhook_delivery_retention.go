@@ -3,6 +3,9 @@ package handlers
 import (
 	"context"
 	"time"
+
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/database/dialect"
 )
 
 // webhookDeliveryPruneBatch caps rows per DELETE so a large backlog never
@@ -81,15 +84,19 @@ func (p *WebhookDeliveryPruner) prune(ctx context.Context) {
 // pruneWebhookDeliveries hard-deletes deliveries created before cutoff in
 // batches of batchSize and returns the number of rows removed.
 func (a *App) pruneWebhookDeliveries(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	query := `DELETE FROM webhook_deliveries WHERE id IN (
+				SELECT id FROM webhook_deliveries WHERE created_at < ? LIMIT ?
+			)`
+	if dialect.Of(a.DB).Name() == config.DriverMySQL {
+		// MySQL rejects LIMIT inside an IN subquery (error 1235).
+		query = `DELETE FROM webhook_deliveries WHERE created_at < ? LIMIT ?`
+	}
 	var total int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		res := a.DB.WithContext(ctx).Exec(
-			`DELETE FROM webhook_deliveries WHERE id IN (
-				SELECT id FROM webhook_deliveries WHERE created_at < ? LIMIT ?
-			)`, cutoff, batchSize)
+		res := a.DB.WithContext(ctx).Exec(query, cutoff, batchSize)
 		if res.Error != nil {
 			return total, res.Error
 		}

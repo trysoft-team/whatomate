@@ -89,17 +89,9 @@ func openMySQLEmpty(t *testing.T) *gorm.DB {
 	return db
 }
 
-// migrateMySQL runs RunMigrationWithProgress's steps except
-// BackfillLastInboundAt, whose SQL has no MySQL form yet.
 func migrateMySQL(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	require.NoError(t, database.AutoMigrate(db))
-	require.NoError(t, database.CreateIndexes(db))
-	require.NoError(t, database.SeedPermissionsAndRoles(db))
-	require.NoError(t, database.SeedSystemRolesForAllOrgs(db))
-	require.NoError(t, database.MigrateUserOrganizations(db))
-	require.NoError(t, database.CreateDefaultAdmin(db, mysqlAdmin))
-	require.NoError(t, database.SeedDefaultWidgets(db))
+	require.NoError(t, database.RunMigrationWithProgress(db, mysqlAdmin))
 }
 
 func openMySQL(t *testing.T) *gorm.DB {
@@ -327,6 +319,10 @@ func TestOpenMySQL_TimePrecisionAndZero(t *testing.T) {
 	assert.True(t, at.Equal(gotPrecise.At), "got %s", gotPrecise.At)
 	require.NoError(t, db.First(&gotZero, "id = ?", zero.ID).Error)
 	assert.True(t, gotZero.At.IsZero(), "got %s", gotZero.At)
+}
+
+func TestOpenMySQL_BackfillLastInboundAt(t *testing.T) {
+	checkBackfillLastInboundAt(t, openMySQL(t))
 }
 
 func TestOpenMySQL_RowsAffectedCountsMatchedRows(t *testing.T) {

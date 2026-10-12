@@ -140,7 +140,7 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 	}
 
 	// Order by last message time (most recent first)
-	query = query.Order("last_message_at DESC NULLS LAST, created_at DESC")
+	query = query.Order(dialect.Of(a.DB).DescNullsLast("last_message_at") + ", created_at DESC")
 
 	var total int64
 	query.Model(&models.Contact{}).Count(&total)
