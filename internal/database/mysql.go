@@ -3,8 +3,10 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -139,6 +141,59 @@ func checkMySQLServer(version, charset string) (mariaDB bool, err error) {
 		return mariaDB, fmt.Errorf("database character set is %q; create it with CHARACTER SET utf8mb4", charset)
 	}
 	return mariaDB, nil
+}
+
+// fillLiteralJSONDefaults sets zero-valued fields whose default is a JSON
+// literal ('[]', '{}') to that value, so the INSERT writes it. GORM otherwise
+// leaves them out and reads the database default back through RETURNING,
+// which MySQL lacks, so the struct would keep nil while the row holds [].
+func fillLiteralJSONDefaults(db *gorm.DB) {
+	if db.Error != nil || db.Statement.Schema == nil {
+		return
+	}
+	type literal struct {
+		field *schema.Field
+		json  []byte
+	}
+	var literals []literal
+	for _, f := range db.Statement.Schema.FieldsWithDefaultDBValue {
+		v := f.DefaultValue
+		if len(v) < 2 || v[0] != '\'' || v[len(v)-1] != '\'' {
+			continue
+		}
+		v = v[1 : len(v)-1]
+		if (strings.HasPrefix(v, "[") || strings.HasPrefix(v, "{")) && json.Valid([]byte(v)) {
+			literals = append(literals, literal{f, []byte(v)})
+		}
+	}
+	if len(literals) == 0 {
+		return
+	}
+
+	ctx := db.Statement.Context
+	fill := func(rv reflect.Value) {
+		if rv.Kind() != reflect.Struct || !rv.CanAddr() {
+			return
+		}
+		for _, l := range literals {
+			if _, zero := l.field.ValueOf(ctx, rv); !zero {
+				continue
+			}
+			v := reflect.New(l.field.FieldType)
+			if json.Unmarshal(l.json, v.Interface()) != nil {
+				continue
+			}
+			_ = db.AddError(l.field.Set(ctx, rv, v.Elem().Interface()))
+		}
+	}
+	switch rv := db.Statement.ReflectValue; rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < rv.Len(); i++ {
+			fill(reflect.Indirect(rv.Index(i)))
+		}
+	case reflect.Struct:
+		fill(rv)
+	}
 }
 
 // mysqlMigrator writes literal defaults on JSON and TEXT columns as

@@ -319,6 +319,33 @@ func TestApp_GetContact(t *testing.T) {
 	})
 }
 
+// --- CreateContact Tests ---
+
+func TestApp_CreateContact_WithoutTagsOrMetadata(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	adminRole := testutil.CreateAdminRole(t, app.DB, org.ID)
+	user := testutil.CreateTestUser(t, app.DB, org.ID, testutil.WithRoleID(&adminRole.ID))
+
+	req := testutil.NewJSONRequest(t, map[string]any{"phone_number": "+15550001234"})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+
+	require.NoError(t, app.CreateContact(req))
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var resp struct {
+		Data struct {
+			Tags     json.RawMessage `json:"tags"`
+			Metadata json.RawMessage `json:"metadata"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+	assert.JSONEq(t, "[]", string(resp.Data.Tags))
+	assert.JSONEq(t, "{}", string(resp.Data.Metadata))
+}
+
 // --- GetContactSessionData Tests ---
 
 func TestApp_GetContactSessionData(t *testing.T) {

@@ -337,6 +337,48 @@ func checkBackfillLastInboundAt(t *testing.T, db *gorm.DB) {
 	assert.True(t, newest.Equal(*got.LastInboundAt), "got %s, want %s", got.LastInboundAt, newest)
 }
 
+// --- Literal JSON defaults on Create ---
+
+func TestCreate_SetsLiteralJSONDefaultsOnStruct(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+
+	org := models.Organization{Name: "JSON Defaults Org", Slug: "json-defaults"}
+	require.NoError(t, db.Create(&org).Error)
+	assert.NotNil(t, org.Settings)
+
+	c := models.Contact{OrganizationID: org.ID, PhoneNumber: "2001"}
+	require.NoError(t, db.Create(&c).Error)
+	assert.NotNil(t, c.Tags)
+	assert.Empty(t, c.Tags)
+	assert.NotNil(t, c.Metadata)
+	assert.Empty(t, c.Metadata)
+
+	batch := []models.Contact{{OrganizationID: org.ID, PhoneNumber: "2002"}, {OrganizationID: org.ID, PhoneNumber: "2003"}}
+	require.NoError(t, db.Create(&batch).Error)
+	for _, b := range batch {
+		assert.NotNil(t, b.Tags, b.PhoneNumber)
+		assert.Empty(t, b.Tags, b.PhoneNumber)
+		assert.NotNil(t, b.Metadata, b.PhoneNumber)
+	}
+
+	ptrs := []*models.Contact{{OrganizationID: org.ID, PhoneNumber: "2004"}, {OrganizationID: org.ID, PhoneNumber: "2005"}}
+	require.NoError(t, db.Create(&ptrs).Error)
+	for _, p := range ptrs {
+		assert.NotNil(t, p.Tags, p.PhoneNumber)
+		require.NotNil(t, p.Metadata, p.PhoneNumber)
+	}
+	ptrs[0].Metadata["k"] = "v"
+	assert.Empty(t, ptrs[1].Metadata, "each row gets its own default value")
+
+	var raw []string
+	require.NoError(t, db.Model(&models.Contact{}).Where("organization_id = ?", org.ID).Pluck("tags", &raw).Error)
+	require.Len(t, raw, 5)
+	for _, r := range raw {
+		assert.JSONEq(t, "[]", r)
+	}
+}
+
 // --- SeedDefaultWidgetsForOrg ---
 
 func TestSeedDefaultWidgetsForOrg_CreatesFullDefaultSet(t *testing.T) {

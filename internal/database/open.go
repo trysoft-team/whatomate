@@ -92,6 +92,12 @@ func Open(cfg *config.DatabaseConfig, debug bool) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	if cfg.Driver == config.DriverMySQL {
+		if err := db.Callback().Create().Before("gorm:create").Register("whatomate:literal_json_defaults", fillLiteralJSONDefaults); err != nil {
+			return nil, err
+		}
+	}
+
 	if cfg.Driver != config.DriverSQLite {
 		sqlDB, err := db.DB()
 		if err != nil {

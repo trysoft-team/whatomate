@@ -274,6 +274,9 @@ func TestOpenMySQL_JSONDefaults(t *testing.T) {
 	require.NoError(t, db.Create(&org).Error)
 	c := models.Contact{OrganizationID: org.ID, PhoneNumber: "1"}
 	require.NoError(t, db.Create(&c).Error)
+	assert.NotNil(t, c.Tags, "struct holds the default after Create")
+	assert.Empty(t, c.Tags)
+	assert.NotNil(t, c.Metadata, "struct holds the default after Create")
 
 	var got models.Contact
 	require.NoError(t, db.First(&got, "id = ?", c.ID).Error)
@@ -282,6 +285,17 @@ func TestOpenMySQL_JSONDefaults(t *testing.T) {
 
 	var raw string
 	require.NoError(t, db.Raw("SELECT CAST(tags AS CHAR) FROM contacts WHERE id = ?", c.ID).Row().Scan(&raw))
+	assert.Equal(t, "[]", raw)
+
+	batch := []models.Contact{
+		{OrganizationID: org.ID, PhoneNumber: "2"},
+		{OrganizationID: org.ID, PhoneNumber: "3", Tags: models.JSONBArray{"vip"}},
+	}
+	require.NoError(t, db.Create(&batch).Error)
+	assert.NotNil(t, batch[0].Tags)
+	assert.Empty(t, batch[0].Tags)
+	assert.Equal(t, models.JSONBArray{"vip"}, batch[1].Tags)
+	require.NoError(t, db.Raw("SELECT CAST(tags AS CHAR) FROM contacts WHERE id = ?", batch[0].ID).Row().Scan(&raw))
 	assert.Equal(t, "[]", raw)
 }
 
