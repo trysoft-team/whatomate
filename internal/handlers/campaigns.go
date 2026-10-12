@@ -1113,19 +1113,19 @@ func (a *App) incrementCampaignStat(campaignID string, status string) {
 // recalculateCampaignStats recalculates all campaign stats from messages table
 func (a *App) recalculateCampaignStats(campaignID uuid.UUID) {
 	var stats struct {
-		Sent      int64
-		Delivered int64
-		Read      int64
-		Failed    int64
+		SentCount      int64
+		DeliveredCount int64
+		ReadCount      int64
+		FailedCount    int64
 	}
 
 	if err := a.DB.Model(&models.Message{}).
 		Where(dialect.Of(a.DB).JSONText("metadata", "campaign_id")+" = ?", campaignID.String()).
 		Select(`
-			COUNT(CASE WHEN status IN ('sent','delivered','read') THEN 1 END) as sent,
-			COUNT(CASE WHEN status IN ('delivered','read') THEN 1 END) as delivered,
-			COUNT(CASE WHEN status = 'read' THEN 1 END) as read,
-			COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed
+			COUNT(CASE WHEN status IN ('sent','delivered','read') THEN 1 END) as sent_count,
+			COUNT(CASE WHEN status IN ('delivered','read') THEN 1 END) as delivered_count,
+			COUNT(CASE WHEN status = 'read' THEN 1 END) as read_count,
+			COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count
 		`).Scan(&stats).Error; err != nil {
 		a.Log.Error("Failed to scan campaign message stats", "error", err, "campaign_id", campaignID)
 		return
@@ -1133,10 +1133,10 @@ func (a *App) recalculateCampaignStats(campaignID uuid.UUID) {
 
 	if err := a.DB.Model(&models.BulkMessageCampaign{}).Where("id = ?", campaignID).
 		Updates(map[string]any{
-			"sent_count":      stats.Sent,
-			"delivered_count": stats.Delivered,
-			"read_count":      stats.Read,
-			"failed_count":    stats.Failed,
+			"sent_count":      stats.SentCount,
+			"delivered_count": stats.DeliveredCount,
+			"read_count":      stats.ReadCount,
+			"failed_count":    stats.FailedCount,
 		}).Error; err != nil {
 		a.Log.Error("Failed to recalculate campaign stats", "error", err, "campaign_id", campaignID)
 	}
