@@ -88,7 +88,6 @@ jobs:
 
   test-sqlite:
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     services:
       redis:
