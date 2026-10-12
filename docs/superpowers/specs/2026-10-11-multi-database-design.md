@@ -43,8 +43,8 @@ path = "./whatomate.db"  # sqlite only
 - `port` defaults per driver: 5432, 3306, 1433 (unused for sqlite).
 - `path` is only read for sqlite. Defaults to `./whatomate.db`.
 - Env overrides work as today, e.g. `WHATOMATE_DATABASE__DRIVER=mysql`.
-- Pool settings (`max_open_conns` etc.) apply to all drivers. For sqlite the
-  pool is forced to one writer connection (see SQLite below).
+- Pool settings (`max_open_conns` etc.) apply to all drivers, sqlite included
+  (see SQLite below).
 
 Startup validates the driver name and fails with a clear message for unknown
 values.
@@ -163,9 +163,11 @@ that already exercise the call sites.
 
 ## SQLite specifics
 
-- WAL mode, `busy_timeout=5000`, `foreign_keys=ON` set on open.
-- One open connection for writes (`max_open_conns = 1`) to avoid
-  `database is locked` errors; reads share it. Fine for a single server.
+- WAL mode, `busy_timeout=10000`, `foreign_keys=ON` set on every connection.
+- A normal connection pool sized by `max_open_conns` (default 25). Under WAL,
+  readers run concurrently; writers serialise through the IMMEDIATE
+  transaction lock (`_txlock=immediate`) and wait up to `busy_timeout`
+  instead of failing with `database is locked`. Fine for a single server.
 - Documented as single-server only: separate `whatomate worker` processes on
   other machines cannot share a SQLite file.
 - Times are stored as text including the zone offset and compared as text, so

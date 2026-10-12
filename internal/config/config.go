@@ -149,6 +149,9 @@ const (
 	DriverSQLServer = "sqlserver"
 )
 
+// DefaultMaxOpenConns is the connection pool size when max_open_conns is unset.
+const DefaultMaxOpenConns = 25
+
 type DatabaseConfig struct {
 	Driver          string `koanf:"driver"` // postgres (default), mysql, sqlite, sqlserver
 	Path            string `koanf:"path"`   // sqlite database file
@@ -302,7 +305,7 @@ func setDefaults(cfg *Config) {
 		cfg.Database.SSLMode = "disable"
 	}
 	if cfg.Database.MaxOpenConns == 0 {
-		cfg.Database.MaxOpenConns = 25
+		cfg.Database.MaxOpenConns = DefaultMaxOpenConns
 	}
 	if cfg.Database.MaxIdleConns == 0 {
 		cfg.Database.MaxIdleConns = 5

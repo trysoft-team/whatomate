@@ -226,7 +226,7 @@ func TestOpenSQLite_MissingDirectory(t *testing.T) {
 }
 
 func TestOpenSQLite_PoolSize(t *testing.T) {
-	for _, tc := range []struct{ configured, want int }{{0, 10}, {4, 4}} {
+	for _, tc := range []struct{ configured, want int }{{0, config.DefaultMaxOpenConns}, {4, 4}} {
 		db, err := database.Open(&config.DatabaseConfig{Driver: "sqlite", Path: filepath.Join(t.TempDir(), "w.db"), MaxOpenConns: tc.configured}, false)
 		require.NoError(t, err)
 		sqlDB, err := db.DB()

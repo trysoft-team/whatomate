@@ -16,8 +16,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const sqliteDefaultMaxOpenConns = 10
-
 // OpenDialector returns the GORM dialector for cfg.Driver.
 func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	switch cfg.Driver {
@@ -40,7 +38,7 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 		// transaction lock and wait up to busy_timeout instead of failing.
 		maxOpen := cfg.MaxOpenConns
 		if maxOpen <= 0 {
-			maxOpen = sqliteDefaultMaxOpenConns
+			maxOpen = config.DefaultMaxOpenConns
 		}
 		sqlDB.SetMaxOpenConns(maxOpen)
 		if cfg.MaxIdleConns > 0 {
