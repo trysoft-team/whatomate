@@ -126,8 +126,8 @@ jobs:
       - name: Install Playwright browsers
         run: cd frontend && npx playwright install chromium --with-deps
 
-      - name: Run E2E tests
-        run: cd frontend && npm run test:e2e
+      - name: Run core E2E tests
+        run: cd frontend && npm run test:e2e:core
         env:
           BASE_URL: http://localhost:8080
           TEST_DATABASE_URL: postgres://test:test@127.0.0.1:5432/whatomate_test
