@@ -1,0 +1,257 @@
+---
+title: Quickstart
+description: Get Whatomate up and running in minutes
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Get Whatomate up and running in minutes using Docker or manual installation.
+
+## Quick Start (Docker)
+
+The fastest way to get started:
+
+```bash
+# Clone the repository
+git clone https://github.com/trysoft-team/whatomate.git
+cd whatomate
+cp config.example.toml config.toml
+cp .env.example .env  # Edit to set PostgreSQL credentials and timezone
+
+# Start all services (PostgreSQL, Redis, Server)
+make docker-up
+
+# Access the application
+open http://localhost:8080
+```
+
+<Aside type="note">
+  The `.env` file is required by Docker Compose. It sets PostgreSQL credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`) and the server timezone (`TZ`). Copy `.env.example` to `.env` and edit as needed. `.env` is gitignored, so your credentials stay local.
+</Aside>
+
+**Default login:** `admin@admin.com` / `admin`
+
+<Aside type="caution">
+  Change the admin password immediately after first login.
+</Aside>
+
+## Manual Installation
+
+### Prerequisites
+
+- Go 1.25+ (the module targets `go 1.25.0`)
+- Node.js 20+ — only needed to build the frontend. CI builds it on Node 20; Vite 7 requires 20.19+ or 22.12+.
+- A database — use the one you already run:
+  - PostgreSQL — CI tests against 16, the Docker Compose file ships 17
+  - MySQL 8.0.19+ or MariaDB 10.6+ — CI tests against MySQL 8.4 and MariaDB 10.6
+  - SQLite — no server; the data lives in one file. Best for a single server.
+- Redis 7 (Redis 6+ works; `username` requires 6+ ACLs) — required with every database
+
+### Step 1: Clone and Configure
+
+```bash
+git clone https://github.com/trysoft-team/whatomate.git
+cd whatomate
+cp config.example.toml config.toml
+```
+
+### Step 2: Set Up the Database
+
+Pick the database you already have and set `[database] driver` to match. Migrations create the tables on first start.
+
+<Tabs>
+  <TabItem label="PostgreSQL">
+    ```bash
+    psql -c "CREATE USER whatomate WITH PASSWORD 'whatomate123';"
+    psql -c "CREATE DATABASE whatomate OWNER whatomate;"
+    ```
+
+    ```toml
+    [database]
+    driver = "postgres"
+    host = "localhost"
+    port = 5432
+    user = "whatomate"
+    password = "whatomate123"
+    name = "whatomate"
+    ```
+  </TabItem>
+  <TabItem label="MySQL / MariaDB">
+    ```sql
+    CREATE DATABASE whatomate CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    CREATE USER 'whatomate'@'%' IDENTIFIED BY 'whatomate123';
+    GRANT ALL PRIVILEGES ON whatomate.* TO 'whatomate'@'%';
+    ```
+
+    ```toml
+    [database]
+    driver = "mysql"   # also for MariaDB
+    host = "localhost"
+    port = 3306
+    user = "whatomate"
+    password = "whatomate123"
+    name = "whatomate"
+    ```
+  </TabItem>
+  <TabItem label="SQLite">
+    Nothing to install or create; the file is created on first start.
+
+    ```toml
+    [database]
+    driver = "sqlite"
+    path = "./whatomate.db"
+    ```
+  </TabItem>
+</Tabs>
+
+See [Database Setup](/whatomate/getting-started/configuration/#database-setup) for TLS, version requirements and the trade-offs of each.
+
+### Step 3: Setup Redis
+
+<Tabs>
+  <TabItem label="macOS">
+    ```bash
+    brew install redis
+    brew services start redis
+    ```
+  </TabItem>
+  <TabItem label="Ubuntu/Debian">
+    ```bash
+    sudo apt install redis-server
+    sudo systemctl start redis
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    ```bash
+    docker run -d -p 6379:6379 redis:alpine
+    ```
+  </TabItem>
+</Tabs>
+
+### Step 4: Start Backend
+
+```bash
+# Install Go dependencies
+go mod download
+
+# Run migrations and start server
+make run-migrate
+```
+
+### Step 5: Start Frontend
+
+Open a new terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Step 6: Access Application
+
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3000 |
+| API | http://localhost:8080 |
+
+**Login:** `admin@admin.com` / `admin`
+
+<Aside type="caution">
+  Change the admin password immediately after first login via the Profile page.
+</Aside>
+
+## Production Build
+
+For production, build a single binary with embedded frontend:
+
+```bash
+make build-prod
+./whatomate server -migrate
+```
+
+This creates a self-contained binary—no separate frontend server needed. Access at http://localhost:8080.
+
+To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=amd64 make build-prod`. `make release-snapshot` builds every release archive into `dist/`.
+
+### Prebuilt Binaries
+
+Each [GitHub release](https://github.com/trysoft-team/whatomate/releases) includes archives for:
+
+| OS | Architectures |
+|---|---|
+| Linux | `amd64`, `arm64`, `armv7` (Raspberry Pi 2 and later, 32-bit) |
+| macOS | `universal` (one binary for Apple Silicon and Intel) |
+| Windows | `amd64`, `arm64` |
+| FreeBSD | `amd64`, `arm64` |
+
+The binary still needs a database (PostgreSQL, MySQL/MariaDB or SQLite), Redis and a `config.toml` (start from `config.example.toml`). Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
+
+<Aside type="note">
+  **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the dependencies with Homebrew: `brew install redis ffmpeg espeak-ng opus-tools`, plus `postgresql@16` or `mysql` unless you use SQLite or an existing server.
+</Aside>
+
+### Homebrew
+
+On macOS and Linux, install the release binary from the project's tap:
+
+```bash
+brew install trysoft-team/tap/whatomate
+```
+
+This also installs `ffmpeg` and `opus-tools`. The database and Redis are not installed automatically, so you can point Whatomate at servers you already run. To run Redis locally (and use SQLite, which needs no server):
+
+```bash
+brew install redis
+brew services start redis
+```
+
+The cask ships `config.example.toml`; the install output shows where to copy it from. Set `[database] driver`, then run `whatomate server -config ./config.toml -migrate`. Upgrade with `brew upgrade whatomate`.
+
+### How Releases Are Published
+
+Every push to the `master` branch of [trysoft-team/whatomate](https://github.com/trysoft-team/whatomate) runs the test suite on PostgreSQL, SQLite, MySQL and MariaDB, then tags the next patch version and publishes the archives above plus the Homebrew cask. Pushes that only touch docs or Markdown are skipped. A minor or major bump is a manual run of the **Release** workflow on `master`, or a `vX.Y.Z` tag pushed by hand.
+
+The cask is written to `trysoft-team/homebrew-tap` only when the `HOMEBREW_TAP_TOKEN` secret is set: a fine-grained token with **Contents: read and write** on that repository. Set the `HOMEBREW_TAP_OWNER` repository variable to publish to a tap under a different owner.
+
+## 3rd Party Hosting
+
+### Railway Template
+
+Template to start with a production ready instance!
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/whatomate?referralCode=emPbG7&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `connection refused` (database) | Ensure the database is running: `pg_isready` (PostgreSQL) or `mysqladmin ping` (MySQL/MariaDB) |
+| `connection refused` (redis) | Ensure Redis is running: `redis-cli ping` |
+| `database does not exist` | Create it: `createdb whatomate` (PostgreSQL) or `CREATE DATABASE whatomate CHARACTER SET utf8mb4` (MySQL/MariaDB) |
+| `permission denied` | Check database user/password in `config.toml` |
+| `port already in use` | Change port in `config.toml` or stop conflicting service |
+| Frontend can't reach API | Ensure backend is running on port 8080 |
+
+## WhatsApp Configuration
+
+To connect your WhatsApp Business account:
+
+<Steps>
+
+1. Create a Meta Business account at [business.facebook.com](https://business.facebook.com)
+2. Set up a WhatsApp Business API account
+3. Generate an access token and note your Phone Number ID
+4. Add these credentials in Whatomate's **Settings** → **Accounts**
+
+</Steps>
+
+<Aside type="tip">
+  For development, use Meta's test phone numbers to send messages without affecting your production account.
+</Aside>
+
+## Next Steps
+
+- [Configuration Reference](/whatomate/getting-started/configuration) - Detailed configuration options
+- [Dashboard Overview](/whatomate/features/dashboard) - Explore the dashboard
+- [API Reference](/whatomate/api-reference/overview) - Integrate via REST API

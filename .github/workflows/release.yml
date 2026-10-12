@@ -1,0 +1,124 @@
+name: Release
+
+# Every push to master cuts a release: the full test suite runs first, then the
+# next version tag is created and GoReleaser publishes the binaries and updates
+# the Homebrew cask. Pushing a v* tag by hand releases that exact version.
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".beads/**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the release tag
+        id: version
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+          # First version on a repository with no vX.Y.Z tags yet.
+          INITIAL_VERSION: ${{ vars.INITIAL_VERSION || 'v0.2.0' }}
+        run: |
+          tag=""
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            # A re-run of a push that already got its tag reuses it.
+            tag=$(git tag --points-at HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          fi
+          previous=$(git tag --list 'v*' --merged HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "${tag:-none}" | sort -V | tail -n 1 || true)
+
+          if [ -z "$tag" ]; then
+            if [ -z "$previous" ]; then
+              tag="$INITIAL_VERSION"
+            else
+              IFS=. read -r major minor patch <<< "${previous#v}"
+              case "$BUMP" in
+                major) tag="v$((major + 1)).0.0" ;;
+                minor) tag="v${major}.$((minor + 1)).0" ;;
+                *)     tag="v${major}.${minor}.$((patch + 1))" ;;
+              esac
+            fi
+            git tag "$tag"
+            git push origin "refs/tags/$tag"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (previous: ${previous:-none})"
+
+      # With no earlier release the changelog would list every commit in the
+      # history, which is longer than GitHub allows for release notes.
+      - name: Write first-release notes
+        if: steps.version.outputs.previous == ''
+        run: |
+          printf 'First release of Whatomate from %s.\n\nSee the README for installation, including Homebrew.\n' \
+            "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/release-notes.md"
+          echo "RELEASE_NOTES_FLAG=--release-notes=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean ${{ env.RELEASE_NOTES_FLAG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          GORELEASER_PREVIOUS_TAG: ${{ steps.version.outputs.previous }}
+          DOCKER_ORG: ${{ github.repository_owner }}
+          GITHUB_ORG: ${{ github.repository_owner }}
+          # macOS signing + notarization; skipped when MACOS_SIGN_P12 is unset.
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          # Homebrew cask; skipped when HOMEBREW_TAP_TOKEN is unset. The token needs
+          # contents:write on <HOMEBREW_TAP_OWNER>/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_OWNER: ${{ vars.HOMEBREW_TAP_OWNER || github.repository_owner }}

@@ -1,0 +1,26 @@
+# Keep the build context small and free of local state and secrets.
+.git
+.github
+.beads
+.agents
+.cursor
+**/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+docs
+dist
+uploads
+audio
+services
+*.log
+coverage.out
+coverage.html
+/whatomate
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config.toml
+config.local.toml

@@ -1,0 +1,304 @@
+---
+title: Call Flows
+description: Manage call flows for WhatsApp voice calling
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Overview
+
+Call flows (stored as IVR graphs) drive WhatsApp voice calls. A flow is stored per WhatsApp account as a **v2 flow graph** in the `menu` field: `{ version: 2, nodes, edges, entry_node }`. When a call connects, the calling engine walks the graph starting from `entry_node`, playing greetings, collecting DTMF digits, making HTTP callbacks, and routing callers to agent teams.
+
+<Aside type="note">
+  Call flow endpoints use the `ivr_flows` permissions: `ivr_flows:read` to view, `ivr_flows:write` to create/update and upload audio, and `ivr_flows:delete` to delete.
+</Aside>
+
+### Flow graph structure
+
+The `menu` object is a directed graph:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | integer | Must be `2` |
+| `nodes` | array | Flow nodes (see below) |
+| `edges` | array | Connections between nodes, each `{ from, to, condition }` |
+| `entry_node` | string | ID of the node where execution begins (required when `nodes` is non-empty). The editor uses a fixed Start sentinel (`__start__`) — same pattern as chatbot flows — and migrates older graphs on load. |
+
+Each **node** has the shape:
+
+```json
+{
+  "id": "node-1",
+  "type": "greeting",
+  "label": "Welcome",
+  "position": { "x": 100, "y": 100 },
+  "config": { "greeting_text": "Welcome to Acme support" }
+}
+```
+
+**Node types**:
+
+| Type | Purpose |
+|------|---------|
+| `start` | Fixed entry sentinel (`__start__`). Optional `assignments` seed session variables after builtins (`caller_phone`, `caller_name`, `call_id`); those three names cannot be overwritten. Follows the `default` edge. |
+| `greeting` | Play an audio prompt or text-to-speech greeting |
+| `menu` | Play a prompt and collect a single DTMF digit to branch on |
+| `gather` | Collect a sequence of DTMF digits (e.g. an account number) |
+| `confirm` | Play back a gathered value; DTMF confirm vs re-enter |
+| `condition` | Branch on a session variable (`true` / `false`) |
+| `set_variable` | Assign template values into session variables |
+| `set_labels` | Add/remove contact tags |
+| `send_message` | Send WhatsApp text to `to` / `phone` (templates allowed); empty → caller phone |
+| `delay` | Pause with silence or hold music |
+| `language` | Set session locale for subsequent TTS/prompts |
+| `voicemail` | Record caller audio; upload and store storage key in a variable |
+| `speech_input` | Record + transcribe via OpenAI Whisper into a variable |
+| `ai_voice` | One LLM turn (org chatbot AI) with TTS reply |
+| `ai_call` | Multi-turn voice AI using org AI settings + AI Contexts (`ai_context_mode` / `ai_context_ids`); optional function calling (`tools`). When `[pipecat]` is enabled, the sidecar runs **Gemini Live** (realtime bidirectional audio over Opus WebSocket). Otherwise turn-based STT/LLM/TTS. Outcomes: `completed`, `transfer`, `max_turns`, `error`. |
+| `execute_function` | HTTP request (whatsCRM-style execute function); outcomes `default` / `error` |
+| `http_callback` | Make an HTTP request and branch on the response |
+| `webhook` | Fire-and-forget HTTP (does not block or branch on status) |
+| `transfer` | Route the call to an agent team (optional `agent_id`, `overflow_team_id`, `announce_queue`). Honors `prefer_team_id` from a prior `ai_call` transfer tool when `team_id` is empty. |
+| `dial_out` | Place outbound WhatsApp call and bridge audio |
+| `goto_flow` | Jump to another IVR flow (terminal) |
+| `timing` | Branch on business hours |
+| `hangup` | End the call (terminal) |
+
+**Edge conditions** select which outgoing edge is followed: `default`, `digit:N` (e.g. `digit:1`), `timeout`, `max_retries`, `http:2xx`, `http:non2xx`, `in_hours`, `out_of_hours`, `true`, `false`, `confirmed`, `retry`, `error`, `completed`, `transfer`, `max_turns`, `no_answer`. Terminal nodes (`goto_flow`, `hangup`) must not have outgoing edges.
+
+<Aside type="tip">
+  If text-to-speech is configured on the server, any node with a non-empty `greeting_text` in its `config` has audio generated automatically on save, and the resulting filename is stored back in the node's `config.audio_file`. Without TTS, upload audio files and reference them instead.
+</Aside>
+
+### Pipecat realtime AI Call
+
+Whatomate keeps WhatsApp WebRTC. Optional sidecar at `services/pipecat-bot` runs **Gemini Live** (native realtime audio in/out) over a private Opus WebSocket — the same approach as [pipecat-examples/whatsapp](https://github.com/pipecat-ai/pipecat-examples/tree/main/whatsapp). Prefers `gemini-3.1-flash-live-preview` (more stable than floating `native-audio-latest`, which can drop mid-call with WebSocket 1007 / `CONTENT_TYPE_AUDIO`). Set `PIPECAT_GEMINI_LIVE=0` on the sidecar to force the legacy turn-based STT → LLM → TTS path.
+
+```toml
+[pipecat]
+enabled = true
+base_url = "http://127.0.0.1:7860"
+ws_url = "ws://127.0.0.1:7860"
+auth_token = "shared-secret"
+callback_url = "http://127.0.0.1:8080"  # Whatomate URL reachable from the sidecar
+max_session_secs = 600
+```
+
+On `ai_call`, Go POSTs a bootstrap (system prompt + AI Contexts, Gemini voice, tools, `transfer_team_id`) then bridges caller Opus ↔ sidecar. Tools `transfer_to_agent` / `end_call` POST `/api/internal/pipecat/events`; Go returns IVR outcome `transfer` or `completed` without tearing down the WhatsApp PeerConnection. Wire an edge `transfer` → `transfer` node so agents receive the call via the existing transfer pipeline. Barge-in clears playback when the caller speaks; `end_call` drains farewell audio before notifying hangup.
+
+**Function → node subroutines:** set a function’s handler to **`nodes`** to expose a canvas handle `fn:<function_name>`. Wire it to Send Message, Condition, HTTP, etc. When the model calls that tool, Go runs the linked subgraph as a subroutine and resumes the same AI Call with a JSON result. **Return to call** is a UI flag that the AI Call continues after the tool — it does **not** create a canvas edge. Inline handlers (`http`, `set_variable`, `transfer`, `hangup`) never use canvas edges. Legacy configs with `return_to_call: true` are still treated as `handler: nodes` at runtime.
+
+1. Go runs the linked subgraph as a **subroutine** (HTTP Callback, Condition, Set Variable, Execute Function, Webhook, Set Labels, Send Message, Language, Timing, Delay silence-only).
+2. Tool args are merged into session variables for templates.
+3. A JSON result (`ok`, `outcome`, `http_body`, `variables`, `path`) is returned to Gemini Live / the LLM.
+4. The **same** AI Call session resumes so the model can speak success/fail.
+
+If handler is `nodes` but there is no `fn:` edge, the tool returns an error to the model. Audio-owning nodes (greeting, menu, gather, nested AI Call, transfer, hangup, …) are not allowed inside the subroutine.
+
+**Knowledge (AI Contexts)** on `ai_call` config:
+
+| Key | Description |
+|-----|-------------|
+| `ai_context_mode` | `all` (default) — every enabled org/account AI Context; `selected` — only IDs in `ai_context_ids` |
+| `ai_context_ids` | Array of AI Context UUIDs. With `selected` and an empty array, no knowledge block is injected. Non-empty IDs without an explicit mode also filter (compat). Disabled contexts are never loaded. |
+| `extra_knowledge` | Array of `{ "name", "value" }` facts appended as `## Extra Knowledge`. Values support `{{variable}}` (e.g. `"Caller name": "{{caller_name}}"` or a literal `"Test User"`). |
+
+Requires a Google/Gemini API key on Settings → AI. Gemini Live voices (e.g. Puck, Kore) are configured on the AI Call node.
+
+When the AI Call node has **Recording** and/or **Transcription** enabled, the sidecar uploads WAV tracks (`user` / `assistant` / `stereo`) and transcript lines to `/api/internal/pipecat/recordings/{call_id}` and `/api/internal/pipecat/transcript/{call_id}`. Artifacts land on `call_logs.ai_call_artifacts` and are playable/viewable in Call Logs (requires `[calling] recording_enabled` so storage is initialized).
+
+## List Call Flows
+
+Retrieve call flows for your organization, most recent first. Paginated.
+
+```bash
+GET /api/ivr-flows
+```
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `account` | string | Filter by WhatsApp account name |
+| `page` | integer | Page number |
+| `limit` | integer | Results per page |
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "ivr_flows": [
+      {
+        "id": "uuid",
+        "organization_id": "uuid",
+        "whatsapp_account": "Main Business",
+        "name": "Support IVR",
+        "description": "Main support menu",
+        "is_active": true,
+        "is_call_start": true,
+        "is_outgoing_end": false,
+        "menu": {
+          "version": 2,
+          "entry_node": "node-1",
+          "nodes": [],
+          "edges": []
+        },
+        "welcome_audio_url": "",
+        "created_by_id": "uuid",
+        "updated_by_id": "uuid",
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z"
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "limit": 20
+  }
+}
+```
+
+## Get Call Flow
+
+Retrieve a single IVR flow with its full graph.
+
+```bash
+GET /api/ivr-flows/{id}
+```
+
+### Response
+
+Returns a single IVR flow object (same shape as the list items above), with `created_by` and `updated_by` user objects preloaded.
+
+## Create Call Flow
+
+Create a new IVR flow. The graph is validated and, if TTS is available, greeting audio is generated.
+
+```bash
+POST /api/ivr-flows
+```
+
+### Request Body
+
+```json
+{
+  "whatsapp_account": "Main Business",
+  "name": "Support IVR",
+  "description": "Main support menu",
+  "is_active": true,
+  "is_call_start": true,
+  "is_outgoing_end": false,
+  "welcome_audio_url": "",
+  "menu": {
+    "version": 2,
+    "entry_node": "node-1",
+    "nodes": [
+      {
+        "id": "node-1",
+        "type": "greeting",
+        "label": "Welcome",
+        "config": { "greeting_text": "Welcome to Acme support" }
+      }
+    ],
+    "edges": []
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Flow name |
+| `whatsapp_account` | string | Yes | Name of the WhatsApp account the flow belongs to |
+| `description` | string | No | Flow description |
+| `is_active` | boolean | No | Whether the flow is enabled |
+| `is_call_start` | boolean | No | Use this flow as the entry point for incoming calls on the account. Setting it unsets any other call-start flow for the same account |
+| `is_outgoing_end` | boolean | No | Run this flow at the end of outgoing calls on the account. Setting it unsets any other on the same account |
+| `menu` | object | No | The v2 flow graph. Validated for structural correctness |
+| `welcome_audio_url` | string | No | Optional welcome audio URL |
+
+<Aside type="caution">
+  If the server has no text-to-speech configured and the graph contains a node with `greeting_text`, the request is rejected — upload audio files instead.
+</Aside>
+
+### Response
+
+Returns the created IVR flow object.
+
+## Update Call Flow
+
+Update an existing IVR flow. Supports partial updates — empty fields are not applied, so you can toggle `is_active` without resending the whole `menu`.
+
+```bash
+PUT /api/ivr-flows/{id}
+```
+
+### Request Body
+
+Accepts the same fields as [Create Call Flow](#create-call-flow). The boolean toggles (`is_active`, `is_call_start`, `is_outgoing_end`) are always applied; `name`, `description`, `menu`, `welcome_audio_url`, and `whatsapp_account` are applied only when non-empty.
+
+### Response
+
+Returns the updated IVR flow object.
+
+## Delete Call Flow
+
+Soft-delete an IVR flow.
+
+```bash
+DELETE /api/ivr-flows/{id}
+```
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "IVR flow deleted"
+  }
+}
+```
+
+## Upload Call Flow Audio
+
+Upload an audio file for use as an IVR greeting or prompt. The file is transcoded to OGG/Opus (48kHz mono) for WebRTC compatibility. Send as `multipart/form-data` with the file under the `file` field.
+
+```bash
+POST /api/ivr-flows/audio
+```
+
+<Aside type="note">
+  Maximum file size is 5MB. Accepted formats include OGG/Opus, MP3, AAC, M4A, WAV, WebM, and FLAC.
+</Aside>
+
+### Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "filename": "a1b2c3d4-....ogg",
+    "mime_type": "audio/mpeg",
+    "size": 204800
+  }
+}
+```
+
+Use the returned `filename` as the `audio_file` value in a node's `config`.
+
+## Serve Call Flow Audio
+
+Serve a previously uploaded IVR audio file. Returns the raw audio bytes with the appropriate `Content-Type`.
+
+```bash
+GET /api/ivr-flows/audio/{filename}
+```
+
+### Response
+
+The audio file body (not a JSON envelope).
+
+## See Also
+
+- [Calling](/whatomate/features/calling) - WhatsApp voice calling, the IVR flow builder, transfers, and recording

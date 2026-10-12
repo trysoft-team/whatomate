@@ -1,0 +1,193 @@
+version: 2
+
+before:
+  hooks:
+    - bash -c "cd frontend && npm ci"
+    - bash -c "cd frontend && npm run build"
+    - rm -rf internal/frontend/dist/assets internal/frontend/dist/*.html internal/frontend/dist/*.svg internal/frontend/dist/*.mp3
+    - cp -r frontend/dist/. internal/frontend/dist/
+
+builds:
+  - id: whatomate
+    main: ./cmd/whatomate
+    binary: whatomate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - "7"
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: freebsd
+        goarch: arm
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+
+  # macOS is built separately so it can be merged into one universal binary
+  # and signed/notarized on its own.
+  - id: whatomate-darwin
+    main: ./cmd/whatomate
+    binary: whatomate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+
+universal_binaries:
+  - id: whatomate-darwin-universal
+    ids:
+      - whatomate-darwin
+    name_template: whatomate
+    replace: true
+
+# Signs and notarizes the macOS binary so Gatekeeper doesn't block it. Runs on
+# the Linux release runner (no Mac needed) and is skipped unless the Apple
+# credentials are configured as repository secrets:
+#   MACOS_SIGN_P12          base64 of the "Developer ID Application" .p12
+#   MACOS_SIGN_PASSWORD     password of that .p12
+#   MACOS_NOTARY_ISSUER_ID  App Store Connect API issuer ID
+#   MACOS_NOTARY_KEY_ID     App Store Connect API key ID
+#   MACOS_NOTARY_KEY        base64 of the AuthKey_XXXX.p8 file
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - whatomate-darwin-universal
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
+archives:
+  - id: whatomate
+    ids:
+      - whatomate
+      - whatomate-darwin-universal
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
+      {{- if eq .Arch "all" }}universal{{ else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE*
+      - README*
+      - config.example.toml
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+# One multi-arch image per registry. buildx builds and pushes in a single step
+# during publish; `--snapshot` builds per-arch images (tag suffix -amd64/-arm64)
+# locally instead. Disabled for now: releases ship binaries and the Homebrew
+# cask only. To publish images, remove `disable` and restore the registry
+# login steps in .github/workflows/release.yml.
+dockers_v2:
+  - id: whatomate
+    disable: true
+    ids:
+      - whatomate
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - "{{ .Env.DOCKER_ORG }}/whatomate"
+      - "ghcr.io/{{ .Env.GITHUB_ORG }}/whatomate"
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+release:
+  github:
+    owner: trysoft-team
+    name: whatomate
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# Homebrew cask in <HOMEBREW_TAP_OWNER>/homebrew-tap, installed with
+# `brew install <owner>/tap/whatomate`. Publishing is skipped unless
+# HOMEBREW_TAP_TOKEN (a token with write access to the tap repo) is set.
+homebrew_casks:
+  - name: whatomate
+    ids:
+      - whatomate
+    binaries:
+      - whatomate
+    homepage: "https://github.com/trysoft-team/whatomate"
+    description: "Self-hosted WhatsApp Business platform with chatbots, campaigns and calling"
+    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
+    repository:
+      owner: '{{ envOrDefault "HOMEBREW_TAP_OWNER" "trysoft-team" }}'
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "whatomate {{ .Tag }}"
+    dependencies:
+      - formula: ffmpeg
+      - formula: opus-tools
+    caveats: |
+      Whatomate needs Redis and a database. Start Redis:
+        brew install redis
+        brew services start redis
+
+      Create a config from the example shipped with this cask:
+        cp "#{staged_path}/config.example.toml" ./config.toml
+
+      In config.toml, set [database] driver to the database you already have:
+        "sqlite"   one file, no server needed (set path)
+        "postgres" PostgreSQL
+        "mysql"    MySQL 8.0.19+ or MariaDB 10.6+
+
+      Then start the server:
+        whatomate server -config ./config.toml -migrate
+      {{- if not (isEnvSet "MACOS_SIGN_P12") }}
+
+      This build is not notarized. If macOS blocks it, run:
+        xattr -dr com.apple.quarantine "#{staged_path}/whatomate"
+      {{- end }}
