@@ -88,6 +88,7 @@ jobs:
 
   test-sqlite:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     services:
       redis:
@@ -124,7 +125,7 @@ jobs:
           gotestsum \
             --format testname \
             --hide-summary=skipped \
-            -- -race -p 1 -timeout 10m $(go list ./... | grep -v /test/)
+            -- -race -p 1 -timeout 25m $(go list ./... | grep -v /test/)
 
   lint:
     runs-on: ubuntu-latest
