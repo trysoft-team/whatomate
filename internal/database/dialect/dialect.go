@@ -105,3 +105,7 @@ func (d Dialect) Now() string {
 // SupportsSkipLocked reports whether SELECT ... FOR UPDATE SKIP LOCKED works.
 // SQLite serialises writers, so a plain transaction is enough there.
 func (d Dialect) SupportsSkipLocked() bool { return d.isPostgres() }
+
+// SupportsPercentileCont reports whether the PERCENTILE_CONT ordered-set
+// aggregate exists. Elsewhere callers compute it from the selected values.
+func (d Dialect) SupportsPercentileCont() bool { return d.isPostgres() }

@@ -51,6 +51,8 @@ func TestHelpers(t *testing.T) {
 
 	assert.True(t, pg.SupportsSkipLocked())
 	assert.False(t, lite.SupportsSkipLocked())
+	assert.True(t, pg.SupportsPercentileCont())
+	assert.False(t, lite.SupportsPercentileCont())
 	assert.Panics(t, func() { pg.DateTrunc("year", "c") })
 }
 

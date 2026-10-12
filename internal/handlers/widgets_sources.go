@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -274,9 +276,9 @@ func (a *App) aggregateQuery(query *gorm.DB, dataSource, metric, field, uniqueCo
 		if field == "" || !allowedAggregateFields[dataSource][field] {
 			return 0
 		}
-		frac := 0.5
-		if metric == "p95" {
-			frac = 0.95
+		frac := percentileFraction(metric)
+		if !dialect.Of(query).SupportsPercentileCont() {
+			return percentileOf(query, field, frac)
 		}
 		var val float64
 		query.Select(fmt.Sprintf("COALESCE(PERCENTILE_CONT(%f) WITHIN GROUP (ORDER BY %s), 0)", frac, field)).Scan(&val)
@@ -307,6 +309,9 @@ func (a *App) aggregateDuration(query *gorm.DB, metric, field string) float64 {
 		return 0
 	}
 
+	if (metric == "p50" || metric == "p95") && !d.SupportsPercentileCont() {
+		return percentileOf(query, expr, percentileFraction(metric))
+	}
 	var val float64
 	switch metric {
 	case "avg", "avg_duration":
@@ -319,6 +324,34 @@ func (a *App) aggregateDuration(query *gorm.DB, metric, field string) float64 {
 		query.Select("COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + expr + "), 0)").Scan(&val)
 	}
 	return val
+}
+
+// percentileOf computes PERCENTILE_CONT(frac) over expr in Go, for drivers
+// without the SQL aggregate. NULLs are ignored and no rows give 0, as in SQL.
+func percentileOf(query *gorm.DB, expr string, frac float64) float64 {
+	var values []float64
+	query.Where(expr+" IS NOT NULL").Pluck(expr, &values)
+	return percentileCont(values, frac)
+}
+
+// percentileCont interpolates linearly between the two values closest to
+// frac, exactly as PostgreSQL's PERCENTILE_CONT does.
+func percentileCont(values []float64, frac float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Float64s(values)
+	pos := frac * float64(len(values)-1)
+	lo, hi := math.Floor(pos), math.Ceil(pos)
+	first, second := values[int(lo)], values[int(hi)]
+	return first + (second-first)*(pos-lo)
+}
+
+func percentileFraction(metric string) float64 {
+	if metric == "p95" {
+		return 0.95
+	}
+	return 0.5
 }
 
 // queryRateOrRatio computes numerator/denominator from widget.config.
