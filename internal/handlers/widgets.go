@@ -1044,12 +1044,8 @@ func (a *App) getGroupedData(orgID uuid.UUID, widget models.Widget, filters []Fi
 	a.DB.Raw(query, args...).Scan(&results)
 
 	for _, r := range results {
-		label := r.Label
-		if label == "" {
-			label = "(empty)"
-		}
 		dataPoints = append(dataPoints, DataPoint{
-			Label: label,
+			Label: groupLabel(widget.DataSource, widget.GroupByField, r.Label),
 			Value: float64(r.Value),
 		})
 	}
@@ -1146,10 +1142,7 @@ func (a *App) getGroupedTimeSeriesData(orgID uuid.UUID, widget models.Widget, fi
 			dateSet[dateLabel] = true
 			dateOrder = append(dateOrder, dateLabel)
 		}
-		gv := row.GroupValue
-		if gv == "" {
-			gv = "(empty)"
-		}
+		gv := groupLabel(widget.DataSource, widget.GroupByField, row.GroupValue)
 		if !groupSet[gv] {
 			groupSet[gv] = true
 			groupOrder = append(groupOrder, gv)
@@ -1161,10 +1154,7 @@ func (a *App) getGroupedTimeSeriesData(orgID uuid.UUID, widget models.Widget, fi
 	// Build a lookup: group → date → count
 	lookup := make(map[string]map[string]float64)
 	for _, row := range rows {
-		gv := row.GroupValue
-		if gv == "" {
-			gv = "(empty)"
-		}
+		gv := groupLabel(widget.DataSource, widget.GroupByField, row.GroupValue)
 		dateLabel := row.Date.Format("Jan 02")
 		if lookup[gv] == nil {
 			lookup[gv] = make(map[string]float64)

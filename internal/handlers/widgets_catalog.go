@@ -143,6 +143,23 @@ func filterArg(dataSource, field, value string) any {
 	return value
 }
 
+// groupLabel returns the chart label for a grouped value. Booleans read back
+// as "1"/"0" on SQLite and "true"/"false" on PostgreSQL; both become "true"/"false".
+func groupLabel(dataSource, field, value string) string {
+	if booleanFilterFields[dataSource][field] {
+		switch value {
+		case "1":
+			return "true"
+		case "0":
+			return "false"
+		}
+	}
+	if value == "" {
+		return "(empty)"
+	}
+	return value
+}
+
 func parseCSVValues(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))

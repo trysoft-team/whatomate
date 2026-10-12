@@ -33,6 +33,28 @@ func TestBuildFilterSQL_BindsBooleanFieldsAsBool(t *testing.T) {
 	}
 }
 
+func TestGroupedData_BooleanLabelsAreTrueFalse(t *testing.T) {
+	app := newProcessorTestApp(t)
+	org, account := createProcessorTestOrg(t, app)
+	now := time.Now().UTC()
+	for _, isRead := range []bool{true, false, false} {
+		contact := testutil.CreateTestContactWith(t, app.DB, org.ID, testutil.WithContactAccount(account.Name))
+		require.NoError(t, app.DB.Model(contact).Updates(map[string]any{"is_read": isRead, "last_message_at": now}).Error)
+	}
+	widget := models.Widget{OrganizationID: org.ID, DataSource: "contacts", GroupByField: "is_read"}
+	start, end := now.Add(-time.Hour), now.Add(time.Hour)
+
+	points := app.getGroupedData(org.ID, widget, nil, start, end)
+	assert.Equal(t, []DataPoint{{Label: "false", Value: 2}, {Label: "true", Value: 1}}, points)
+
+	series := app.getGroupedTimeSeriesData(org.ID, widget, nil, start, end)
+	labels := make([]string, 0, len(series.Datasets))
+	for _, ds := range series.Datasets {
+		labels = append(labels, ds.Label)
+	}
+	assert.ElementsMatch(t, []string{"true", "false"}, labels)
+}
+
 func TestGetGroupedTimeSeriesData_RejectsUnknownGroupByField(t *testing.T) {
 	app := newProcessorTestApp(t)
 	org, account := createProcessorTestOrg(t, app)
