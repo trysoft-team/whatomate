@@ -140,7 +140,7 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 	// Create indexes
 	for _, idx := range indexes {
 		printProgress(currentStep, totalSteps)
-		if err := silentDB.Exec(idx).Error; err != nil {
+		if err := createIndex(silentDB, idx); err != nil {
 			fmt.Printf("\n  \033[31m✗ Index creation failed\033[0m\n\n")
 			return fmt.Errorf("failed to create index: %w", err)
 		}

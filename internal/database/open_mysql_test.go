@@ -89,11 +89,12 @@ func openMySQLEmpty(t *testing.T) *gorm.DB {
 	return db
 }
 
-// migrateMySQL runs RunMigrationWithProgress's steps except the raw index
-// statements and BackfillLastInboundAt, whose SQL has no MySQL form yet.
+// migrateMySQL runs RunMigrationWithProgress's steps except
+// BackfillLastInboundAt, whose SQL has no MySQL form yet.
 func migrateMySQL(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.CreateIndexes(db))
 	require.NoError(t, database.SeedPermissionsAndRoles(db))
 	require.NoError(t, database.SeedSystemRolesForAllOrgs(db))
 	require.NoError(t, database.MigrateUserOrganizations(db))
@@ -162,7 +163,7 @@ func TestOpenMySQL_RepeatMigrationAltersNothing(t *testing.T) {
 		return cols
 	}
 
-	ddl := regexp.MustCompile(`(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE)`)
+	ddl := regexp.MustCompile(`(?i)^\s*(CREATE TABLE|ALTER TABLE|DROP TABLE|CREATE\s+(UNIQUE\s+)?INDEX|DROP INDEX)`)
 	var mu sync.Mutex
 	var altered []string
 	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register("test:capture_ddl", func(tx *gorm.DB) {
@@ -175,8 +176,81 @@ func TestOpenMySQL_RepeatMigrationAltersNothing(t *testing.T) {
 
 	before := snapshot()
 	migrateMySQL(t, db)
-	assert.Empty(t, altered, "second migration must not create, alter or drop tables")
+	assert.Empty(t, altered, "second migration must not create, alter or drop tables or indexes")
 	assert.Equal(t, before, snapshot())
+}
+
+func assertDuplicateKey(t *testing.T, err error) {
+	t.Helper()
+	var myErr *mysqldrv.MySQLError
+	if assert.ErrorAs(t, err, &myErr) {
+		assert.EqualValues(t, 1062, myErr.Number, myErr.Message)
+	}
+}
+
+func TestOpenMySQL_PartialUniqueIndexes(t *testing.T) {
+	db := openMySQL(t)
+	org := models.Organization{Name: "o", Slug: "o"}
+	require.NoError(t, db.Create(&org).Error)
+	user := models.User{OrganizationID: org.ID, Email: "u@example.com"}
+	require.NoError(t, db.Create(&user).Error)
+	team := models.Team{OrganizationID: org.ID, Name: "t"}
+	require.NoError(t, db.Create(&team).Error)
+
+	removed := models.TeamMember{TeamID: team.ID, UserID: user.ID}
+	require.NoError(t, db.Create(&removed).Error)
+	require.NoError(t, db.Delete(&removed).Error)
+	require.NoError(t, db.Create(&models.TeamMember{TeamID: team.ID, UserID: user.ID}).Error, "re-adding a removed member")
+	assertDuplicateKey(t, db.Create(&models.TeamMember{TeamID: team.ID, UserID: user.ID}).Error)
+	var members []models.TeamMember
+	require.NoError(t, db.Where("team_id = ?", team.ID).Find(&members).Error)
+	assert.Len(t, members, 1)
+
+	// user_organizations also has GORM's full unique index idx_user_org, so
+	// only the active duplicate is checked here.
+	require.NoError(t, db.Create(&models.UserOrganization{UserID: user.ID, OrganizationID: org.ID}).Error)
+	assertDuplicateKey(t, db.Create(&models.UserOrganization{UserID: user.ID, OrganizationID: org.ID}).Error)
+	var userOrgs []models.UserOrganization
+	require.NoError(t, db.Where("user_id = ?", user.ID).Find(&userOrgs).Error)
+	assert.Len(t, userOrgs, 1)
+
+	newFlow := func(name string, active bool) error {
+		f := models.IVRFlow{OrganizationID: org.ID, WhatsAppAccount: "acc", Name: name, IsCallStart: true}
+		if err := db.Create(&f).Error; err != nil {
+			return err
+		}
+		return db.Model(&f).Update("is_active", active).Error
+	}
+	require.NoError(t, newFlow("inactive 1", false))
+	require.NoError(t, newFlow("inactive 2", false))
+	require.NoError(t, newFlow("active 1", true))
+	assertDuplicateKey(t, newFlow("active 2", true))
+	var flows []models.IVRFlow
+	require.NoError(t, db.Where("organization_id = ?", org.ID).Find(&flows).Error)
+	assert.Len(t, flows, 3)
+}
+
+func TestOpenMySQL_IndexesIdempotent(t *testing.T) {
+	db := openMySQL(t)
+	require.NoError(t, database.CreateIndexes(db))
+	require.NoError(t, database.CreateIndexes(db))
+
+	var extra string
+	require.NoError(t, db.Raw(`SELECT extra FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = 'team_members' AND column_name = 'idx_team_members_unique_active'`).Row().Scan(&extra))
+	assert.Contains(t, strings.ToUpper(extra), "VIRTUAL")
+
+	org := models.Organization{Name: "o", Slug: "o"}
+	require.NoError(t, db.Create(&org).Error)
+	user := models.User{OrganizationID: org.ID, Email: "u@example.com"}
+	require.NoError(t, db.Create(&user).Error)
+	team := models.Team{OrganizationID: org.ID, Name: "t"}
+	require.NoError(t, db.Create(&team).Error)
+	m := models.TeamMember{TeamID: team.ID, UserID: user.ID}
+	require.NoError(t, db.Create(&m).Error)
+	var got models.TeamMember
+	require.NoError(t, db.First(&got, "id = ?", m.ID).Error)
+	assert.Equal(t, m.UserID, got.UserID)
 }
 
 func TestOpenMySQL_AddsAndAltersJSONColumnWithDefault(t *testing.T) {
