@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -282,6 +283,10 @@ func TestPostgresSchemaUnchanged(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
+	// This test alters the schema, so it only runs against a dedicated test database.
+	if u, err := url.Parse(dsn); err != nil || !strings.HasSuffix(strings.TrimPrefix(u.Path, "/"), "_test") {
+		t.Skip("TEST_DATABASE_URL does not name a *_test database")
+	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -297,21 +302,28 @@ func TestPostgresSchemaUnchanged(t *testing.T) {
 		return dataType, def, err
 	}
 
-	beforeType, beforeDef, err := column("id")
-	if errors.Is(err, sql.ErrNoRows) {
-		// Fresh database: create the schema once so there is something to compare against.
+	if _, _, err := column("id"); errors.Is(err, sql.ErrNoRows) {
 		require.NoError(t, database.AutoMigrate(db))
-		beforeType, beforeDef, err = column("id")
 	}
+	_, origDef, err := column("id")
 	require.NoError(t, err)
+
+	// Installs created before ids were generated in Go have this database default.
+	require.NoError(t, db.Exec(`ALTER TABLE contacts ALTER COLUMN id SET DEFAULT gen_random_uuid()`).Error)
+	t.Cleanup(func() {
+		restore := `ALTER TABLE contacts ALTER COLUMN id DROP DEFAULT`
+		if origDef != "" {
+			restore = `ALTER TABLE contacts ALTER COLUMN id SET DEFAULT ` + origDef
+		}
+		assert.NoError(t, db.Exec(restore).Error)
+	})
 
 	require.NoError(t, database.AutoMigrate(db))
 
-	afterType, afterDef, err := column("id")
+	idType, idDef, err := column("id")
 	require.NoError(t, err)
-	assert.Equal(t, beforeType, afterType)
-	assert.Equal(t, beforeDef, afterDef)
-	assert.Equal(t, "uuid", afterType)
+	assert.Equal(t, "uuid", idType)
+	assert.Equal(t, "gen_random_uuid()", idDef, "migration must not drop an existing id default")
 
 	tagsType, _, err := column("tags")
 	require.NoError(t, err)
