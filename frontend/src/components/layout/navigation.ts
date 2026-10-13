@@ -25,7 +25,8 @@ import {
   Building2,
   BookUser,
   Sheet,
-  History
+  History,
+  Archive
 } from 'lucide-vue-next'
 import type { Component } from 'vue'
 
@@ -148,6 +149,7 @@ export const navigationSections: NavSection[] = [
         children: [
           { name: 'nav.general', path: '/settings', icon: Settings, permission: 'settings.general' },
           { name: 'nav.organizations', path: '/settings/organizations', icon: Building2, superAdmin: true },
+          { name: 'nav.backup', path: '/settings/backup', icon: Archive, superAdmin: true },
           { name: 'nav.chatbot', path: '/settings/chatbot', icon: Bot, permission: 'settings.chatbot' },
           { name: 'nav.aiSettings', path: '/settings/ai', icon: Sparkles, permission: 'settings.chatbot' },
           { name: 'nav.accounts', path: '/settings/accounts', icon: Users, permission: 'accounts' },

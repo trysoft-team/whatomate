@@ -197,6 +197,12 @@ const router = createRouter({
           meta: { superAdmin: true }
         },
         {
+          path: 'settings/backup',
+          name: 'backup',
+          component: () => import('@/views/settings/BackupView.vue'),
+          meta: { superAdmin: true }
+        },
+        {
           path: 'settings/chatbot',
           name: 'chatbot-settings',
           component: () => import('@/views/settings/ChatbotSettingsView.vue'),
@@ -426,6 +432,7 @@ const navigationOrder: NavAccess[] = [
   { path: '/settings', permission: 'settings.general', childPaths: [
     { path: '/settings', permission: 'settings.general' },
     { path: '/settings/organizations', superAdmin: true },
+    { path: '/settings/backup', superAdmin: true },
     { path: '/settings/chatbot', permission: 'settings.chatbot' },
     { path: '/settings/ai', permission: 'settings.chatbot' },
     { path: '/settings/accounts', permission: 'accounts' },
