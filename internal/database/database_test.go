@@ -251,6 +251,34 @@ func TestCreateDefaultAdmin_UsesExistingOrg(t *testing.T) {
 	assert.Equal(t, int64(1), orgCount, "should reuse existing organization")
 }
 
+func TestCreateDefaultAdmin_SkipsWhenAnyUserExists(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+	org := testutil.CreateTestOrganization(t, db)
+	testutil.CreateTestUser(t, db, org.ID, testutil.WithEmail("someone@example.com"))
+
+	require.NoError(t, database.CreateDefaultAdmin(db, &config.DefaultAdminConfig{
+		Email: "admin@admin.com", Password: "admin", FullName: "Admin",
+	}))
+
+	var n int64
+	require.NoError(t, db.Model(&models.User{}).Where("email = ?", "admin@admin.com").Count(&n).Error)
+	assert.Zero(t, n, "a database with users must not get the default admin")
+}
+
+func TestCreateDefaultAdmin_UsesOrganizationName(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	cleanAll(t, db)
+
+	require.NoError(t, database.CreateDefaultAdmin(db, &config.DefaultAdminConfig{
+		Email: "owner@example.com", Password: "password1", FullName: "Owner", OrganizationName: "Acme Ltd",
+	}))
+
+	var org models.Organization
+	require.NoError(t, db.First(&org).Error)
+	assert.Equal(t, "Acme Ltd", org.Name)
+}
+
 // --- MigrateUserOrganizations ---
 
 func TestMigrateUserOrganizations_BackfillsMissingRowOnce(t *testing.T) {

@@ -202,6 +202,9 @@ type DefaultAdminConfig struct {
 	Email    string `koanf:"email"`
 	Password string `koanf:"password"`
 	FullName string `koanf:"full_name"`
+	// OrganizationName names the organization created with the first admin;
+	// empty means "Default Organization".
+	OrganizationName string `koanf:"organization_name"`
 }
 
 type CookieConfig struct {

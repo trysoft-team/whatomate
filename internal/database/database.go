@@ -171,7 +171,7 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 		return err
 	}
 
-	// Create default admin (only runs if no users exist)
+	// Create the first admin (only when there are no users)
 	printProgress(currentStep, totalSteps)
 	if err := CreateDefaultAdmin(silentDB, adminCfg); err != nil {
 		fmt.Printf("\n  \033[31m✗ Setup failed\033[0m\n\n")
@@ -207,13 +207,14 @@ func repeatChar(char string, n int) string {
 	return result
 }
 
-// CreateDefaultAdmin creates a default admin user if no users exist
-// This should only be called once during initial setup
+// CreateDefaultAdmin creates the first organization and a super-admin user
+// when the database has no users yet.
 func CreateDefaultAdmin(db *gorm.DB, cfg *config.DefaultAdminConfig) error {
-	// Check if admin already exists (using email from config)
-	var existingAdmin models.User
-	if err := db.Where("email = ?", cfg.Email).First(&existingAdmin).Error; err == nil {
-		// Admin already exists, skip
+	var users int64
+	if err := db.Model(&models.User{}).Count(&users).Error; err != nil {
+		return fmt.Errorf("failed to count users: %w", err)
+	}
+	if users > 0 {
 		return nil
 	}
 
@@ -221,9 +222,13 @@ func CreateDefaultAdmin(db *gorm.DB, cfg *config.DefaultAdminConfig) error {
 	var org models.Organization
 	if err := db.First(&org).Error; err != nil {
 		// No organizations exist, create default one
+		orgName := cfg.OrganizationName
+		if orgName == "" {
+			orgName = "Default Organization"
+		}
 		org = models.Organization{
 			BaseModel: models.BaseModel{ID: uuid.New()},
-			Name:      "Default Organization",
+			Name:      orgName,
 			Settings:  models.JSONB{},
 		}
 		if err := db.Create(&org).Error; err != nil {
