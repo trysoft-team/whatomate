@@ -4757,6 +4757,8 @@ generates `[jwt] secret` and `[app] encryption_key`, and sets
 `whatomate worker` never runs the wizard.
 ```
 
+Add an "Upgrading" note at the top of the `[server]` section: "The default port changed from 8080 to 4747. A config without `[server] port` now listens on 4747; set `port = 8080` to keep the old port (Docker users: update the published port too)."
+
 In the `[server]` table row: "`host`, `port`: default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart." Under `[default_admin]`, note that it is used only by `server -migrate` on a database with no users.
 
 - [ ] **Step 3: Homebrew caveats**
