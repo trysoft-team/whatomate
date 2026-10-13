@@ -62,22 +62,24 @@ func globEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`, "[", `\[`, "]", `\]`).Replace(s)
 }
 
+// incrScript starts the window on the first hit and also on a key left
+// without a TTL, which would otherwise count forever.
+var incrScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+local ttl = redis.call('PTTL', KEYS[1])
+if n == 1 or ttl == -1 then
+	redis.call('PEXPIRE', KEYS[1], ARGV[1])
+	ttl = tonumber(ARGV[1])
+end
+return {n, ttl}
+`)
+
 func (r *Redis) Incr(ctx context.Context, key string, window time.Duration) (int64, time.Duration, error) {
-	n, err := r.c.Incr(ctx, key).Result()
+	res, err := incrScript.Run(ctx, r.c, []string{key}, window.Milliseconds()).Int64Slice()
 	if err != nil {
 		return 0, 0, err
 	}
-	if n == 1 {
-		if err := r.c.Expire(ctx, key, window).Err(); err != nil {
-			return n, window, err
-		}
-		return n, window, nil
-	}
-	ttl, err := r.c.TTL(ctx, key).Result()
-	if err != nil || ttl < 0 {
-		ttl = window
-	}
-	return n, ttl, nil
+	return res[0], time.Duration(res[1]) * time.Millisecond, nil
 }
 
 // Schedule stores at as whole Unix seconds, the score format existing Redis
