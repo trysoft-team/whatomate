@@ -23,6 +23,8 @@ import httpx
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import connect as ws_connect
 
+from tools import end_call_description, transfer_description, transfer_tool_response
+
 # opuslib uses ctypes.util.find_library('opus'), which often misses Homebrew.
 _orig_find_library = ctypes.util.find_library
 
@@ -63,6 +65,9 @@ PLAYING_HOLD_SECS = 0.12
 HANGUP_MIN_WAIT_SECS = 0.5
 HANGUP_IDLE_SECS = 0.4
 HANGUP_MAX_WAIT_SECS = 6.0
+# After asking the model to announce a transfer, its audio needs ~1–2s to arrive.
+TRANSFER_ANNOUNCE_WAIT_SECS = 2.5
+TRANSFER_MAX_WAIT_SECS = 10.0
 SOFT_CLIP = 28000
 _SENT_END = re.compile(r"""[.!?…]["']?(?:\s+|$)""")
 # Verbal goodbye without end_call tool (Live often speaks farewell and skips the tool).
@@ -264,8 +269,8 @@ async def _live_session(
         # Shared: uplink suppresses quiet echo while downlink is actively playing.
         playing_until = 0.0
         interrupt_count = 0
-        hangup_req_at = 0.0  # monotonic; 0 = not requested
-        hangup_task: Optional[asyncio.Task] = None
+        exit_req_at = 0.0  # monotonic; 0 = not requested
+        exit_task: Optional[asyncio.Task] = None
         playback_busy = False  # True while downlink has buffered PCM
 
         try:
@@ -292,10 +297,10 @@ async def _live_session(
             # Prefer playing_until + queue; playback_busy can stick on partial frames.
             return out_q.empty() and time.monotonic() >= playing_until
 
-        async def _graceful_hangup() -> None:
-            """Drain farewell audio, then always notify hangup to Whatomate."""
-            started = hangup_req_at or time.monotonic()
-            deadline = started + HANGUP_MAX_WAIT_SECS
+        async def _graceful_exit(event: str, min_wait: float, max_wait: float) -> None:
+            """Drain last words (farewell / transfer notice), then always notify Whatomate."""
+            started = exit_req_at or time.monotonic()
+            deadline = started + max_wait
             idle_since = 0.0
             try:
                 while not stop.is_set() and time.monotonic() < deadline:
@@ -304,7 +309,7 @@ async def _live_session(
                         if idle_since <= 0:
                             idle_since = time.monotonic()
                         elif (
-                            elapsed >= HANGUP_MIN_WAIT_SECS
+                            elapsed >= min_wait
                             and (time.monotonic() - idle_since) >= HANGUP_IDLE_SECS
                         ):
                             break
@@ -316,16 +321,20 @@ async def _live_session(
             finally:
                 # Always notify — cancel/timeout must not leave the call hanging.
                 log.info(
-                    "graceful hangup notify after %.0fms idle=%s",
+                    "graceful %s notify after %.0fms idle=%s",
+                    event,
                     (time.monotonic() - started) * 1000,
                     _playback_idle(),
                 )
                 try:
-                    await notify(boot, "hangup")
+                    if event == "transfer":
+                        await notify(boot, "transfer", team_id=boot.get("transfer_team_id") or "")
+                    else:
+                        await notify(boot, "hangup")
                 except Exception:
-                    log.exception("hangup notify failed")
+                    log.exception("%s notify failed", event)
                 try:
-                    await wa_ws.send_text(json.dumps({"type": "event", "event": "hangup"}))
+                    await wa_ws.send_text(json.dumps({"type": "event", "event": event}))
                 except Exception:
                     pass
                 stop.set()
@@ -334,13 +343,25 @@ async def _live_session(
                 except asyncio.QueueFull:
                     pass
 
+        def _request_exit(event: str, reason: str, min_wait: float, max_wait: float) -> bool:
+            nonlocal exit_req_at, exit_task
+            if exit_req_at > 0:
+                return False
+            exit_req_at = time.monotonic()
+            log.info("%s requested reason=%s", event, reason)
+            exit_task = asyncio.create_task(_graceful_exit(event, min_wait, max_wait))
+            return True
+
         def _request_hangup(reason: str = "end_call") -> None:
-            nonlocal hangup_req_at, hangup_task
-            if hangup_req_at > 0:
-                return
-            hangup_req_at = time.monotonic()
-            log.info("hangup requested reason=%s", reason)
-            hangup_task = asyncio.create_task(_graceful_hangup())
+            _request_exit("hangup", reason, HANGUP_MIN_WAIT_SECS, HANGUP_MAX_WAIT_SECS)
+
+        def _request_transfer() -> Dict[str, Any]:
+            # Speech already queued means the model announced the transfer
+            # before calling the tool; otherwise give it time to say it now.
+            speaking = not _playback_idle()
+            min_wait = HANGUP_MIN_WAIT_SECS if speaking else TRANSFER_ANNOUNCE_WAIT_SECS
+            _request_exit("transfer", "transfer_to_agent", min_wait, TRANSFER_MAX_WAIT_SECS)
+            return transfer_tool_response(already_speaking=speaking)
 
         async def uplink() -> None:
             """WhatsApp Opus → Live PCM16@16k."""
@@ -368,7 +389,7 @@ async def _live_session(
                         timeline.write_user(pcm16)
                     # During farewell hangup, do not local-flush — let last words play.
                     playing = time.monotonic() < playing_until or playback_busy
-                    if playing and hangup_req_at <= 0:
+                    if playing and exit_req_at <= 0:
                         rms = audioop.rms(pcm16, 2)
                         if rms < BARGE_RMS_WHILE_PLAYING:
                             barge_run = 0
@@ -381,7 +402,7 @@ async def _live_session(
                     else:
                         barge_run = 0
                         # Still drop quiet echo while farewell audio is on the wire.
-                        if playing and hangup_req_at > 0:
+                        if playing and exit_req_at > 0:
                             if audioop.rms(pcm16, 2) < BARGE_RMS_WHILE_PLAYING:
                                 continue
                     payload = {
@@ -433,6 +454,7 @@ async def _live_session(
                             tool_call,
                             notify,
                             on_hangup=lambda: _request_hangup("end_call"),
+                            on_transfer=_request_transfer,
                         )
                         continue
 
@@ -443,7 +465,7 @@ async def _live_session(
                         if do_transcript:
                             transcript_lines.extend(tx.flush_all())
                         # Don't wipe farewell audio once hangup is in progress.
-                        if hangup_req_at <= 0:
+                        if exit_req_at <= 0:
                             _flush_playback()
                         continue
 
@@ -465,7 +487,7 @@ async def _live_session(
                             for line in tx.feed_assistant(str(out_tx["text"]), finished=bool(out_tx.get("finished"))):
                                 transcript_lines.append(line)
                                 log.info("live transcript assistant: %s", line["text"][:160])
-                                if hangup_req_at <= 0 and _FAREWELL_RE.search(line["text"] or ""):
+                                if exit_req_at <= 0 and _FAREWELL_RE.search(line["text"] or ""):
                                     # Model said goodbye but may skip end_call — hang up after audio.
                                     _request_hangup("farewell_transcript")
                         if turn_done:
@@ -473,12 +495,12 @@ async def _live_session(
                                 transcript_lines.append(line)
                                 log.info("live transcript %s: %s", line["role"], line["text"][:160])
                                 if (
-                                    hangup_req_at <= 0
+                                    exit_req_at <= 0
                                     and line.get("role") == "assistant"
                                     and _FAREWELL_RE.search(line.get("text") or "")
                                 ):
                                     _request_hangup("farewell_transcript")
-                    elif turn_done and hangup_req_at <= 0:
+                    elif turn_done and exit_req_at <= 0:
                         # Transcription off: still hang up if end_call already pending only.
                         pass
 
@@ -530,7 +552,7 @@ async def _live_session(
                     chunk = await asyncio.wait_for(out_q.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     # Drop stranded partial frames so hangup idle can complete.
-                    if hangup_req_at > 0 and (pcm24_buf or pcm48_buf):
+                    if exit_req_at > 0 and (pcm24_buf or pcm48_buf):
                         pcm24_buf.clear()
                         pcm48_buf.clear()
                         playback_busy = False
@@ -589,22 +611,22 @@ async def _live_session(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # If hangup is draining farewell audio, finish notify before teardown.
-            if hangup_task is not None and not hangup_task.done() and hangup_req_at > 0:
+            if exit_task is not None and not exit_task.done() and exit_req_at > 0:
                 try:
                     await asyncio.wait_for(
-                        hangup_task, timeout=max(1.0, HANGUP_MAX_WAIT_SECS + 1.0)
+                        exit_task, timeout=max(1.0, HANGUP_MAX_WAIT_SECS + 1.0)
                     )
                 except (asyncio.TimeoutError, asyncio.CancelledError):
-                    hangup_task.cancel()
-                    await asyncio.gather(hangup_task, return_exceptions=True)
+                    exit_task.cancel()
+                    await asyncio.gather(exit_task, return_exceptions=True)
             stop.set()
             for t in pending:
-                if t is not hangup_task:
+                if t is not exit_task:
                     t.cancel()
             await asyncio.gather(up_task, live_task, down_task, return_exceptions=True)
-            if hangup_task is not None and not hangup_task.done():
-                hangup_task.cancel()
-                await asyncio.gather(hangup_task, return_exceptions=True)
+            if exit_task is not None and not exit_task.done():
+                exit_task.cancel()
+                await asyncio.gather(exit_task, return_exceptions=True)
         finally:
             stop.set()
             if do_transcript:
@@ -886,7 +908,7 @@ def _live_tools(boot: Dict[str, Any]) -> List[Dict[str, Any]]:
     decls: List[Dict[str, Any]] = [
         {
             "name": "transfer_to_agent",
-            "description": "Transfer the caller to a human agent.",
+            "description": transfer_description(boot),
             "parameters": {
                 "type": "object",
                 "properties": {"reason": {"type": "string"}},
@@ -894,12 +916,7 @@ def _live_tools(boot: Dict[str, Any]) -> List[Dict[str, Any]]:
         },
         {
             "name": "end_call",
-            "description": (
-                "REQUIRED to disconnect. Call this when the caller says goodbye "
-                "or the conversation is finished. Speak a brief farewell, then call "
-                "end_call (or call it and speak farewell). The line stays open until "
-                "this tool is used."
-            ),
+            "description": end_call_description(boot),
             "parameters": {"type": "object", "properties": {}},
         },
     ]
@@ -925,6 +942,7 @@ async def _handle_tool_call(
     notify,
     *,
     on_hangup: Optional[Any] = None,
+    on_transfer: Optional[Any] = None,
 ) -> None:
     fcs = tool_call.get("functionCalls") or tool_call.get("function_calls") or []
     responses = []
@@ -939,18 +957,17 @@ async def _handle_tool_call(
         call_id = fc.get("id") or name
 
         if name in ("transfer_to_agent", "transfer"):
-            await notify(boot, "transfer", team_id=boot.get("transfer_team_id") or "")
-            try:
-                await wa_ws.send_text(json.dumps({"type": "event", "event": "transfer"}))
-            except Exception:
-                pass
-            responses.append(
-                {
-                    "id": call_id,
-                    "name": name,
-                    "response": {"result": "transferring"},
-                }
-            )
+            log.info("tool transfer_to_agent received reason=%s", (args.get("reason") or "")[:120])
+            if on_transfer:
+                response = on_transfer()
+            else:
+                await notify(boot, "transfer", team_id=boot.get("transfer_team_id") or "")
+                try:
+                    await wa_ws.send_text(json.dumps({"type": "event", "event": "transfer"}))
+                except Exception:
+                    pass
+                response = {"result": "transferring"}
+            responses.append({"id": call_id, "name": name, "response": response})
         elif name in ("end_call", "hangup"):
             log.info("tool end_call received")
             # Drain farewell audio, then notify Whatomate.

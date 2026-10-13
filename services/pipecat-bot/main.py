@@ -21,6 +21,8 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+from tools import TRANSFER_ANNOUNCEMENT, end_call_description, transfer_description
+
 # opuslib uses ctypes.util.find_library('opus'), which often misses Homebrew.
 import ctypes.util
 
@@ -308,6 +310,8 @@ async def run_voice_loop_turn_based(ws: WebSocket, sess: Session) -> None:
                     history.append({"role": "user", "content": text.strip()})
                     reply, action = await llm_turn(boot, history)
                     if action == "transfer":
+                        notice = (reply or "").strip() or TRANSFER_ANNOUNCEMENT
+                        await speak_text(ws, encoder, decoder, boot, notice)
                         await notify_whatomate(boot, "transfer", team_id=boot.get("transfer_team_id") or "")
                         await ws.send_text(json.dumps({"type": "event", "event": "transfer"}))
                         return
@@ -919,7 +923,7 @@ def build_openai_tools(boot: Dict[str, Any]) -> list[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "transfer_to_agent",
-                "description": "Transfer the caller to a human agent.",
+                "description": transfer_description(boot),
                 "parameters": {
                     "type": "object",
                     "properties": {"reason": {"type": "string"}},
@@ -930,10 +934,7 @@ def build_openai_tools(boot: Dict[str, Any]) -> list[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "end_call",
-                "description": (
-                    "End the call politely when the caller is done. "
-                    "Speak a brief goodbye in your reply before or when calling this."
-                ),
+                "description": end_call_description(boot),
                 "parameters": {"type": "object", "properties": {}},
             },
         },
