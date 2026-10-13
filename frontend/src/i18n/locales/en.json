@@ -3008,5 +3008,83 @@
     "callFailed": "Failed to initiate call",
     "permissionSent": "Call permission request sent",
     "permissionSentDesc": "The contact needs to accept the call permission on WhatsApp before you can call them. Try again after they accept."
+  },
+  "setup": {
+    "title": "Set up whatomate",
+    "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin" },
+    "back": "Back",
+    "next": "Next",
+    "welcome": {
+      "title": "Welcome to whatomate",
+      "body": "No configuration was found, so let's set this server up. You'll check the system, choose a database and create the first admin account. It takes a couple of minutes.",
+      "version": "Version {version}",
+      "start": "Start setup"
+    },
+    "checks": {
+      "title": "System check",
+      "subtitle": "Problems marked in red must be fixed before you continue. Warnings won't stop setup.",
+      "rerun": "Run again",
+      "port": "Port",
+      "portHint": "whatomate will listen on this port after setup.",
+      "location": "Config file",
+      "locationHint": "Where whatomate saves its configuration. Data is stored in {dir}.",
+      "scope": { "user": "This user", "system": "System-wide", "fixed": "Chosen at startup" },
+      "notWritable": "not writable",
+      "items": {
+        "system": "System",
+        "folders": "Folders writable",
+        "disk": "Free disk space",
+        "memory": "Memory",
+        "port": "Port",
+        "internet": "Internet (Meta Graph API)",
+        "clock": "System clock",
+        "audio": "Audio tools for calling"
+      }
+    },
+    "database": {
+      "title": "Database",
+      "subtitle": "SQLite needs nothing else installed. Use PostgreSQL or MySQL if you already run one.",
+      "drivers": { "sqlite": "SQLite", "postgres": "PostgreSQL", "mysql": "MySQL / MariaDB" },
+      "path": "Database file",
+      "host": "Host",
+      "port": "Port",
+      "user": "User",
+      "password": "Password",
+      "name": "Database name",
+      "sslMode": "SSL mode",
+      "test": "Test connection",
+      "testing": "Testing…",
+      "ok": "Connection works.",
+      "missing": "The server answered, but database \"{name}\" doesn't exist yet.",
+      "create": "Create database",
+      "creating": "Creating…",
+      "failed": "Connection failed: {error}"
+    },
+    "admin": {
+      "title": "Admin account",
+      "subtitle": "This account can manage every organization on this server.",
+      "organization": "Organization name",
+      "fullName": "Full name",
+      "email": "Email",
+      "password": "Password",
+      "confirm": "Confirm password",
+      "strength": { "tooShort": "Too short", "weak": "Weak", "fair": "Fair", "strong": "Strong" },
+      "finish": "Finish setup",
+      "errors": {
+        "organization": "Enter an organization name.",
+        "organizationLength": "Use 100 characters or fewer.",
+        "fullName": "Enter your name.",
+        "email": "Enter a valid email address.",
+        "passwordLength": "Use at least 8 characters.",
+        "confirm": "Passwords don't match."
+      }
+    },
+    "finish": {
+      "saving": "Setting up the database, admin account and config file…",
+      "slow": "This can take a minute.",
+      "starting": "Starting whatomate…",
+      "httpNote": "You opened setup over plain HTTP, so whatomate runs in development mode (cookies work without HTTPS). Put it behind HTTPS and set environment = \"production\" before going live.",
+      "failed": "Setup failed. Check the details and try again."
+    }
   }
 }
