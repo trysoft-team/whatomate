@@ -139,7 +139,8 @@ async function loadServerSettings() {
     const res = await serverSettingsService.get()
     serverSettings.value = res.data.data
     serverPort.value = res.data.data.config_port
-  } catch {
+  } catch (error) {
+    console.error('Failed to load server settings:', error)
     serverSettings.value = null
   }
 }
