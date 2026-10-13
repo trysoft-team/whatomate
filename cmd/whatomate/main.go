@@ -243,7 +243,6 @@ func runServer(args []string) {
 	// Initialize CallManager (per-org calling_enabled DB setting controls access)
 	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, rdb, waClient, wsHub, assigner, lo)
 	app.CallManager.SetSecrets(cfg.App.EncryptionKey, &cfg.AI)
-	app.CallManager.SetPipecat(&cfg.Pipecat)
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
 
@@ -585,10 +584,6 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 			path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" ||
 			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" ||
 			path == "/api/auth/passkey/begin" || path == "/api/auth/passkey/finish" {
-			return r
-		}
-		// Pipecat sidecar callbacks use shared auth_token (validated in handlers).
-		if strings.HasPrefix(path, "/api/internal/pipecat") {
 			return r
 		}
 		// Public chatbot media for Meta (UUID filenames; also under base_path)
@@ -945,12 +940,6 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/custom-actions/redirect/{token}", app.CustomActionRedirect)
 
 	// IVR Flows
-	g.POST("/api/internal/pipecat/events", app.PipecatEvent)
-	g.POST("/api/internal/pipecat/tools/{call_id}", app.PipecatTool)
-	g.POST("/api/internal/pipecat/transcript/{call_id}", app.PipecatTranscript)
-	g.POST("/api/internal/pipecat/recordings/{call_id}", app.PipecatRecording)
-	g.GET("/api/internal/pipecat/status", app.PipecatStatus)
-
 	g.GET("/api/ivr-flows", app.ListIVRFlows)
 	g.GET("/api/ivr-flows/{id}", app.GetIVRFlow)
 	g.POST("/api/ivr-flows", app.CreateIVRFlow)

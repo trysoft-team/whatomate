@@ -72,6 +72,3 @@ test-results/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
-
-# Pipecat sidecar
-services/pipecat-bot/.venv/

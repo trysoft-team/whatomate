@@ -32,7 +32,7 @@ const (
 	realtimeFrame24k         = realtime.LiveOutputRate / 50 // 20 ms
 	// A partial frame left this long at the end of a turn is padded and played.
 	realtimePartialFrameWait = 60 * time.Millisecond
-	realtimeDefaultMaxSecs   = 600
+	realtimeMaxSession       = 10 * time.Minute
 )
 
 const (
@@ -75,7 +75,7 @@ func (m *Manager) executeAICallRealtime(session *CallSession, node *IVRNode, ctx
 	if !ok {
 		return "", false
 	}
-	_, player, err := m.resolvePipecatOutbound(session, player)
+	player, err := m.resolveAICallPlayer(session, player)
 	if err != nil {
 		m.log.Error("IVR ai_call realtime: no outbound audio", "error", err, "call_id", session.ID)
 		return "error", true
@@ -95,16 +95,11 @@ func (m *Manager) executeAICallRealtime(session *CallSession, node *IVRNode, ctx
 	defer m.restartCallerAudioConsumer(session)
 
 	cfg := realtime.LiveConfig{
-		Voice:             pipecatGeminiVoice(p.voice),
+		Voice:             geminiVoice(p.voice),
 		SystemInstruction: realtimeSystemInstruction(p.system, p.welcome),
 		Tools:             realtimeToolDeclarations(p.tools),
 		Transcription:     boolFromConfig(node.Config, "transcription_enabled", false),
 	}
-	maxDur := realtimeDefaultMaxSecs * time.Second
-	if m.pipecat != nil && m.pipecat.MaxSessionSecs > 0 {
-		maxDur = time.Duration(m.pipecat.MaxSessionSecs) * time.Second
-	}
-
 	for _, model := range realtime.LiveModels {
 		cfg.Model = model
 		call := &realtimeCall{
@@ -115,7 +110,7 @@ func (m *Manager) executeAICallRealtime(session *CallSession, node *IVRNode, ctx
 			recordAsst: boolFromConfig(node.Config, "record_assistant", true),
 			recordMix:  boolFromConfig(node.Config, "record_stereo", true),
 		}
-		ev, err := call.run(cfg, maxDur)
+		ev, err := call.run(cfg, realtimeMaxSession)
 		var setupErr *realtime.SetupError
 		if errors.As(err, &setupErr) {
 			m.log.Warn("Gemini Live setup failed, trying next model", "model", model, "error", err, "call_id", session.ID)
@@ -128,7 +123,7 @@ func (m *Manager) executeAICallRealtime(session *CallSession, node *IVRNode, ctx
 		if ev == nil {
 			return "completed", true
 		}
-		return mapPipecatEvent(*ev, p.transferTeam, ctx), true
+		return mapAICallExit(*ev, p.transferTeam, ctx), true
 	}
 	m.log.Warn("Gemini Live unavailable, falling back to turn-based AI Call", "call_id", session.ID)
 	return "", false
@@ -240,13 +235,13 @@ type realtimeCall struct {
 
 	done     chan struct{}
 	stopOnce sync.Once
-	result   *PipecatControlEvent
+	result   *aiCallExit
 }
 
 // run returns the control event that ended the session (nil = completed).
 // A *realtime.SetupError, or an error when Live closed before any audio,
 // means another model may be tried.
-func (c *realtimeCall) run(cfg realtime.LiveConfig, maxDur time.Duration) (*PipecatControlEvent, error) {
+func (c *realtimeCall) run(cfg realtime.LiveConfig, maxDur time.Duration) (*aiCallExit, error) {
 	m, session := c.m, c.session
 	start := time.Now()
 	dialCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -294,7 +289,7 @@ func (c *realtimeCall) run(cfg realtime.LiveConfig, maxDur time.Duration) (*Pipe
 	return c.result, nil
 }
 
-func (c *realtimeCall) stop(ev *PipecatControlEvent) {
+func (c *realtimeCall) stop(ev *aiCallExit) {
 	c.stopOnce.Do(func() {
 		c.result = ev
 		close(c.done)
@@ -352,7 +347,7 @@ func (c *realtimeCall) uplink() {
 	dec, err := realtime.NewOpusDecoder()
 	if err != nil {
 		m.log.Error("Gemini Live: opus decoder", "error", err, "call_id", session.ID)
-		c.stop(&PipecatControlEvent{Type: "error"})
+		c.stop(&aiCallExit{Type: "error"})
 		return
 	}
 	down := realtime.NewDecimator(realtime.OpusRate / realtime.LiveInputRate)
@@ -583,19 +578,19 @@ func (c *realtimeCall) requestTransfer(reason string) map[string]any {
 	if c.ivr != nil && c.ivr.Variables["prefer_team_id"] != "" {
 		team = c.ivr.Variables["prefer_team_id"]
 	}
-	c.requestExit(PipecatControlEvent{Type: "transfer", TeamID: team, Reason: reason}, minWait, realtimeTransferMaxWait)
+	c.requestExit(aiCallExit{Type: "transfer", TeamID: team, Reason: reason}, minWait, realtimeTransferMaxWait)
 	return transferToolResponse(speaking)
 }
 
 func (c *realtimeCall) requestHangup(reason string) {
-	if c.requestExit(PipecatControlEvent{Type: "hangup"}, realtimeHangupMinWait, realtimeHangupMaxWait) {
+	if c.requestExit(aiCallExit{Type: "hangup"}, realtimeHangupMinWait, realtimeHangupMaxWait) {
 		c.m.log.Info("Gemini Live hangup requested", "reason", reason, "call_id", c.session.ID)
 	}
 }
 
 // requestExit lets queued speech (farewell, transfer notice) finish before
 // ending the session with ev. Only the first request counts.
-func (c *realtimeCall) requestExit(ev PipecatControlEvent, minWait, maxWait time.Duration) bool {
+func (c *realtimeCall) requestExit(ev aiCallExit, minWait, maxWait time.Duration) bool {
 	c.mu.Lock()
 	if c.exitRequested {
 		c.mu.Unlock()
@@ -607,7 +602,7 @@ func (c *realtimeCall) requestExit(ev PipecatControlEvent, minWait, maxWait time
 	return true
 }
 
-func (c *realtimeCall) drainThenStop(ev PipecatControlEvent, minWait, maxWait time.Duration) {
+func (c *realtimeCall) drainThenStop(ev aiCallExit, minWait, maxWait time.Duration) {
 	started := time.Now()
 	var idleSince time.Time
 	tick := time.NewTicker(50 * time.Millisecond)
@@ -683,7 +678,7 @@ func (c *realtimeCall) playback() {
 	enc, err := realtime.NewOpusEncoder(realtimeOpusBitrate)
 	if err != nil {
 		m.log.Error("Gemini Live: opus encoder", "error", err, "call_id", session.ID)
-		c.stop(&PipecatControlEvent{Type: "error"})
+		c.stop(&aiCallExit{Type: "error"})
 		return
 	}
 	up := &realtime.Upsampler2x{}

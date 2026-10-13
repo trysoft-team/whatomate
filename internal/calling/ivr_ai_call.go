@@ -16,13 +16,9 @@ import (
 
 // executeAICall runs a multi-turn voice conversation with optional LLM tool calls.
 // Outcomes: completed, transfer, max_turns, error.
-// When [pipecat] is enabled, delegates to the sidecar. Otherwise a Gemini key
-// runs the built-in realtime session, and anything else (or Live being
-// unreachable) uses the turn-based Whisper/TTS loop.
+// A Gemini key runs a realtime Gemini Live session; anything else (or Live
+// being unreachable) uses the turn-based Whisper/TTS loop.
 func (m *Manager) executeAICall(session *CallSession, node *IVRNode, ctx *IVRContext, player *AudioPlayer) string {
-	if m.PipecatEnabled() {
-		return m.executeAICallPipecat(session, node, ctx, player)
-	}
 	if m.realtimeAICallEnabled() {
 		if outcome, handled := m.executeAICallRealtime(session, node, ctx, player); handled {
 			return outcome

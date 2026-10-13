@@ -86,10 +86,6 @@ type CallSession struct {
 	// RTP track (see consumeAudioWithDTMF) for voicemail / speech_input.
 	IVRRecorder *CallRecorder
 
-	// Pipecat realtime AI Call control (nil when not in a Pipecat session).
-	PipecatEvent        chan PipecatControlEvent
-	PipecatTools        []aiCallToolDef
-	PipecatTransferTeam string
 	// AICallNodeID is the graph node id of the active AI Call (for fn: edges).
 	AICallNodeID string
 
@@ -183,9 +179,8 @@ type Manager struct {
 	redis         *redis.Client
 	assigner      *assignment.Assigner
 	tts           tts.Synthesizer
-	encryptionKey string                // decrypts org chatbot AI API keys / ElevenLabs key
-	aiConfig      *config.AIConfig      // optional server-level AI keys (Whisper fallback)
-	pipecat       *config.PipecatConfig // optional realtime AI Call sidecar
+	encryptionKey string           // decrypts org chatbot AI API keys / ElevenLabs key
+	aiConfig      *config.AIConfig // optional server-level AI keys (Whisper fallback)
 }
 
 // SetSecrets configures encryption + optional server AI keys used by Wave 3 IVR nodes.

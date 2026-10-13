@@ -95,18 +95,6 @@ api_window_seconds = 60        # Time window for global API rate limit (0 = 60)
 # piper_model = "/opt/piper/models/en_US-lessac-high.onnx"  # Docker image also ships en_US-lessac-medium
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 
-# Optional external realtime AI Call sidecar (services/pipecat-bot). Not needed:
-# with a Google/Gemini key, ai_call nodes already run Gemini Live inside whatomate.
-# When enabled, ai_call nodes bridge Opus to Pipecat instead.
-# Whatomate still owns WhatsApp WebRTC; transfer_to_agent returns IVR outcome "transfer".
-# [pipecat]
-# enabled = true
-# base_url = "http://127.0.0.1:7860"
-# ws_url = "ws://127.0.0.1:7860"
-# auth_token = "change-me"
-# callback_url = "http://127.0.0.1:8080"
-# max_session_secs = 600
-
 # WhatsApp Calling / WebRTC
 [calling]
 max_call_duration = 300       # Max call duration in seconds

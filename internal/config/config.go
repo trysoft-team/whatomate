@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // SHA-1 is mandated by the coturn TURN REST API (RFC draft)
 	"encoding/base64"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +29,6 @@ type Config struct {
 	Cookie       CookieConfig       `koanf:"cookie"`
 	Calling      CallingConfig      `koanf:"calling"`
 	TTS          TTSConfig          `koanf:"tts"`
-	Pipecat      PipecatConfig      `koanf:"pipecat"`
 	Google       GoogleConfig       `koanf:"google"`
 	Retention    RetentionConfig    `koanf:"retention"`
 }
@@ -51,18 +49,6 @@ type TTSConfig struct {
 	PiperBinary   string `koanf:"piper_binary"`   // path to piper executable
 	PiperModel    string `koanf:"piper_model"`    // path to .onnx voice model
 	OpusencBinary string `koanf:"opusenc_binary"` // path to opusenc (defaults to "opusenc")
-}
-
-// PipecatConfig configures the optional realtime AI Call sidecar.
-// When Enabled, ai_call nodes use Pipecat over a private WebSocket instead of
-// the turn-based Whisper/TTS loop. Whatomate still owns WhatsApp WebRTC.
-type PipecatConfig struct {
-	Enabled        bool   `koanf:"enabled"`
-	BaseURL        string `koanf:"base_url"`         // HTTP API e.g. http://127.0.0.1:7860
-	WSURL          string `koanf:"ws_url"`           // WS base e.g. ws://127.0.0.1:7860 (defaults from BaseURL)
-	AuthToken      string `koanf:"auth_token"`       // shared secret for Go↔Pipecat
-	MaxSessionSecs int    `koanf:"max_session_secs"` // hard cap per ai_call session (default 600)
-	CallbackURL    string `koanf:"callback_url"`     // Whatomate base for Pipecat→Go events (e.g. http://127.0.0.1:8080)
 }
 
 // defaultTURNCredentialTTLSecs is the lifetime of generated coturn REST
@@ -382,23 +368,5 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Calling.TransferTimeoutSecs == 0 {
 		cfg.Calling.TransferTimeoutSecs = 120
-	}
-	if cfg.Pipecat.MaxSessionSecs <= 0 {
-		cfg.Pipecat.MaxSessionSecs = 600
-	}
-	if cfg.Pipecat.BaseURL == "" {
-		cfg.Pipecat.BaseURL = "http://127.0.0.1:7860"
-	}
-	if cfg.Pipecat.WSURL == "" {
-		u := cfg.Pipecat.BaseURL
-		u = strings.Replace(u, "https://", "wss://", 1)
-		u = strings.Replace(u, "http://", "ws://", 1)
-		cfg.Pipecat.WSURL = strings.TrimRight(u, "/")
-	}
-	if cfg.Pipecat.CallbackURL == "" {
-		cfg.Pipecat.CallbackURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port)
-		if cfg.Server.Port == 0 {
-			cfg.Pipecat.CallbackURL = "http://127.0.0.1:8080"
-		}
 	}
 }
