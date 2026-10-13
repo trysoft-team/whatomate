@@ -1043,6 +1043,8 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Shared Meta App credentials (super admin only — enforced in handlers)
 	g.GET("/api/admin/meta-app", app.GetSharedMetaApp)
 	g.PUT("/api/admin/meta-app", app.UpdateSharedMetaApp)
+	g.GET("/api/admin/server-settings", app.GetServerSettings)
+	g.PUT("/api/admin/server-settings", app.UpdateServerSettings)
 
 	// Organizations
 	g.GET("/api/organizations", app.ListOrganizations)
