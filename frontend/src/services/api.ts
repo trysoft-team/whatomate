@@ -1624,4 +1624,73 @@ export const serverSettingsService = {
   update: (port: number) => api.put<{ data: ServerSettings }>('/admin/server-settings', { port }),
 }
 
+export interface BackupManifest {
+  format: number
+  app_version: string
+  kind: 'manual' | 'pre-restore' | 'cli'
+  created_at: string
+  source_driver: string
+  key_fingerprint: string
+  include_files: boolean
+  tables: { name: string; rows: number; sha256: string; columns: string[] }[]
+  files?: Record<string, { count: number; bytes: number }>
+}
+
+export interface BackupInfo {
+  name: string
+  size: number
+  manifest?: BackupManifest
+  error?: string
+}
+
+export interface BackupJob {
+  kind: '' | 'backup' | 'restore'
+  running: boolean
+  phase: string
+  table?: string
+  done: number
+  total: number
+  name?: string
+  safety_name?: string
+  error?: string
+  started_at: string
+  finished_at?: string
+}
+
+export interface BackupSummary {
+  name: string
+  size: number
+  manifest: BackupManifest
+  target_driver: string
+  key_matches: boolean
+}
+
+export interface MaintenanceStatus {
+  active: boolean
+  restore?: { running: boolean; phase: string; table?: string; done: number; total: number; finished: boolean; failed: boolean }
+}
+
+const backupPath = (name: string) => `/admin/backups/${encodeURIComponent(name)}`
+
+export const backupsService = {
+  list: () => api.get<{ data: { dir: string; backups: BackupInfo[]; job: BackupJob } }>('/admin/backups'),
+  create: (includeFiles: boolean) => api.post<{ data: BackupJob }>('/admin/backups', { include_files: includeFiles }),
+  job: () => api.get<{ data: BackupJob }>('/admin/backup-job'),
+  inspect: (name: string) => api.get<{ data: BackupSummary }>(`${backupPath(name)}/inspect`),
+  restore: (name: string) => api.post<{ data: BackupJob }>(`${backupPath(name)}/restore`, { confirm: 'RESTORE' }),
+  remove: (name: string) => api.delete(backupPath(name)),
+  downloadUrl: (name: string) => `${API_BASE_URL}${backupPath(name)}/download`,
+  startUpload: (name: string, size: number) =>
+    api.post<{ data: { id: string; received: number; chunk_max: number } }>('/admin/backup-uploads', { name, size }),
+  putChunk: (id: string, offset: number, chunk: Blob) =>
+    api.put<{ data: { received: number } }>(`/admin/backup-uploads/${id}`, chunk, {
+      params: { offset },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      timeout: 120000,
+    }),
+  finishUpload: (id: string) => api.post<{ data: BackupInfo }>(`/admin/backup-uploads/${id}/finish`, undefined, { timeout: 120000 }),
+  cancelUpload: (id: string) => api.delete(`/admin/backup-uploads/${id}`),
+  maintenance: () => api.get<{ data: MaintenanceStatus }>('/maintenance'),
+}
+
 export default api
