@@ -41,3 +41,7 @@ func fileExists(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && !fi.IsDir()
 }
+
+// FreeDisk returns the bytes available to this user on the disk holding path,
+// or on its nearest existing parent.
+func FreeDisk(path string) (uint64, error) { return hostSystem{}.FreeDisk(path) }
