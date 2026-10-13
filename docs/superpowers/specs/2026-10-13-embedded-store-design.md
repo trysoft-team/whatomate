@@ -1,12 +1,19 @@
-# Built-in store: run without a Redis server
+# Single-binary runtime: no Redis server, no ffmpeg
 
 ## Goal
 
 A user downloads one binary, points it at their database (PostgreSQL, MySQL,
-SQLite or SQL Server — unchanged) and it runs. No Redis to install.
+SQLite or SQL Server — unchanged) and it runs. No Redis and no ffmpeg to
+install.
 
 Redis stays supported as an option for deployments that run several API
 servers or separate worker machines.
+
+Two phases, each shippable on its own:
+
+1. Built-in store replacing the Redis server (this section through "Out of
+   scope").
+2. Pure-Go audio replacing ffmpeg and opusenc (see "Phase 2" at the end).
 
 ## Constraints
 
@@ -220,3 +227,79 @@ enqueues every pending recipient). This is called out in the docs.
 - Migrating live data from Redis into the new tables.
 - Cross-process cache invalidation without Redis (only one API process is
   supported in embedded mode).
+
+## Phase 2: pure-Go audio (no ffmpeg, no opusenc)
+
+### What ffmpeg and opusenc do today
+
+| Call site | Input | Output |
+|---|---|---|
+| `handlers/ivr_flows.go` `transcodeToOpus` (IVR, hold music, ringback uploads) | Ogg/Opus, MP3 or WAV (the upload handler already rejects anything else) | Ogg/Opus 48 kHz mono, 20 ms frames |
+| `tts/openai.go` via `ffmpegToOgg` | WAV | same |
+| `tts/elevenlabs.go` via `ffmpegToOgg` | MP3 44.1 kHz | same |
+| `tts/piper.go` via `opusenc` | WAV from Piper | Ogg/Opus |
+| `calling/session.go` `mergeRecordings` (agent call recordings) | two mono Ogg/Opus tracks | one mixed Ogg/Opus file, both sides loudness-levelled |
+
+Every input format is one pure Go can decode, so ffmpeg is replaced rather
+than embedded.
+
+### Rejected: embedding an ffmpeg executable
+
+Shipping a static ffmpeg inside the binary (`go:embed`, extracted at runtime)
+adds roughly 40–80 MB per platform, needs a separate ffmpeg build for every
+release target, brings LGPL/GPL obligations for redistributing ffmpeg, and
+writes an executable to disk at runtime (often flagged by antivirus on
+Windows). None of this is needed for three input formats.
+
+### New package `internal/audio`
+
+Builds on the existing `internal/realtime` Opus encoder/decoder (`gopus`).
+
+- **Decode** to mono 16-bit PCM plus sample rate:
+  - WAV: parse RIFF directly (PCM 8/16/24/32-bit and float32).
+  - MP3: `github.com/hajimehoshi/go-mp3` (pure Go, Apache-2.0).
+  - Ogg/Opus: Ogg page reader (`pion/webrtc/v4/pkg/media/oggreader`) + the
+    existing `realtime.OpusDecoder`.
+  - Stereo is averaged to mono.
+- **Resample** any rate to 48 kHz with a windowed-sinc resampler (the existing
+  `Decimator`/`Upsampler2x` only handle fixed ratios).
+- **Encode** 48 kHz mono PCM to Ogg/Opus with 20 ms frames, using the existing
+  `realtime.OpusEncoder` and a small Ogg Opus writer (OpusHead/OpusTags pages,
+  granule positions, CRC).
+- **Mix** two tracks: level each side to a target RMS (replaces ffmpeg
+  `loudnorm`; the agent side keeps its ×3 boost), sum, soft-limit with the
+  existing `realtime.SoftLimit`.
+- `audio.ToOggOpus(in []byte, bitrate int) ([]byte, error)` is the single
+  entry point used by uploads and all TTS providers; `audio.MixOggOpus(a, b)`
+  replaces `mergeRecordings`.
+
+### Call-site changes
+
+- `transcodeToOpus`, `ffmpegToOgg` and `mergeRecordings` call `internal/audio`
+  instead of running a process. The OpenAI/ElevenLabs/Piper bitrates stay as
+  today (48k uploads, 24k TTS).
+- Piper keeps running as an optional external program (it is a neural voice
+  model; there is no pure-Go equivalent), but its WAV output is encoded in Go,
+  so `opusenc` is no longer used.
+- The `ffmpeg_binary` and `opusenc_binary` config keys become unused; they are
+  still accepted (ignored with a startup warning) so existing configs load.
+- `Dockerfile` and `Dockerfile.goreleaser` drop `ffmpeg` and `opus-tools`.
+
+### Testing
+
+- Round-trip tests per input format: generate a known tone, encode it with the
+  same parameters ffmpeg used, decode it back, and check frequency and level.
+- Fixture tests with small real WAV, MP3 and Ogg/Opus files (including 22.05,
+  24, 44.1 and 48 kHz, mono and stereo).
+- The produced Ogg/Opus must play through the existing WebRTC `AudioPlayer`
+  (unit test reading it back with `oggreader`, 20 ms packets).
+- Mix test: a quiet and a loud track come out at similar levels with no
+  clipping.
+- Manual check: upload an MP3 and a WAV as IVR prompts, play TTS from each
+  provider on a live call, and listen to a mixed agent-call recording.
+
+### Phase 2 out of scope
+
+- Accepting new upload formats (M4A/AAC, FLAC). Users convert these before
+  uploading, as today.
+- Replacing Piper.
