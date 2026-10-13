@@ -1058,9 +1058,9 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
         <p class="text-xs text-muted-foreground rounded-md border bg-muted/40 px-2.5 py-2">
           Uses organization AI from
           <a href="/settings/ai" class="underline underline-offset-2 hover:text-foreground">Settings → AI</a>
-          (Google/Gemini API key). With Pipecat enabled, this node runs a
+          (Google/Gemini API key). This node runs a
           <span class="text-foreground/90">Gemini Live</span>
-          realtime voice session (continuous audio — no STT→LLM→TTS round-trip). Without Pipecat, it falls back to turn-based speech.
+          realtime voice session (continuous audio — no STT→LLM→TTS round-trip). Other providers use turn-based speech.
         </p>
       </div>
       <div class="space-y-1.5">
@@ -1222,7 +1222,7 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
       </div>
       <div class="space-y-1.5 pt-1 border-t">
         <Label class="text-xs font-semibold text-muted-foreground">Turn-based fallback</Label>
-        <p class="text-[10px] text-muted-foreground">Only used when Pipecat / Gemini Live is unavailable.</p>
+        <p class="text-[10px] text-muted-foreground">Only used when Gemini Live is unavailable.</p>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <div class="space-y-1.5">

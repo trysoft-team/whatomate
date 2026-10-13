@@ -123,6 +123,9 @@ type CallingConfig struct {
 	RelayOnly           bool              `koanf:"relay_only"`   // Force all media through TURN relay (no direct UDP)
 	ICEServers          []ICEServerConfig `koanf:"ice_servers"`
 	RecordingEnabled    bool              `koanf:"recording_enabled"` // Enable call recording (S3 or local_path)
+	// TurnBasedAICall disables built-in Gemini Live, so AI Call nodes use the
+	// turn-based speech-to-text → LLM → text-to-speech loop.
+	TurnBasedAICall bool `koanf:"turn_based_ai_call"`
 }
 
 type AppConfig struct {

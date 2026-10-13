@@ -146,32 +146,13 @@ func (m *Manager) RunPipecatTool(callID, toolName string, argsJSON string) (stri
 }
 
 func (m *Manager) executeAICallPipecat(session *CallSession, node *IVRNode, ctx *IVRContext, player *AudioPlayer) string {
-	welcome, _ := node.Config["welcome_message"].(string)
-	systemInstr, _ := node.Config["system_instructions"].(string)
-	if systemInstr == "" {
-		systemInstr, _ = node.Config["system_prompt"].(string)
-	}
-	transferTeamID, _ := node.Config["transfer_team_id"].(string)
-	tools := parseAICallTools(node.Config["tools"])
-
-	settings := m.loadOrgAISettings(session.OrganizationID)
-	apiKey, provider, llmModel, maxTokens := m.resolveAILLMCreds(settings, "")
-	if apiKey == "" {
+	p, ok := m.prepareAICallPrompt(session, node, ctx)
+	if !ok {
 		m.log.Warn("IVR ai_call (pipecat): AI not configured", "call_id", session.ID)
 		return "error"
 	}
-	if systemInstr == "" {
-		systemInstr = settings.AI.SystemPrompt
-	}
-	if systemInstr == "" {
-		systemInstr = "You are a helpful phone IVR assistant. Keep replies under 2 short sentences. Use tools when needed."
-	}
-	systemInstr = interpolateTemplate(systemInstr, ctx.Variables)
-	systemInstr = m.composeAICallSystemPrompt(session, ctx, systemInstr, "", node.Config)
-
-	synthOpts := m.resolveSynthOpts(session.OrganizationID, node.Config)
-	welcome = interpolateTemplate(welcome, ctx.Variables)
-	systemInstr, welcome = m.applyAITransferBusy(session, ctx, systemInstr, welcome)
+	welcome, systemInstr, transferTeamID, tools := p.welcome, p.system, p.transferTeam, p.tools
+	apiKey, provider, llmModel, maxTokens := p.apiKey, p.provider, p.model, p.maxTokens
 
 	eventCh := make(chan PipecatControlEvent, 2)
 	session.mu.Lock()
@@ -219,7 +200,7 @@ func (m *Manager) executeAICallPipecat(session *CallSession, node *IVRNode, ctx 
 		APIKey:               apiKey,
 		MaxTokens:            maxTokens,
 		VoiceProvider:        "gemini",
-		VoiceID:              pipecatGeminiVoice(synthOpts.Voice),
+		VoiceID:              pipecatGeminiVoice(p.voice),
 		OpenAIKey:            m.resolveOpenAIKey(session.OrganizationID),
 		Tools:                toolMaps,
 		CallbackURL:          strings.TrimRight(m.pipecat.CallbackURL, "/"),

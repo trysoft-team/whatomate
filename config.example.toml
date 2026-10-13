@@ -95,8 +95,9 @@ api_window_seconds = 60        # Time window for global API rate limit (0 = 60)
 # piper_model = "/opt/piper/models/en_US-lessac-high.onnx"  # Docker image also ships en_US-lessac-medium
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 
-# Optional realtime AI Call sidecar (services/pipecat-bot).
-# When enabled, ai_call nodes bridge Opus to Pipecat instead of turn-based Whisper/TTS.
+# Optional external realtime AI Call sidecar (services/pipecat-bot). Not needed:
+# with a Google/Gemini key, ai_call nodes already run Gemini Live inside whatomate.
+# When enabled, ai_call nodes bridge Opus to Pipecat instead.
 # Whatomate still owns WhatsApp WebRTC; transfer_to_agent returns IVR outcome "transfer".
 # [pipecat]
 # enabled = true
@@ -118,6 +119,7 @@ udp_port_min = 10000          # WebRTC UDP port range start
 udp_port_max = 10100          # WebRTC UDP port range end
 # public_ip = "1.2.3.4"      # Public IP for NAT mapping (required on AWS/cloud)
 # relay_only = true           # Force all media through TURN relay (no direct UDP needed)
+# turn_based_ai_call = true   # AI Call nodes skip built-in Gemini Live and use STT → LLM → TTS turns
 
 # ICE servers for WebRTC NAT traversal
 # Configure STUN, TURN, or both. Only what you configure is used.

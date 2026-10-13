@@ -22,6 +22,7 @@ require (
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/redis/go-redis/v9 v9.4.0
 	github.com/stretchr/testify v1.12.1
+	github.com/thesyncim/gopus v0.1.2
 	github.com/valyala/fasthttp v1.58.0
 	github.com/zerodha/fastglue v1.8.0
 	github.com/zerodha/logf v0.5.5
