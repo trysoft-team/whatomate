@@ -126,3 +126,5 @@ docker compose stop app
 docker compose run --rm app restore -config /app/config.toml -yes /app/backups/<file>.zip
 docker compose start app
 ```
+
+The one-off container has its own host name, so if the app container did not stop cleanly its leftover lock makes `restore` say a server is running. With the app stopped, delete `./backups/server.lock` and run the restore again. A server starting in a recreated container takes over a lock from an old container's host name and logs a warning.
