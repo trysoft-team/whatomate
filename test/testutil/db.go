@@ -246,6 +246,10 @@ func migrateModels(db *gorm.DB) error {
 		// AI usage & shared Meta app
 		&models.AIUsageLog{},
 		&models.SharedMetaAppCredentials{},
+		// Embedded store
+		&models.KVEntry{},
+		&models.ScheduledItem{},
+		&models.CampaignJob{},
 	)
 }
 
@@ -253,6 +257,9 @@ func migrateModels(db *gorm.DB) error {
 // Uses TRUNCATE CASCADE on PostgreSQL to handle foreign key constraints properly.
 func cleanupTables(db *gorm.DB) {
 	tables := []string{
+		"kv_entries",
+		"scheduled_items",
+		"campaign_jobs",
 		"ai_usage_logs",
 		"shared_meta_app_credentials",
 		// Dashboard tables
@@ -309,6 +316,9 @@ func cleanupTables(db *gorm.DB) {
 // TruncateTables empties all tables (TRUNCATE on PostgreSQL and MySQL, DELETE on SQLite).
 func TruncateTables(db *gorm.DB) {
 	tables := []string{
+		"kv_entries",
+		"scheduled_items",
+		"campaign_jobs",
 		"widgets",
 		"catalog_products",
 		"catalogs",

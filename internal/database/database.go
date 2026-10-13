@@ -88,6 +88,11 @@ func GetMigrationModels() []MigrationModel {
 		{"CallTransfer", &models.CallTransfer{}},
 		{"CallPermission", &models.CallPermission{}},
 		{"AuditLog", &models.AuditLog{}},
+
+		// Embedded store (used when no Redis server is configured)
+		{"KVEntry", &models.KVEntry{}},
+		{"ScheduledItem", &models.ScheduledItem{}},
+		{"CampaignJob", &models.CampaignJob{}},
 	}
 }
 
