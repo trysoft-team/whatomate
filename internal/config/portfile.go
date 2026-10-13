@@ -205,7 +205,8 @@ func moveOrigins(list string, from, to int) (string, bool) {
 }
 
 // moveOrigin returns origin with its port set to to when origin is an http or
-// https URL with explicit port from and nothing after it.
+// https URL with explicit port from and nothing after it. When to is the
+// scheme's default port the port is omitted, as browsers do in Origin.
 func moveOrigin(origin string, from, to int) (string, bool) {
 	u, err := url.Parse(origin)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" || u.User != nil ||
@@ -216,6 +217,9 @@ func moveOrigin(origin string, from, to int) (string, bool) {
 	if u.Port() != old || !strings.HasSuffix(origin, ":"+old) {
 		return "", false
 	}
+	if (u.Scheme == "http" && to == 80) || (u.Scheme == "https" && to == 443) {
+		return strings.TrimSuffix(origin, ":"+old), true
+	}
 	return strings.TrimSuffix(origin, old) + strconv.Itoa(to), true
 }
 
@@ -223,7 +227,8 @@ func moveOrigin(origin string, from, to int) (string, bool) {
 // keeps every other byte. It adds the key, or the table, when missing. When
 // [server] allowed_origins is a single-line basic string, entries that are
 // http(s)://host:old-port (old port being the file's port or DefaultPort)
-// move to the new port in the same write. When the edit wouldn't leave a
+// move to the new port in the same write; origins are left alone when the
+// file's [server] port isn't a plain integer. When the edit wouldn't leave a
 // valid file differing only in those values, it returns ErrCannotEditPort
 // and writes nothing.
 func SetServerPort(path string, port int) error {

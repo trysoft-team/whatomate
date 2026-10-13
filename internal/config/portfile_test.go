@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -137,6 +138,25 @@ func TestSetServerPort_MovesHTTPSAndIPv6Origins(t *testing.T) {
 	p := writeTemp(t, "[server]\nport = 4747\nallowed_origins = \"https://example.com:4747,http://[::1]:4747\"\n")
 	require.NoError(t, SetServerPort(p, 4790))
 	assert.Equal(t, "[server]\nport = 4790\nallowed_origins = \"https://example.com:4790,http://[::1]:4790\"\n", read(t, p))
+}
+
+func TestSetServerPort_OriginsOnSchemeDefaultPortOmitIt(t *testing.T) {
+	for name, tc := range map[string]struct {
+		port          int
+		before, after string
+	}{
+		"http to 80":            {80, "http://localhost:4747,http://[::1]:4747", "http://localhost,http://[::1]"},
+		"https to 443":          {443, "https://example.com:4747,https://[::1]:4747", "https://example.com,https://[::1]"},
+		"http to 443 keeps it":  {443, "http://localhost:4747", "http://localhost:443"},
+		"https to 80 keeps it":  {80, "https://example.com:4747", "https://example.com:80"},
+		"dedupes after omitted": {80, "http://localhost:4747,http://localhost", "http://localhost"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := writeTemp(t, "[server]\nport = 4747\nallowed_origins = \""+tc.before+"\"\n")
+			require.NoError(t, SetServerPort(p, tc.port))
+			assert.Equal(t, fmt.Sprintf("[server]\nport = %d\nallowed_origins = \"%s\"\n", tc.port, tc.after), read(t, p))
+		})
+	}
 }
 
 func TestSetServerPort_DropsDuplicateOrigins(t *testing.T) {
