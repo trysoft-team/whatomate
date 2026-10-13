@@ -40,8 +40,8 @@ type Scheduler interface {
 	Cancel(ctx context.Context, set string, items ...string) error
 	// PopDue removes and returns up to limit items due at or before now,
 	// earliest due first. Each item is returned to exactly one caller. A limit
-	// <= 0 returns nothing. On error no items were removed; once any item is
-	// removed PopDue returns it without an error.
+	// <= 0 returns nothing. Once any item is removed PopDue returns it without
+	// an error; on error, items not yet removed remain for a later call.
 	PopDue(ctx context.Context, set string, now time.Time, limit int) ([]string, error)
 }
 
@@ -49,7 +49,7 @@ type Scheduler interface {
 type Broker interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
 	// Subscribe calls fn for every message on channel until stop is called or
-	// ctx is done. fn may run concurrently with itself and may still run once
-	// after stop returns; it must not block.
+	// ctx is done. fn may run concurrently with itself and may still run after
+	// stop returns; it must not block.
 	Subscribe(ctx context.Context, channel string, fn func([]byte)) (stop func(), err error)
 }
