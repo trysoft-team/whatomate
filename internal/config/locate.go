@@ -29,9 +29,8 @@ func (e *notFoundError) Is(target error) bool { return target == ErrNotFound }
 type Source struct {
 	Path string
 	// BaseDir is where relative paths in the config resolve. Empty means the
-	// working directory (an explicit -config, WHATOMATE_CONFIG or
-	// ./config.toml); otherwise the user config folder or the system data
-	// folder.
+	// working directory (an explicit -config or WHATOMATE_CONFIG); otherwise
+	// the user config folder or the system data folder.
 	BaseDir string
 }
 
@@ -49,8 +48,9 @@ type locateEnv struct {
 }
 
 // Locate finds the config file: flagPath if set, else $WHATOMATE_CONFIG,
-// else ./config.toml, else the per-user config folder, else the system
-// config folder. It fails, naming every path it tried, when none exists.
+// else the per-user config folder, else the system config folder. The
+// working directory is not searched. It fails, naming every path it tried,
+// when none exists.
 func Locate(flagPath string) (Source, error) {
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
@@ -80,8 +80,7 @@ func locate(flagPath string, e locateEnv) (Source, error) {
 		return Source{Path: p}, nil
 	}
 
-	cands := append([]candidate{{path: filepath.Join(e.cwd, configFileName)}}, e.userCandidates()...)
-	cands = append(cands, e.systemCandidates()...)
+	cands := append(e.userCandidates(), e.systemCandidates()...)
 	searched := make([]string, 0, len(cands))
 	var unchecked error
 	for _, c := range cands {

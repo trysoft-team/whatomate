@@ -89,7 +89,7 @@ Worker Options:
   -workers int      Number of workers to run (default 1)
 
 Config file search (first found wins):
-  -config, then $WHATOMATE_CONFIG, then ./config.toml, then
+  -config, then $WHATOMATE_CONFIG, then (the current folder is not searched)
   Linux:   ~/.config/whatomate/config.toml, /etc/whatomate/config.toml
   macOS:   ~/Library/Application Support/whatomate/config.toml,
            ~/.config/whatomate/config.toml,
