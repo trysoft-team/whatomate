@@ -27,11 +27,12 @@ func (a *Assigner) GetTeamConfig(teamID uuid.UUID) *TeamConfig {
 	key := teamCachePrefix + teamID.String()
 
 	// Try cache first
-	cached, err := a.redis.Get(ctx, key).Result()
-	if err == nil && cached != "" {
-		var cfg TeamConfig
-		if err := json.Unmarshal([]byte(cached), &cfg); err == nil {
-			return &cfg
+	if a.cache != nil {
+		if cached, err := a.cache.Get(ctx, key); err == nil {
+			var cfg TeamConfig
+			if err := json.Unmarshal(cached, &cfg); err == nil {
+				return &cfg
+			}
 		}
 	}
 
@@ -56,9 +57,8 @@ func (a *Assigner) GetTeamConfig(teamID uuid.UUID) *TeamConfig {
 	}
 
 	// Store in cache
-	data, err := json.Marshal(cfg)
-	if err == nil {
-		a.redis.Set(ctx, key, string(data), teamCacheTTL)
+	if data, err := json.Marshal(cfg); err == nil && a.cache != nil {
+		_ = a.cache.Set(ctx, key, data, teamCacheTTL)
 	}
 
 	return cfg

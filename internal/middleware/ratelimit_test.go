@@ -1,6 +1,8 @@
 package middleware_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/middleware"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -15,13 +18,11 @@ import (
 
 func TestRateLimit_AllowsUnderLimit(t *testing.T) {
 	t.Parallel()
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	rl := middleware.RateLimit(middleware.RateLimitOpts{
-		Redis:     rdb,
+		Counter:   mem,
 		Log:       testutil.NopLogger(),
 		Max:       5,
 		Window:    10 * time.Second,
@@ -38,14 +39,12 @@ func TestRateLimit_AllowsUnderLimit(t *testing.T) {
 
 func TestRateLimit_BlocksOverLimit(t *testing.T) {
 	t.Parallel()
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	prefix := "test_block_" + uuid.New().String()[:8]
 	rl := middleware.RateLimit(middleware.RateLimitOpts{
-		Redis:     rdb,
+		Counter:   mem,
 		Log:       testutil.NopLogger(),
 		Max:       3,
 		Window:    10 * time.Second,
@@ -70,14 +69,12 @@ func TestRateLimit_BlocksOverLimit(t *testing.T) {
 
 func TestRateLimit_DifferentIPsGetSeparateLimits(t *testing.T) {
 	t.Parallel()
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	prefix := "test_sep_" + uuid.New().String()[:8]
 	rl := middleware.RateLimit(middleware.RateLimitOpts{
-		Redis:     rdb,
+		Counter:   mem,
 		Log:       testutil.NopLogger(),
 		Max:       2,
 		Window:    10 * time.Second,
@@ -100,14 +97,12 @@ func TestRateLimit_DifferentIPsGetSeparateLimits(t *testing.T) {
 
 func TestUserAwareRateLimit_KeysByUserID(t *testing.T) {
 	t.Parallel()
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	prefix := "test_user_" + uuid.New().String()[:8]
 	rl := middleware.UserAwareRateLimit(middleware.RateLimitOpts{
-		Redis:     rdb,
+		Counter:   mem,
 		Log:       testutil.NopLogger(),
 		Max:       2,
 		Window:    10 * time.Second,
@@ -140,14 +135,12 @@ func TestUserAwareRateLimit_KeysByUserID(t *testing.T) {
 
 func TestUserAwareRateLimit_FallsBackToIP_WhenUnauthenticated(t *testing.T) {
 	t.Parallel()
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	prefix := "test_noauth_" + uuid.New().String()[:8]
 	rl := middleware.UserAwareRateLimit(middleware.RateLimitOpts{
-		Redis:     rdb,
+		Counter:   mem,
 		Log:       testutil.NopLogger(),
 		Max:       2,
 		Window:    10 * time.Second,
@@ -164,6 +157,53 @@ func TestUserAwareRateLimit_FallsBackToIP_WhenUnauthenticated(t *testing.T) {
 	req := newTestRequest()
 	req.RequestCtx.SetRemoteAddr(mockAddr("10.0.0.6:12345"))
 	assert.Nil(t, rl(req), "unauthenticated requests should be rate limited by IP")
+}
+
+func TestRateLimit_FailsOpenOnCounterError(t *testing.T) {
+	rl := middleware.RateLimit(middleware.RateLimitOpts{
+		Counter: failingCounter{}, Log: testutil.NopLogger(), Max: 1, Window: time.Minute, KeyPrefix: "x",
+	})
+	req := testutil.NewGETRequest(t)
+	assert.NotNil(t, rl(req))
+	assert.NotNil(t, rl(req))
+}
+
+func TestRateLimit_RetryAfterRoundsResetUp(t *testing.T) {
+	for _, tc := range []struct {
+		resetIn time.Duration
+		want    string
+	}{
+		{1500 * time.Millisecond, "2"},
+		{30 * time.Second, "30"},
+		{0, "1"},
+	} {
+		c := &fixedCounter{count: 2, resetIn: tc.resetIn}
+		rl := middleware.RateLimit(middleware.RateLimitOpts{
+			Counter: c, Log: testutil.NopLogger(), Max: 1, Window: time.Minute, KeyPrefix: "login",
+		})
+		req := newTestRequest()
+		req.RequestCtx.SetRemoteAddr(mockAddr("10.0.0.7:12345"))
+		assert.Nil(t, rl(req))
+		assert.Equal(t, tc.want, string(req.RequestCtx.Response.Header.Peek("Retry-After")))
+		assert.Equal(t, "ratelimit:login:10.0.0.7", c.key)
+	}
+}
+
+type fixedCounter struct {
+	count   int64
+	resetIn time.Duration
+	key     string
+}
+
+func (c *fixedCounter) Incr(_ context.Context, key string, _ time.Duration) (int64, time.Duration, error) {
+	c.key = key
+	return c.count, c.resetIn, nil
+}
+
+type failingCounter struct{}
+
+func (failingCounter) Incr(context.Context, string, time.Duration) (int64, time.Duration, error) {
+	return 0, 0, errors.New("down")
 }
 
 // mockAddr implements net.Addr for testing.

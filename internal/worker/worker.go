@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/contactutil"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/templateutil"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/zerodha/logf"
@@ -22,10 +22,9 @@ import (
 type Worker struct {
 	Config    *config.Config
 	DB        *gorm.DB
-	Redis     *redis.Client
 	Log       logf.Logger
 	WhatsApp  *whatsapp.Client
-	Consumer  *queue.RedisConsumer
+	Consumer  queue.Consumer
 	Publisher *queue.Publisher
 }
 
@@ -33,23 +32,15 @@ type Worker struct {
 var _ queue.JobHandler = (*Worker)(nil)
 
 // New creates a new Worker instance
-func New(cfg *config.Config, db *gorm.DB, rdb *redis.Client, log logf.Logger) (*Worker, error) {
-	consumer, err := queue.NewRedisConsumer(rdb, log)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create consumer: %w", err)
-	}
-
-	publisher := queue.NewPublisher(rdb, log)
-
+func New(cfg *config.Config, db *gorm.DB, consumer queue.Consumer, broker store.Broker, log logf.Logger) *Worker {
 	return &Worker{
 		Config:    cfg,
 		DB:        db,
-		Redis:     rdb,
 		Log:       log,
 		WhatsApp:  whatsapp.New(log),
 		Consumer:  consumer,
-		Publisher: publisher,
-	}, nil
+		Publisher: queue.NewPublisher(broker, log),
+	}
 }
 
 // Run starts the worker and processes jobs until context is cancelled

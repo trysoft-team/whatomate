@@ -10,12 +10,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/flowgraph"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/storage"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/tts"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -176,7 +176,7 @@ type Manager struct {
 	wsHub         *websocket.Hub
 	config        *config.CallingConfig
 	recordings    storage.Uploader // nil when recording is disabled (S3 or local_path)
-	redis         *redis.Client
+	cache         store.KV
 	assigner      *assignment.Assigner
 	tts           tts.Synthesizer
 	encryptionKey string           // decrypts org chatbot AI API keys / ElevenLabs key
@@ -190,7 +190,7 @@ func (m *Manager) SetSecrets(encryptionKey string, ai *config.AIConfig) {
 }
 
 // NewManager creates a new call session manager
-func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm.DB, rd *redis.Client, waClient *whatsapp.Client, wsHub *websocket.Hub, assigner *assignment.Assigner, log logf.Logger) *Manager {
+func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm.DB, cache store.KV, waClient *whatsapp.Client, wsHub *websocket.Hub, assigner *assignment.Assigner, log logf.Logger) *Manager {
 	// Apply defaults for server-level config
 	if cfg.AudioDir == "" {
 		cfg.AudioDir = "./audio"
@@ -214,7 +214,7 @@ func NewManager(cfg *config.CallingConfig, recordings storage.Uploader, db *gorm
 		log:        log,
 		whatsapp:   waClient,
 		db:         db,
-		redis:      rd,
+		cache:      cache,
 		wsHub:      wsHub,
 		config:     cfg,
 		recordings: recordings,
