@@ -4897,7 +4897,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 <template>
   <div class="flex h-full flex-col bg-[#0a0a0b] light:bg-gray-50">
-    <PageHeader :title="$t('backup.title')" :subtitle="$t('backup.subtitle')" :icon="Archive" icon-gradient="bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/20" back-link="/settings" />
+    <PageHeader :title="$t('backup.title')" :description="$t('backup.subtitle')" :icon="Archive" icon-gradient="bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/20" back-link="/settings" />
 
     <ScrollArea class="flex-1">
       <div class="space-y-6 p-6">
