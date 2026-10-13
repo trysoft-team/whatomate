@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -74,6 +76,46 @@ func TestReadServerPort(t *testing.T) {
 	port, err = ReadServerPort(writeTemp(t, "[database]\nport = 5432\n"))
 	require.NoError(t, err)
 	assert.Equal(t, DefaultPort, port)
+}
+
+func TestWriteFileExclusive_CreatesFolderAndMode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a", "b", "config.toml")
+	require.NoError(t, WriteFileExclusive(p, []byte("x"), 0o600))
+	assert.Equal(t, "x", read(t, p))
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+	}
+	entries, err := os.ReadDir(filepath.Dir(p))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temp files left behind")
+}
+
+func TestWriteFileExclusive_NeverReplaces(t *testing.T) {
+	p := writeTemp(t, "mine")
+	err := WriteFileExclusive(p, []byte("theirs"), 0o600)
+	assert.ErrorIs(t, err, fs.ErrExist)
+	assert.Equal(t, "mine", read(t, p))
+	entries, err := os.ReadDir(filepath.Dir(p))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temp files left behind")
+}
+
+func TestWriteFileExclusive_WithoutHardLinks(t *testing.T) {
+	orig := link
+	link = func(string, string) error { return errors.New("hard links not supported") }
+	t.Cleanup(func() { link = orig })
+
+	p := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, WriteFileExclusive(p, []byte("x"), 0o600))
+	assert.Equal(t, "x", read(t, p))
+	entries, err := os.ReadDir(filepath.Dir(p))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temp files left behind")
+
+	assert.ErrorIs(t, WriteFileExclusive(p, []byte("y"), 0o600), fs.ErrExist)
+	assert.Equal(t, "x", read(t, p))
 }
 
 func TestWriteFileAtomic_CreatesFolderAndMode(t *testing.T) {

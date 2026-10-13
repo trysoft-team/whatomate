@@ -51,6 +51,59 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(name, path)
 }
 
+// link is os.Link; tests replace it to stand in for file systems without
+// hard links.
+var link = os.Link
+
+// WriteFileExclusive writes data to a new file at path, creating the folder
+// (0750) if needed. It never replaces a file: when path exists it fails with
+// an error matching fs.ErrExist. The content is written to a temp file in the
+// same folder and hard-linked into place; without hard links it creates path
+// with O_EXCL and writes it directly.
+func WriteFileExclusive(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".whatomate-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := fill(tmp, data, perm); err != nil {
+		return err
+	}
+	err = link(name, path)
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if err := fill(f, data, perm); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// fill sets f's mode, writes data, syncs and closes f.
+func fill(f *os.File, data []byte, perm os.FileMode) error {
+	err := f.Chmod(perm)
+	if err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // splitLines splits s into lines that keep their "\n" or "\r\n" endings.
 func splitLines(s string) []string {
 	var out []string

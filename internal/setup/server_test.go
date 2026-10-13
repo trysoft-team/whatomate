@@ -44,15 +44,22 @@ func newEnv(t *testing.T) env {
 
 func call(t *testing.T, s *server, method, path string, body any) (int, map[string]any) {
 	t.Helper()
+	return callAs(t, s, method, path, "application/json", body)
+}
+
+func callAs(t *testing.T, s *server, method, path, contentType string, body any) (int, map[string]any) {
+	t.Helper()
 	var ctx fasthttp.RequestCtx
 	ctx.Request.Header.SetMethod(method)
 	ctx.Request.SetRequestURI(path)
 	ctx.Request.Header.SetHost("localhost:4747")
+	if contentType != "" {
+		ctx.Request.Header.SetContentType(contentType)
+	}
 	if body != nil {
 		b, err := json.Marshal(body)
 		require.NoError(t, err)
 		ctx.Request.SetBody(b)
-		ctx.Request.Header.SetContentType("application/json")
 	}
 	s.handle(&ctx)
 	var out map[string]any
@@ -214,6 +221,93 @@ func TestComplete_RetryAppliesNewAdminDetails(t *testing.T) {
 	var org models.Organization
 	require.NoError(t, db.First(&org, "id = ?", users[0].OrganizationID).Error)
 	assert.Equal(t, "Renamed Ltd", org.Name)
+}
+
+func TestComplete_KeepsConfigThatAppearsDuringSetup(t *testing.T) {
+	e := newEnv(t)
+	e.s.beforeWrite = func() {
+		require.NoError(t, os.WriteFile(e.configPath, []byte("[app]\n"), 0o600))
+	}
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code)
+	assert.Contains(t, out["message"], "already exists")
+	raw, _ := os.ReadFile(e.configPath)
+	assert.Equal(t, "[app]\n", string(raw), "the other config is untouched")
+	entries, err := os.ReadDir(filepath.Dir(e.configPath))
+	require.NoError(t, err)
+	for _, en := range entries {
+		assert.NotContains(t, en.Name(), ".tmp", "no temp file left behind")
+	}
+	select {
+	case <-e.s.done:
+		t.Fatal("completion was signalled")
+	default:
+	}
+}
+
+func TestComplete_RefusesUserWithSameEmailItDidNotCreate(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(e.dbPath), 0o750))
+	db := openSQLite(t, e.dbPath)
+	require.NoError(t, database.RunMigrationWithProgress(db, &config.DefaultAdminConfig{Email: "ana@example.com", Password: "old-password", FullName: "Old Ana"}))
+
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code)
+	assert.Equal(t, "This database already has users. Choose an empty database.", out["message"])
+	assert.NoFileExists(t, e.configPath)
+	var user models.User
+	require.NoError(t, db.Where("email = ?", "ana@example.com").First(&user).Error)
+	assert.Equal(t, "Old Ana", user.FullName)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte("old-password")), "password unchanged")
+}
+
+func TestComplete_RetryWithDifferentEmail(t *testing.T) {
+	e := newEnv(t)
+	blocker := filepath.Dir(e.configPath)
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	dbPath := filepath.Join(e.dir, "db", "whatomate.db")
+	body := completeBody(e)
+	body["database"] = map[string]any{"driver": "sqlite", "path": dbPath}
+	code, _ := call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 500, code)
+	require.NoError(t, os.Remove(blocker))
+
+	// A copy of the seeded database holds the same admin but is another
+	// database, so setup didn't create its users.
+	copyPath := filepath.Join(e.dir, "db", "copy.db")
+	require.NoError(t, openSQLite(t, dbPath).Exec("VACUUM INTO ?", copyPath).Error)
+	body["database"] = map[string]any{"driver": "sqlite", "path": copyPath}
+	code, _ = call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 409, code, "a different database with users")
+
+	body["database"] = map[string]any{"driver": "sqlite", "path": dbPath}
+	body["admin"] = map[string]any{"full_name": "Ana", "email": "owner@example.com", "password": "second-password"}
+	code, out := call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 200, code, out)
+
+	var users []models.User
+	require.NoError(t, openSQLite(t, dbPath).Find(&users).Error)
+	require.Len(t, users, 1)
+	assert.Equal(t, "owner@example.com", users[0].Email)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(users[0].PasswordHash), []byte("second-password")))
+}
+
+func TestPost_RequiresJSON(t *testing.T) {
+	e := newEnv(t)
+	dbBody := map[string]any{"driver": "sqlite", "path": e.dbPath}
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", ""} {
+		code, out := callAs(t, e.s, "POST", "/api/setup/complete", ct, completeBody(e))
+		assert.Equal(t, 415, code, ct)
+		assert.Equal(t, "error", out["status"], ct)
+		code, _ = callAs(t, e.s, "POST", "/api/setup/database/test", ct, dbBody)
+		assert.Equal(t, 415, code, ct)
+	}
+	assert.NoFileExists(t, e.configPath)
+	assert.NoFileExists(t, e.dbPath)
+
+	code, out := callAs(t, e.s, "POST", "/api/setup/database/test", "Application/JSON; charset=utf-8", dbBody)
+	assert.Equal(t, 200, code)
+	assert.Equal(t, true, data(out)["ok"])
 }
 
 func TestComplete_ValidatesInput(t *testing.T) {

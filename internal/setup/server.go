@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -126,6 +127,12 @@ type server struct {
 	completeMu sync.Mutex // one complete at a time
 	stateMu    sync.Mutex
 	finished   *finished
+	// seeded is the admin an earlier, failed complete created and the
+	// database it is in. Guarded by completeMu.
+	seeded *seededAdmin
+
+	// beforeWrite runs just before the config file is written; tests use it.
+	beforeWrite func()
 }
 
 func newServer(o Options, listenPort int) *server {
@@ -147,6 +154,12 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
+	// Only JSON bodies: other types are CORS "simple requests" any website
+	// can send from the operator's browser without a preflight.
+	if ctx.IsPost() && !isJSON(ctx) {
+		writeError(ctx, fasthttp.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
 	path := string(ctx.Path())
 	switch {
 	case path == "/api/setup/status" && ctx.IsGet():
@@ -164,6 +177,11 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 	default:
 		s.frontend(ctx)
 	}
+}
+
+func isJSON(ctx *fasthttp.RequestCtx) bool {
+	mt, _, err := mime.ParseMediaType(string(ctx.Request.Header.ContentType()))
+	return err == nil && mt == "application/json"
 }
 
 func writeData(ctx *fasthttp.RequestCtx, data any) {

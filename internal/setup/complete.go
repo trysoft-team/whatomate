@@ -3,12 +3,16 @@ package setup
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"net/mail"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/models"
@@ -119,7 +123,7 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 		return fasthttp.StatusBadRequest, errors.New("password must be at least 8 characters")
 	}
 	if fileExists(cand.Path) {
-		return fasthttp.StatusConflict, fmt.Errorf("%s already exists; restart whatomate to use it", cand.Path)
+		return fasthttp.StatusConflict, configExists(cand.Path)
 	}
 
 	if dbCfg.Driver == config.DriverSQLite {
@@ -136,16 +140,29 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 			_ = sqlDB.Close()
 		}
 	}()
-	if err := ensureNoOtherUsers(db, addr.Address); err != nil {
+	target := databaseTarget(dbCfg)
+	adminID, err := s.reusableAdmin(db, target)
+	if errors.Is(err, errHasUsers) {
 		return fasthttp.StatusConflict, err
+	}
+	if err != nil {
+		return fasthttp.StatusInternalServerError, err
 	}
 	admin := config.DefaultAdminConfig{Email: addr.Address, Password: req.Admin.Password, FullName: fullName, OrganizationName: org}
 	if err := database.RunMigrationWithProgress(db, &admin); err != nil {
 		return fasthttp.StatusInternalServerError, fmt.Errorf("set up the database: %w", err)
 	}
-	if err := applyAdmin(db, admin); err != nil {
+	if adminID == uuid.Nil {
+		var user models.User
+		if err := db.Where("email = ?", admin.Email).First(&user).Error; err != nil {
+			return fasthttp.StatusInternalServerError, fmt.Errorf("find admin user: %w", err)
+		}
+		adminID = user.ID
+	}
+	if err := applyAdmin(db, adminID, admin); err != nil {
 		return fasthttp.StatusInternalServerError, err
 	}
+	s.seeded = &seededAdmin{target: target, userID: adminID}
 
 	jwtSecret, err := newSecret(48)
 	if err != nil {
@@ -166,40 +183,78 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 		Environment: environmentFor(https), Port: req.Port, AllowedOrigins: origin,
 		Database: stored, JWTSecret: jwtSecret, EncryptionKey: encKey,
 	}, time.Now())
-	if err := config.WriteFileAtomic(cand.Path, body, 0o600); err != nil {
+	if s.beforeWrite != nil {
+		s.beforeWrite()
+	}
+	if err := config.WriteFileExclusive(cand.Path, body, 0o600); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fasthttp.StatusConflict, configExists(cand.Path)
+		}
 		return fasthttp.StatusInternalServerError, fmt.Errorf("write %s: %w", cand.Path, err)
 	}
 	s.o.Log.Info("Setup complete", "config", cand.Path)
 	return fasthttp.StatusOK, nil
 }
 
-// ensureNoOtherUsers refuses a database with users other than email.
-func ensureNoOtherUsers(db *gorm.DB, email string) error {
-	if !db.Migrator().HasTable(&models.User{}) {
-		return nil
-	}
-	var n int64
-	if err := db.Model(&models.User{}).Where("email <> ?", email).Count(&n).Error; err != nil {
-		return fmt.Errorf("check existing users: %w", err)
-	}
-	if n > 0 {
-		return errors.New("database already has users; choose an empty database")
-	}
-	return nil
+func configExists(path string) error {
+	return fmt.Errorf("%s already exists; restart whatomate to use it", path)
 }
 
-// applyAdmin sets the wizard's password, name and organization name on the
-// admin, so a retry uses the retry's values.
-func applyAdmin(db *gorm.DB, a config.DefaultAdminConfig) error {
+var errHasUsers = errors.New("This database already has users. Choose an empty database.")
+
+// seededAdmin is an admin user setup created, and the database it is in.
+type seededAdmin struct {
+	target string
+	userID uuid.UUID
+}
+
+// databaseTarget identifies the database c points at.
+func databaseTarget(c config.DatabaseConfig) string {
+	if c.Driver == config.DriverSQLite {
+		return c.Driver + ":" + filepath.Clean(c.Path)
+	}
+	return c.Driver + "://" + net.JoinHostPort(c.Host, strconv.Itoa(c.Port)) + "/" + c.Name
+}
+
+// reusableAdmin returns uuid.Nil when db has no users, or the admin an
+// earlier attempt created in this same database. Any other users make it
+// fail with errHasUsers. Call with completeMu held.
+func (s *server) reusableAdmin(db *gorm.DB, target string) (uuid.UUID, error) {
+	if !db.Migrator().HasTable(&models.User{}) {
+		return uuid.Nil, nil
+	}
+	var n int64
+	if err := db.Unscoped().Model(&models.User{}).Count(&n).Error; err != nil {
+		return uuid.Nil, fmt.Errorf("check existing users: %w", err)
+	}
+	if n == 0 {
+		return uuid.Nil, nil
+	}
+	if s.seeded == nil || s.seeded.target != target {
+		return uuid.Nil, errHasUsers
+	}
+	var mine int64
+	if err := db.Model(&models.User{}).Where("id = ?", s.seeded.userID).Count(&mine).Error; err != nil {
+		return uuid.Nil, fmt.Errorf("check existing users: %w", err)
+	}
+	if mine == 0 {
+		return uuid.Nil, errHasUsers
+	}
+	return s.seeded.userID, nil
+}
+
+// applyAdmin sets the wizard's email, password, name and organization name
+// on admin id, so a retry uses the retry's values.
+func applyAdmin(db *gorm.DB, id uuid.UUID, a config.DefaultAdminConfig) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(a.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
 	var user models.User
-	if err := db.Where("email = ?", a.Email).First(&user).Error; err != nil {
+	if err := db.First(&user, "id = ?", id).Error; err != nil {
 		return fmt.Errorf("find admin user: %w", err)
 	}
-	if err := db.Model(&user).Updates(map[string]any{"password_hash": string(hash), "full_name": a.FullName}).Error; err != nil {
+	if err := db.Model(&user).Updates(map[string]any{"email": a.Email, "password_hash": string(hash), "full_name": a.FullName}).Error; err != nil {
 		return fmt.Errorf("update admin user: %w", err)
 	}
 	if err := db.Model(&models.Organization{}).Where("id = ?", user.OrganizationID).Update("name", a.OrganizationName).Error; err != nil {
