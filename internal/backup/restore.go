@@ -12,6 +12,7 @@ import (
 
 	"github.com/trysoft/whatomate/internal/database"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrFiles means the database was restored but the files were not.
@@ -169,7 +170,7 @@ func loadTable(ctx context.Context, tx *gorm.DB, zr *zip.Reader, t table, te Tab
 		if len(batch) == 0 {
 			return nil
 		}
-		if err := tx.Table(t.Name).Create(batch).Error; err != nil {
+		if err := insertRows(tx, t.Name, batch); err != nil {
 			return fmt.Errorf("table %s, rows %d-%d: %w", t.Name, done-int64(len(batch))+1, done, err)
 		}
 		batch = nil
@@ -214,6 +215,34 @@ func loadTable(ctx context.Context, tx *gorm.DB, zr *zip.Reader, t table, te Tab
 	}
 	progress(Progress{Phase: PhaseLoad, Table: t.Name, Done: done, Total: te.Rows})
 	return links, nil
+}
+
+// insertRows inserts rows into table with one INSERT, a missing column as
+// NULL. GORM's map Create cannot be used: on PostgreSQL it asks the driver
+// for LastInsertId, which pgx does not support.
+func insertRows(tx *gorm.DB, table string, rows []map[string]any) error {
+	var cols []string
+	seen := map[string]bool{}
+	for _, r := range rows {
+		for c := range r {
+			if !seen[c] {
+				seen[c] = true
+				cols = append(cols, c)
+			}
+		}
+	}
+	sort.Strings(cols)
+	vals := clause.Values{Columns: make([]clause.Column, len(cols)), Values: make([][]any, len(rows))}
+	for i, c := range cols {
+		vals.Columns[i] = clause.Column{Name: c}
+	}
+	for i, r := range rows {
+		vals.Values[i] = make([]any, len(cols))
+		for j, c := range cols {
+			vals.Values[i][j] = r[c]
+		}
+	}
+	return tx.Exec("INSERT INTO ? ?", clause.Table{Name: table}, vals).Error
 }
 
 // takeDeferred moves non-NULL deferred columns out of row (leaving NULL) and
