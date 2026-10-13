@@ -178,6 +178,7 @@ homebrew_casks:
       (SQLite needs nothing else installed). The config is saved to
       #{HOMEBREW_PREFIX}/etc/whatomate/config.toml on macOS
       (~/.config/whatomate/config.toml on Linux).
+      Until setup is finished, anyone who can reach this port can complete it.
 
       Redis is optional: set [redis] host in config.toml to use one.
       {{- if not (isEnvSet "MACOS_SIGN_P12") }}

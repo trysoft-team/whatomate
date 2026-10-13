@@ -160,9 +160,10 @@ app, plus the embedded frontend.
 `POST /api/setup/complete` runs, in order:
 
 1. Validate the input again on the server.
-2. Open the database with the given settings. If it already has users other
-   than the admin email being set up, stop with "database already has users;
-   choose an empty database".
+2. Open the database with the given settings. It must be empty (no users),
+   unless an earlier attempt of this same setup run seeded it: same database
+   target and the admin user ID that attempt created. Otherwise stop with
+   "database already has users; choose an empty database".
 3. Run `RunMigrationWithProgress` with a `DefaultAdminConfig` built from the
    wizard (new field `OrganizationName`), so the existing code creates the
    organization with the given name and the super-admin user.
@@ -186,15 +187,18 @@ app, plus the embedded frontend.
 
 ### Environment and origin
 
-- The origin is taken from the request (`X-Forwarded-Proto` /
-  `X-Forwarded-Host` if present, else scheme and `Host`), with the port
+- The origin is taken from the request's `Origin` header when it is a plain
+  `http(s)://host[:port]`, else from `X-Forwarded-Proto` / `X-Forwarded-Host`
+  if present, else scheme and `Host`. Without proxy headers, the port is
   replaced by the chosen port when that differs.
 - Opened over HTTPS: `environment = "production"`,
   `allowed_origins = <origin>`.
-- Opened over HTTP: `environment = "development"`,
-  `allowed_origins = <origin>`, because production forces `Secure` cookies
-  and login would fail on `http://<lan-ip>`. The finish screen says so and
-  points to the docs for switching to production behind HTTPS.
+- Opened over HTTP: `environment = "development"` (production forces
+  `Secure` cookies and login would fail on `http://<lan-ip>`), and
+  `allowed_origins` = the origin plus `http://localhost:<port>` and
+  `http://<lan-ipv4>:<port>` for each LAN address, so teammates on another
+  address get live updates. The finish screen says so and points to the
+  docs for switching to production behind HTTPS.
 
 ### Default admin fix
 
@@ -235,9 +239,11 @@ matching its doc comment. Covered by a test.
   retrying `complete` re-runs migrations and creates the admin.
 - If the admin exists but writing the config fails (folder not writable),
   the error names the path. Retrying with another location succeeds because
-  a database whose only user is the admin being set up counts as empty, and
-  step 4 re-applies the admin details; any other existing user makes it fail
-  with "database already has users; choose an empty database".
+  the wizard reuses a database its own earlier attempt seeded (same target
+  and admin user ID, recorded as soon as that attempt created the admin, even
+  if a later step failed), and step 4 re-applies the admin details. Any other
+  database with users makes it fail with "database already has users; choose
+  an empty database".
 - Ctrl+C during setup exits cleanly without writing anything.
 
 ## Port in Settings → General

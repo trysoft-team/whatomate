@@ -78,6 +78,9 @@ docker compose up -d --build
 
 Go to `http://localhost:4747` and login with `admin@admin.com` / `admin`
 
+> [!NOTE]
+> Upgrading: the default port is now 4747 and Compose publishes `${WHATOMATE_PORT:-4747}`. If your `config.toml` says `port = 8080`, either change it to 4747 or set `WHATOMATE_PORT=8080` in `.env`.
+
 __________________
 
 ### Binary
@@ -91,7 +94,7 @@ Download the [latest release](https://github.com/trysoft-team/whatomate/releases
 With no config file, whatomate opens a setup wizard at `http://localhost:4747`. It checks the system, asks which database to use (SQLite needs nothing installed, or PostgreSQL / MySQL), creates your organization and admin account, writes the config and starts whatomate. Redis is optional; without it whatomate uses a built-in store. Log in with the admin account you created in the setup wizard.
 
 > [!CAUTION]
-> Until setup is finished, anyone who can reach port 4747 can complete it. Run the first setup on a private network or behind a firewall.
+> Until setup is finished, anyone who can reach the setup port (4747 by default) can complete it. Run the first setup on a private network or behind a firewall.
 
 __________________
 

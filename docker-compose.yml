@@ -8,7 +8,8 @@ services:
     container_name: whatomate_app
     restart: unless-stopped
     ports:
-      - "4747:4747"
+      # Must match [server] port in config.toml (default 4747).
+      - "${WHATOMATE_PORT:-4747}:${WHATOMATE_PORT:-4747}"
     networks:
       - whatomate
     depends_on:

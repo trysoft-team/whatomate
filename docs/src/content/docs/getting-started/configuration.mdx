@@ -24,8 +24,13 @@ setup wizard instead of exiting. The wizard writes the config to the system
 folder when it can, otherwise to your user folder, with mode 0600. It
 generates `[jwt] secret` and `[app] encryption_key`, and sets
 `environment = "production"` only when the wizard was opened over HTTPS.
+Over plain HTTP it sets `allowed_origins` to the address you used plus
+`http://localhost:<port>` and each LAN address of the machine; over HTTPS,
+only the address you used.
 When `-config` or `WHATOMATE_CONFIG` names a file that does not exist yet,
-the wizard writes exactly that file. See [First run](/whatomate/getting-started/quickstart/#first-run).
+the wizard writes exactly that file. If that path is a directory (Docker
+creates one when a bind-mounted `config.toml` is missing on the host),
+whatomate stops with an error instead. See [First run](/whatomate/getting-started/quickstart/#first-run).
 
 `whatomate worker` never runs the wizard.
 
@@ -173,7 +178,7 @@ full_name = "Admin"
 ### `[server]`
 
 <Aside type="note" title="Upgrading">
-  The default port changed from 8080 to 4747. A config without `[server] port` now listens on 4747; set `port = 8080` to keep the old port (Docker users: update the published port too).
+  The default port changed from 8080 to 4747. A config without `[server] port` now listens on 4747; set `port = 8080` to keep the old port. Docker Compose now publishes `${WHATOMATE_PORT:-4747}`: if your `config.toml` says `port = 8080` (as the old `config.example.toml` did), either change it to `4747` or set `WHATOMATE_PORT=8080` in `.env` or your shell.
 </Aside>
 
 | Field | Notes |
@@ -569,7 +574,7 @@ The bundled [`docker-compose.yml`](https://github.com/trysoft-team/whatomate/blo
 docker compose up -d --build
 ```
 
-It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft-team/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
+It publishes port `WHATOMATE_PORT` (default `4747`), which must match `[server] port` in `config.toml`. It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft-team/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
 
 There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` (plus a Redis service for live campaign progress).
 
