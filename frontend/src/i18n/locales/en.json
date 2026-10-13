@@ -638,6 +638,18 @@
     "organizations": "Organizations",
     "generalSettings": "General Settings",
     "generalSettingsDesc": "Basic organization and display settings",
+    "server": {
+      "title": "Server",
+      "desc": "Install-wide settings stored in the config file. Changes apply after a restart.",
+      "port": "Port",
+      "configFile": "Config file: {path}",
+      "notWritable": "whatomate can't write {path}. Edit it as its owner, then restart.",
+      "restartNeeded": "Saved port {port}. Restart whatomate to apply it.",
+      "save": "Save port",
+      "saved": "Port saved. Restart whatomate to apply it.",
+      "invalidPort": "Enter a port between 1 and 65535.",
+      "saveFailed": "Could not save the port."
+    },
     "account": "Account",
     "accounts": "Accounts",
     "users": "Users",
