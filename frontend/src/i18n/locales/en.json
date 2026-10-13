@@ -3023,6 +3023,8 @@
   },
   "setup": {
     "title": "Set up whatomate",
+    "loadFailed": "Couldn't reach the setup server. Check that whatomate is still running, then reload this page.",
+    "reload": "Reload",
     "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin" },
     "back": "Back",
     "next": "Next",
@@ -3088,6 +3090,7 @@
         "fullName": "Enter your name.",
         "email": "Enter a valid email address.",
         "passwordLength": "Use at least 8 characters.",
+        "passwordTooLong": "Use at most 72 bytes (fewer characters if you use accents or emoji).",
         "confirm": "Passwords don't match."
       }
     },
@@ -3096,7 +3099,8 @@
       "slow": "This can take a minute.",
       "starting": "Starting whatomate…",
       "httpNote": "You opened setup over plain HTTP, so whatomate runs in development mode (cookies work without HTTPS). Put it behind HTTPS and set environment = \"production\" before going live.",
-      "failed": "Setup failed. Check the details and try again."
+      "failed": "Setup failed. Check the details and try again.",
+      "timeout": "whatomate is taking longer than expected to start. Check the terminal or log for errors."
     }
   }
 }

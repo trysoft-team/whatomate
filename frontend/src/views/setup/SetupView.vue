@@ -19,6 +19,9 @@ const database = ref<SetupDatabase>({ driver: 'sqlite', path: '' })
 const admin = ref<AdminForm>({ organization: '', fullName: '', email: '', password: '', confirm: '' })
 const phase = ref<'form' | 'saving' | 'starting'>('form')
 const error = ref('')
+const loadFailed = ref(false)
+const startTimedOut = ref(false)
+const START_TIMEOUT_MS = 2 * 60 * 1000
 
 const candidates = computed(() => status.value?.candidates ?? [])
 const dataDir = computed(() => candidates.value.find(c => c.path === configPath.value)?.data_dir ?? '')
@@ -34,11 +37,19 @@ watch(dataDir, (dir, old) => {
 })
 
 onMounted(async () => {
-  const res = await setupService.status()
-  status.value = res.data.data
-  port.value = status.value.listen_port ?? 4747
-  configPath.value = status.value.config_path ?? ''
+  try {
+    const res = await setupService.status()
+    status.value = res.data.data
+    port.value = status.value.listen_port ?? 4747
+    configPath.value = status.value.config_path ?? ''
+  } catch {
+    loadFailed.value = true
+  }
 })
+
+function reload() {
+  window.location.reload()
+}
 
 function go(next: SetupStep) {
   error.value = ''
@@ -52,19 +63,21 @@ function loginPath(): string {
   return `${base}/login`
 }
 
-async function waitForOrigin(origin: string) {
-  for (;;) {
+async function waitForOrigin(origin: string, deadline: number): Promise<boolean> {
+  while (Date.now() < deadline) {
     try {
       await fetch(`${origin}/health`, { mode: 'no-cors', cache: 'no-store' })
-      return
+      return true
     } catch {
       await sleep(1000)
     }
   }
+  return false
 }
 
 async function waitForApp() {
-  for (;;) {
+  const deadline = Date.now() + START_TIMEOUT_MS
+  while (Date.now() < deadline) {
     try {
       const next = afterSetup((await setupService.status()).data.data, window.location.origin)
       if (next.kind === 'login') {
@@ -72,15 +85,18 @@ async function waitForApp() {
         return
       }
       if (next.kind === 'moved') {
-        await waitForOrigin(next.url)
-        window.location.assign(`${next.url}/login`)
-        return
+        if (await waitForOrigin(next.url, deadline)) {
+          window.location.assign(`${next.url}/login`)
+          return
+        }
+        break
       }
     } catch {
       // the server is switching from setup to the app
     }
     await sleep(1000)
   }
+  startTimedOut.value = true
 }
 
 async function finish() {
@@ -124,11 +140,19 @@ async function finish() {
       </ol>
 
       <div class="p-8">
-        <div v-if="!status" class="flex justify-center py-8"><Loader2 class="h-6 w-6 animate-spin text-white/50" /></div>
+        <div v-if="loadFailed" class="space-y-4 py-6 text-center" data-testid="setup-load-error">
+          <p class="text-sm text-red-500">{{ t('setup.loadFailed') }}</p>
+          <Button variant="outline" @click="reload">{{ t('setup.reload') }}</Button>
+        </div>
+
+        <div v-else-if="!status" class="flex justify-center py-8"><Loader2 class="h-6 w-6 animate-spin text-white/50" /></div>
 
         <div v-else-if="phase !== 'form'" class="space-y-4 py-6 text-center" data-testid="setup-progress">
-          <Loader2 class="mx-auto h-8 w-8 animate-spin text-emerald-500" />
-          <p class="text-white light:text-gray-900">{{ phase === 'saving' ? t('setup.finish.saving') : t('setup.finish.starting') }}</p>
+          <p v-if="startTimedOut" class="text-sm text-red-500 max-w-md mx-auto" data-testid="setup-start-timeout">{{ t('setup.finish.timeout') }}</p>
+          <template v-else>
+            <Loader2 class="mx-auto h-8 w-8 animate-spin text-emerald-500" />
+            <p class="text-white light:text-gray-900">{{ phase === 'saving' ? t('setup.finish.saving') : t('setup.finish.starting') }}</p>
+          </template>
           <p v-if="phase === 'saving'" class="text-sm text-white/50 light:text-gray-500">{{ t('setup.finish.slow') }}</p>
           <p v-if="plainHttp" class="text-xs text-amber-500 max-w-md mx-auto">{{ t('setup.finish.httpNote') }}</p>
         </div>

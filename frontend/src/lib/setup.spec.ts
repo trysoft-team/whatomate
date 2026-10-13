@@ -31,6 +31,13 @@ describe('setup logic', () => {
     expect(adminErrors({ ...goodAdmin, fullName: '' }).fullName).toBe('setup.admin.errors.fullName')
     expect(adminErrors({ ...goodAdmin, email: 'nope' }).email).toBe('setup.admin.errors.email')
     expect(adminErrors({ ...goodAdmin, password: 'short', confirm: 'short' }).password).toBe('setup.admin.errors.passwordLength')
+    const long = 'x'.repeat(73)
+    expect(adminErrors({ ...goodAdmin, password: long, confirm: long }).password).toBe('setup.admin.errors.passwordTooLong')
+    // 37 characters but 74 UTF-8 bytes: bcrypt reads at most 72 bytes.
+    const multibyte = 'é'.repeat(37)
+    expect(adminErrors({ ...goodAdmin, password: multibyte, confirm: multibyte }).password).toBe('setup.admin.errors.passwordTooLong')
+    const max = 'x'.repeat(72)
+    expect(adminErrors({ ...goodAdmin, password: max, confirm: max })).toEqual({})
     expect(adminErrors({ ...goodAdmin, confirm: 'different!' }).confirm).toBe('setup.admin.errors.confirm')
   })
 

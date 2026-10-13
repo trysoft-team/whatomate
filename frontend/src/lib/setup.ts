@@ -38,6 +38,8 @@ export function adminErrors(f: AdminForm): AdminErrors {
   if (!f.fullName.trim()) e.fullName = 'setup.admin.errors.fullName'
   if (!EMAIL.test(f.email.trim())) e.email = 'setup.admin.errors.email'
   if (f.password.length < 8) e.password = 'setup.admin.errors.passwordLength'
+  // bcrypt reads at most 72 bytes, so the server refuses longer passwords.
+  else if (new TextEncoder().encode(f.password).length > 72) e.password = 'setup.admin.errors.passwordTooLong'
   if (f.confirm !== f.password) e.confirm = 'setup.admin.errors.confirm'
   return e
 }
