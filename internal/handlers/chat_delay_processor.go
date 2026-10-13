@@ -43,6 +43,9 @@ func (p *ChatDelayProcessor) Start(ctx context.Context) {
 			p.app.Log.Info("Chat delay processor stopped")
 			return
 		case <-ticker.C:
+			if p.app.Maintenance.Active() {
+				continue
+			}
 			p.processDueDelays(ctx)
 			p.processDueAgentSessionTimeouts(ctx)
 			p.processIdleChatbotSessionTimeouts()

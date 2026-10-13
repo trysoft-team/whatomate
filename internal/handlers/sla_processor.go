@@ -41,6 +41,9 @@ func (p *SLAProcessor) Start(ctx context.Context) {
 			p.app.Log.Info("SLA processor stopped")
 			return
 		case <-ticker.C:
+			if p.app.Maintenance.Active() {
+				continue
+			}
 			p.processStaleTransfers()
 		}
 	}

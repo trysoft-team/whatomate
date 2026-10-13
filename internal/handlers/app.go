@@ -10,6 +10,7 @@ import (
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/maintenance"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/storage"
 	"github.com/trysoft/whatomate/internal/store"
@@ -50,6 +51,10 @@ type App struct {
 	TTS tts.Synthesizer
 	// S3Client for serving call recording presigned URLs (nil when not configured)
 	S3Client *storage.S3Client
+	// Maintenance is on while a restore runs; background work skips its ticks.
+	Maintenance *maintenance.Gate
+	// Version is the running build's version, written into backups.
+	Version string
 	// wg tracks background goroutines for graceful shutdown
 	wg sync.WaitGroup
 }

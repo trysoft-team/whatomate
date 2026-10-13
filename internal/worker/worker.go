@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/contactutil"
+	"github.com/trysoft/whatomate/internal/maintenance"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/store"
@@ -26,6 +27,8 @@ type Worker struct {
 	WhatsApp  *whatsapp.Client
 	Consumer  queue.Consumer
 	Publisher *queue.Publisher
+	// Gate pauses job handling while a restore runs.
+	Gate *maintenance.Gate
 }
 
 // Ensure Worker implements JobHandler interface
@@ -58,6 +61,10 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // HandleRecipientJob processes a single recipient message job
 func (w *Worker) HandleRecipientJob(ctx context.Context, job *queue.RecipientJob) error {
+	if err := w.Gate.Wait(ctx); err != nil {
+		return err
+	}
+
 	// Check if campaign is still active before sending
 	var campaign models.BulkMessageCampaign
 	if err := w.DB.Where("id = ?", job.CampaignID).Preload("Template").First(&campaign).Error; err != nil {

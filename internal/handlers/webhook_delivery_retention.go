@@ -55,6 +55,9 @@ func (p *WebhookDeliveryPruner) Start(ctx context.Context) {
 			p.app.Log.Info("Webhook delivery pruner stopped")
 			return
 		case <-ticker.C:
+			if p.app.Maintenance.Active() {
+				continue
+			}
 			p.prune(ctx)
 		}
 	}

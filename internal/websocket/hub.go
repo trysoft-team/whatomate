@@ -113,6 +113,21 @@ func (h *Hub) unregisterClient(client *Client) {
 		"total_clients", h.countClients())
 }
 
+// CloseAll disconnects every client; their write pumps close the sockets.
+func (h *Hub) CloseAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for orgID, users := range h.clients {
+		for _, clients := range users {
+			for c := range clients {
+				close(c.send)
+			}
+		}
+		delete(h.clients, orgID)
+	}
+	h.log.Info("WebSocket clients disconnected for maintenance")
+}
+
 // broadcastMessage sends a message to all relevant clients
 func (h *Hub) broadcastMessage(msg BroadcastMessage) {
 	h.mu.RLock()
