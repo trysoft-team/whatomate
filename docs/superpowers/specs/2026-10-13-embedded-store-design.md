@@ -281,8 +281,9 @@ Builds on the existing `internal/realtime` Opus encoder/decoder (`gopus`).
 - Piper keeps running as an optional external program (it is a neural voice
   model; there is no pure-Go equivalent), but its WAV output is encoded in Go,
   so `opusenc` is no longer used.
-- The `ffmpeg_binary` and `opusenc_binary` config keys become unused; they are
-  still accepted (ignored with a startup warning) so existing configs load.
+- The `[tts] opusenc_binary` config key becomes unused; it is still accepted
+  (ignored with a startup warning) so existing configs load. The internal
+  `FFmpegBinary` fields on the TTS providers are removed.
 - `Dockerfile` and `Dockerfile.goreleaser` drop `ffmpeg` and `opus-tools`.
 
 ### Testing
