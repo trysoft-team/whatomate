@@ -59,6 +59,14 @@ func openKind(t *testing.T, kind string) *gorm.DB {
 	return db
 }
 
+func TestDatabaseSize(t *testing.T) {
+	for _, kind := range []string{config.DriverSQLite, config.DriverPostgres, config.DriverMySQL} {
+		t.Run(kind, func(t *testing.T) {
+			assert.Positive(t, databaseSize(openKind(t, kind)))
+		})
+	}
+}
+
 func TestCrossDatabase(t *testing.T) {
 	for _, c := range []struct{ from, to string }{
 		{config.DriverSQLite, config.DriverPostgres},
