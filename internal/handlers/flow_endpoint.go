@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,21 +46,16 @@ type flowEndpointState struct {
 	Media map[string]map[string]any `json:"media,omitempty"`
 }
 
-// flowEndpointMemState backs state when Redis is not configured (tests, dev).
-var flowEndpointMemState sync.Map
-
 func flowEndpointStateKey(flowID uuid.UUID, token string) string {
 	return "flow_endpoint:" + flowID.String() + ":" + token
 }
 
 func (a *App) loadFlowEndpointState(ctx context.Context, key string) *flowEndpointState {
 	st := &flowEndpointState{Data: map[string]any{}}
-	if a.Redis != nil {
-		if raw, err := a.Redis.Get(ctx, key).Bytes(); err == nil {
+	if a.State != nil {
+		if raw, err := a.State.Get(ctx, key); err == nil {
 			_ = json.Unmarshal(raw, st)
 		}
-	} else if v, ok := flowEndpointMemState.Load(key); ok {
-		_ = json.Unmarshal(v.([]byte), st)
 	}
 	if st.Data == nil {
 		st.Data = map[string]any{}
@@ -70,25 +64,22 @@ func (a *App) loadFlowEndpointState(ctx context.Context, key string) *flowEndpoi
 }
 
 func (a *App) saveFlowEndpointState(ctx context.Context, key string, st *flowEndpointState) {
+	if a.State == nil {
+		return
+	}
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return
 	}
-	if a.Redis != nil {
-		if err := a.Redis.Set(ctx, key, raw, flowEndpointStateTTL).Err(); err != nil {
-			a.Log.Warn("flow endpoint: failed to save state", "error", err)
-		}
-		return
+	if err := a.State.Set(ctx, key, raw, flowEndpointStateTTL); err != nil {
+		a.Log.Warn("flow endpoint: failed to save state", "error", err)
 	}
-	flowEndpointMemState.Store(key, raw)
 }
 
 func (a *App) deleteFlowEndpointState(ctx context.Context, key string) {
-	if a.Redis != nil {
-		a.Redis.Del(ctx, key)
-		return
+	if a.State != nil {
+		_ = a.State.Del(ctx, key)
 	}
-	flowEndpointMemState.Delete(key)
 }
 
 // FlowEndpoint is the public WhatsApp Flow data endpoint (POST /api/flow-endpoint/{id}).

@@ -7,12 +7,12 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/storage"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/tts"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -24,9 +24,15 @@ import (
 
 // App holds all dependencies for handlers
 type App struct {
-	Config            *config.Config
-	DB                *gorm.DB
-	Redis             *redis.Client
+	Config *config.Config
+	DB     *gorm.DB
+	// Cache holds short-lived caches (memory, or Redis in Redis mode).
+	Cache store.KV
+	// State holds logins, OAuth/passkey state, flow state and sticky calls
+	// (database, or Redis in Redis mode).
+	State             store.KV
+	Scheduler         store.Scheduler
+	Broker            store.Broker
 	Log               logf.Logger
 	WhatsApp          *whatsapp.Client
 	WSHub             *websocket.Hub
@@ -123,10 +129,12 @@ func (a *App) ReadyCheck(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(500, "Database ping failed", nil, "")
 	}
 
-	// Check Redis connection
-	if err := a.Redis.Ping(r.RequestCtx).Err(); err != nil {
-		a.Log.Error("Redis connection error", "error", err)
-		return r.SendErrorEnvelope(500, "Redis connection error", nil, "")
+	// Check the state store (database or Redis)
+	if a.State != nil {
+		if err := a.State.Ping(r.RequestCtx); err != nil {
+			a.Log.Error("State store error", "error", err)
+			return r.SendErrorEnvelope(500, "State store error", nil, "")
+		}
 	}
 
 	return r.SendEnvelope(map[string]string{
@@ -161,21 +169,24 @@ func (a *App) GetEmbeddedSignupConfig(r *fastglue.Request) error {
 	return r.SendEnvelope(config)
 }
 
-// StartCampaignStatsSubscriber starts listening for campaign stats updates from Redis pub/sub
+// StartCampaignStatsSubscriber starts listening for campaign stats updates from the broker
 // and broadcasts them via WebSocket
 func (a *App) StartCampaignStatsSubscriber() error {
 	if a.WSHub == nil {
 		a.Log.Warn("WebSocket hub not initialized, skipping campaign stats subscriber")
 		return nil
 	}
+	if a.Broker == nil {
+		return nil
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a.CampaignSubCancel = cancel
 
-	subscriber := queue.NewSubscriber(a.Redis, a.Log)
+	subscriber := queue.NewSubscriber(a.Broker, a.Log)
 
 	err := subscriber.SubscribeCampaignStats(ctx, func(update *queue.CampaignStatsUpdate) {
-		a.Log.Debug("Received campaign stats update from Redis",
+		a.Log.Debug("Received campaign stats update",
 			"campaign_id", update.CampaignID,
 			"status", update.Status,
 			"sent", update.SentCount,

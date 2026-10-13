@@ -12,12 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/middleware"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 	"github.com/valyala/fasthttp"
 )
 
 // generateRefreshTokenWithJTI creates a refresh JWT whose claims.ID matches the
-// provided JTI, so production's single-use Redis check actually fires.
+// provided JTI, so production's single-use state check actually fires.
 func generateRefreshTokenWithJTI(t *testing.T, secret string, user *models.User, jti string, expiry time.Duration) string {
 	t.Helper()
 	claims := middleware.JWTClaims{
@@ -119,7 +120,7 @@ func TestApp_Logout_RevokesRefreshTokenJTI(t *testing.T) {
 	jti := uuid.New().String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, app.Redis.Set(ctx, "refresh:"+jti, user.ID.String(), time.Hour).Err())
+	require.NoError(t, app.State.Set(ctx, "refresh:"+jti, []byte(user.ID.String()), time.Hour))
 
 	token := generateRefreshTokenWithJTI(t, testutil.TestJWTSecret, user, jti, time.Hour)
 
@@ -127,9 +128,8 @@ func TestApp_Logout_RevokesRefreshTokenJTI(t *testing.T) {
 	require.NoError(t, app.Logout(req))
 	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
 
-	exists, err := app.Redis.Exists(ctx, "refresh:"+jti).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists, "refresh token JTI should be revoked from Redis")
+	_, err := app.State.Get(ctx, "refresh:"+jti)
+	assert.ErrorIs(t, err, store.ErrNotFound, "refresh token JTI should be revoked")
 }
 
 func TestApp_Logout_NoTokenStillSucceeds(t *testing.T) {
@@ -156,7 +156,7 @@ func TestApp_Logout_FromCookie(t *testing.T) {
 	jti := uuid.New().String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, app.Redis.Set(ctx, "refresh:"+jti, user.ID.String(), time.Hour).Err())
+	require.NoError(t, app.State.Set(ctx, "refresh:"+jti, []byte(user.ID.String()), time.Hour))
 
 	token := generateRefreshTokenWithJTI(t, testutil.TestJWTSecret, user, jti, time.Hour)
 
@@ -167,9 +167,8 @@ func TestApp_Logout_FromCookie(t *testing.T) {
 	require.NoError(t, app.Logout(req))
 	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
 
-	exists, err := app.Redis.Exists(ctx, "refresh:"+jti).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists, "cookie-based logout must also revoke JTI")
+	_, err := app.State.Get(ctx, "refresh:"+jti)
+	assert.ErrorIs(t, err, store.ErrNotFound, "cookie-based logout must also revoke JTI")
 }
 
 // --- GetWSToken ---
@@ -239,7 +238,7 @@ func TestApp_RefreshToken_RevokedJTI(t *testing.T) {
 	org := testutil.CreateTestOrganization(t, app.DB)
 	user := testutil.CreateTestUser(t, app.DB, org.ID)
 
-	// JTI is NOT stored in Redis → simulates a revoked / already-used token.
+	// JTI is NOT stored → simulates a revoked / already-used token.
 	jti := uuid.New().String()
 	token := generateRefreshTokenWithJTI(t, testutil.TestJWTSecret, user, jti, time.Hour)
 
@@ -256,7 +255,7 @@ func TestApp_RefreshToken_RotatesJTI_ReplayFails(t *testing.T) {
 	jti := uuid.New().String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, app.Redis.Set(ctx, "refresh:"+jti, user.ID.String(), time.Hour).Err())
+	require.NoError(t, app.State.Set(ctx, "refresh:"+jti, []byte(user.ID.String()), time.Hour))
 
 	token := generateRefreshTokenWithJTI(t, testutil.TestJWTSecret, user, jti, time.Hour)
 
@@ -290,7 +289,7 @@ func TestApp_RefreshToken_FromCookie(t *testing.T) {
 	jti := uuid.New().String()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, app.Redis.Set(ctx, "refresh:"+jti, user.ID.String(), time.Hour).Err())
+	require.NoError(t, app.State.Set(ctx, "refresh:"+jti, []byte(user.ID.String()), time.Hour))
 
 	token := generateRefreshTokenWithJTI(t, testutil.TestJWTSecret, user, jti, time.Hour)
 

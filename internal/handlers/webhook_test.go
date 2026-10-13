@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/test/testutil"
 )
@@ -147,10 +148,10 @@ func TestVerifyWebhookSignature_TimingAttackResistance(t *testing.T) {
 func webhookTestApp(t *testing.T) *App {
 	t.Helper()
 	db := testutil.SetupTestDB(t)
-	redisClient := testutil.SetupTestRedis(t)
-	if redisClient == nil {
-		t.Skip("TEST_REDIS_URL not set, skipping test")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
+	state := store.NewSQLKV(db)
+	t.Cleanup(state.Close)
 	cfg := &config.Config{
 		JWT: config.JWTConfig{
 			Secret:            testutil.TestJWTSecret,
@@ -162,10 +163,13 @@ func webhookTestApp(t *testing.T) *App {
 		},
 	}
 	return &App{
-		Config: cfg,
-		DB:     db,
-		Log:    testutil.NopLogger(),
-		Redis:  redisClient,
+		Config:    cfg,
+		DB:        db,
+		Log:       testutil.NopLogger(),
+		Cache:     mem,
+		State:     state,
+		Scheduler: store.NewSQLScheduler(db),
+		Broker:    store.NewMemoryBroker(),
 	}
 }
 

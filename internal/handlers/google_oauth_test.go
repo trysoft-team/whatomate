@@ -178,9 +178,8 @@ func TestGoogleOAuthStart_BuildsConsentURL(t *testing.T) {
 	assert.Contains(t, q.Get("scope"), "https://www.googleapis.com/auth/drive.file")
 	assert.NotContains(t, strings.Fields(q.Get("scope")), "https://www.googleapis.com/auth/drive")
 
-	exists, err := app.Redis.Exists(context.Background(), "google_oauth:state:"+state).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), exists)
+	_, err := app.State.Get(context.Background(), "google_oauth:state:"+state)
+	assert.NoError(t, err)
 }
 
 func TestGoogleOAuthCallback_CreatesCredential(t *testing.T) {

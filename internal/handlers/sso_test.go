@@ -340,7 +340,7 @@ func TestApp_InitSSO_NoConfigReturns404(t *testing.T) {
 	testutil.AssertErrorResponse(t, req, fasthttp.StatusNotFound, "not configured")
 }
 
-func TestApp_InitSSO_StoresStateInRedisAndRedirects(t *testing.T) {
+func TestApp_InitSSO_StoresStateAndRedirects(t *testing.T) {
 	app := newSSOApp(t)
 	fake := newFakeOAuth(t)
 	org := testutil.CreateTestOrganization(t, app.DB)
@@ -361,8 +361,8 @@ func TestApp_InitSSO_StoresStateInRedisAndRedirects(t *testing.T) {
 	state := parsed.Query().Get("state")
 	require.NotEmpty(t, state, "auth URL must include state= query")
 
-	// Verify Redis stored state matches.
-	got, err := app.Redis.Get(context.Background(), "sso:state:"+state).Bytes()
+	// Verify the stored state matches.
+	got, err := app.State.Get(context.Background(), "sso:state:"+state)
 	require.NoError(t, err)
 	var stored handlers.SSOState
 	require.NoError(t, json.Unmarshal(got, &stored))
@@ -423,7 +423,7 @@ func TestApp_CallbackSSO_StateProviderMismatchRejected(t *testing.T) {
 		OrgID: org.ID.String(), Provider: "google", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")
@@ -448,7 +448,7 @@ func TestApp_CallbackSSO_StateIsSingleUse(t *testing.T) {
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	// First callback consumes the state and (likely) succeeds.
 	req1 := testutil.NewGETRequest(t)
@@ -487,7 +487,7 @@ func TestApp_CallbackSSO_CustomProvider_ExistingUser_LoginSuccess(t *testing.T) 
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")
@@ -529,7 +529,7 @@ func TestApp_CallbackSSO_AutoCreateDisabledRejectsNewUser(t *testing.T) {
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")
@@ -560,7 +560,7 @@ func TestApp_CallbackSSO_AutoCreateEnabledCreatesUserWithDefaultRole(t *testing.
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")
@@ -598,7 +598,7 @@ func TestApp_CallbackSSO_DomainRestrictionRejectsOutsideEmail(t *testing.T) {
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")
@@ -629,7 +629,7 @@ func TestApp_CallbackSSO_DisabledExistingUserRejected(t *testing.T) {
 		OrgID: org.ID.String(), Provider: "custom", Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
 	stored, _ := json.Marshal(state)
-	require.NoError(t, app.Redis.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute).Err())
+	require.NoError(t, app.State.Set(context.Background(), "sso:state:"+nonce, stored, 5*time.Minute))
 
 	req := testutil.NewGETRequest(t)
 	testutil.SetPathParam(req, "provider", "custom")

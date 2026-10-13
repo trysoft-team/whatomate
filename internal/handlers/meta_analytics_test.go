@@ -17,6 +17,7 @@ import (
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/handlers"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/trysoft/whatomate/test/testutil"
 	"github.com/valyala/fasthttp"
@@ -408,10 +409,10 @@ func TestApp_RefreshMetaAnalyticsCache_ClearsOnlyOrgScopedKeys(t *testing.T) {
 		fmt.Sprintf("meta:analytics:%s:all:analytics:1:2:DAY", orgB.ID.String()),
 	}
 	for _, k := range keysA {
-		require.NoError(t, app.Redis.Set(ctx, k, "{}", time.Hour).Err())
+		require.NoError(t, app.Cache.Set(ctx, k, []byte("{}"), time.Hour))
 	}
 	for _, k := range keysB {
-		require.NoError(t, app.Redis.Set(ctx, k, "{}", time.Hour).Err())
+		require.NoError(t, app.Cache.Set(ctx, k, []byte("{}"), time.Hour))
 	}
 
 	req := testutil.NewRequest(t)
@@ -422,14 +423,12 @@ func TestApp_RefreshMetaAnalyticsCache_ClearsOnlyOrgScopedKeys(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
 
 	for _, k := range keysA {
-		exists, err := app.Redis.Exists(ctx, k).Result()
-		require.NoError(t, err)
-		assert.Equal(t, int64(0), exists, "orgA key must be deleted: %s", k)
+		_, err := app.Cache.Get(ctx, k)
+		assert.ErrorIs(t, err, store.ErrNotFound, "orgA key must be deleted: %s", k)
 	}
 	for _, k := range keysB {
-		exists, err := app.Redis.Exists(ctx, k).Result()
-		require.NoError(t, err)
-		assert.Equal(t, int64(1), exists, "orgB key must NOT be deleted: %s", k)
+		_, err := app.Cache.Get(ctx, k)
+		assert.NoError(t, err, "orgB key must NOT be deleted: %s", k)
 	}
 }
 
@@ -507,9 +506,9 @@ func TestApp_GetMetaAnalytics_PricingIncludesWABACurrency(t *testing.T) {
 	assert.Equal(t, "INR", accounts[0].Currency)
 
 	// The currency was cached under the WABA id, not the internal account id.
-	cached, err := app.Redis.Get(context.Background(), "meta:waba:currency:"+acc.BusinessID).Result()
+	cached, err := app.Cache.Get(context.Background(), "meta:waba:currency:"+acc.BusinessID)
 	require.NoError(t, err)
-	assert.Equal(t, "INR", cached)
+	assert.Equal(t, "INR", string(cached))
 }
 
 func TestApp_GetMetaAnalytics_CurrencyLookupCached(t *testing.T) {
@@ -533,7 +532,7 @@ func TestApp_GetMetaAnalytics_CurrencyLookupCached(t *testing.T) {
 		now.AddDate(0, 0, -14).Format("2006-01-02"), now.AddDate(0, 0, -1).Format("2006-01-02"))
 	require.Len(t, second, 1)
 	assert.Equal(t, "EUR", second[0].Currency)
-	assert.Equal(t, int64(1), srv.CurrencyHits(), "currency must be served from Redis on the second call")
+	assert.Equal(t, int64(1), srv.CurrencyHits(), "currency must be served from the cache on the second call")
 }
 
 func TestApp_GetMetaAnalytics_CurrencyFallsBackToUSDWithoutCaching(t *testing.T) {
@@ -550,8 +549,8 @@ func TestApp_GetMetaAnalytics_CurrencyFallsBackToUSDWithoutCaching(t *testing.T)
 	require.Len(t, accounts, 1)
 	assert.Equal(t, "USD", accounts[0].Currency, "a Graph failure must fall back to USD")
 
-	// A transient failure must not pin the fallback in Redis for the full TTL.
-	_, err := app.Redis.Get(context.Background(), "meta:waba:currency:"+acc.BusinessID).Result()
+	// A transient failure must not pin the fallback in the cache for the full TTL.
+	_, err := app.Cache.Get(context.Background(), "meta:waba:currency:"+acc.BusinessID)
 	assert.Error(t, err, "the USD fallback must not be cached")
 }
 

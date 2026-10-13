@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
@@ -21,6 +20,7 @@ import (
 	"github.com/trysoft/whatomate/internal/middleware"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/storage"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/tts"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/internal/worker"
@@ -171,15 +171,27 @@ func runServer(args []string) {
 		}
 	}
 
-	// Connect to Redis
-	rdb, err := database.NewRedis(&cfg.Redis)
+	// Caches, state, scheduler and broker: embedded unless [redis] host is set
+	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
 		lo.Fatal("Failed to connect to Redis", "error", err)
 	}
-	lo.Info("Connected to Redis")
+	defer stores.Close()
+	if stores.Embedded() {
+		lo.Info("Using built-in store (no Redis server)")
+	} else {
+		lo.Info("Connected to Redis")
+	}
 
 	// Initialize job queue
-	jobQueue := queue.NewRedisQueue(rdb, lo)
+	var jobQueue queue.Queue
+	var dbQueue *queue.DBQueue
+	if stores.Embedded() {
+		dbQueue = queue.NewDBQueue(db, lo)
+		jobQueue = dbQueue
+	} else {
+		jobQueue = queue.NewRedisQueue(stores.Redis, lo)
+	}
 	lo.Info("Job queue initialized")
 
 	// Initialize Fastglue
@@ -208,7 +220,10 @@ func runServer(args []string) {
 	app := &handlers.App{
 		Config:     cfg,
 		DB:         db,
-		Redis:      rdb,
+		Cache:      stores.Cache,
+		State:      stores.State,
+		Scheduler:  stores.Scheduler,
+		Broker:     stores.Broker,
 		Log:        lo,
 		WhatsApp:   waClient,
 		WSHub:      wsHub,
@@ -237,11 +252,11 @@ func runServer(args []string) {
 	}
 
 	// Initialize shared assignment engine (used by both chat and call transfers)
-	assigner := assignment.New(db, rdb, lo)
+	assigner := assignment.New(db, stores.Cache, lo)
 	app.Assigner = assigner
 
 	// Initialize CallManager (per-org calling_enabled DB setting controls access)
-	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, rdb, waClient, wsHub, assigner, lo)
+	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, stores.Cache, waClient, wsHub, assigner, lo)
 	app.CallManager.SetSecrets(cfg.App.EncryptionKey, &cfg.AI)
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
@@ -286,7 +301,7 @@ func runServer(args []string) {
 	g.Before(middleware.CSRFProtection())
 
 	// Setup routes
-	setupRoutes(g, app, lo, cfg.Server.BasePath, rdb, cfg)
+	setupRoutes(g, app, lo, cfg.Server.BasePath, stores.Counter, cfg)
 
 	// Create server with CORS wrapper
 	server := &fasthttp.Server{
@@ -330,10 +345,11 @@ func runServer(args []string) {
 		workerCtx, workerCancel = context.WithCancel(context.Background())
 
 		for i := 0; i < *numWorkers; i++ {
-			w, err := worker.New(cfg, db, rdb, lo)
+			consumer, err := newConsumer(stores, dbQueue, lo)
 			if err != nil {
 				lo.Fatal("Failed to create worker", "error", err, "worker_num", i+1)
 			}
+			w := worker.New(cfg, db, consumer, stores.Broker, lo)
 			workers = append(workers, w)
 
 			workerNum := i + 1
@@ -436,12 +452,20 @@ func runWorker(args []string) {
 	}
 	lo.Info("Connected to database", "driver", cfg.Database.Driver)
 
-	// Connect to Redis
-	rdb, err := database.NewRedis(&cfg.Redis)
+	// Caches, state, scheduler and broker: embedded unless [redis] host is set
+	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
 		lo.Fatal("Failed to connect to Redis", "error", err)
 	}
-	lo.Info("Connected to Redis")
+	defer stores.Close()
+	var dbQueue *queue.DBQueue
+	if stores.Embedded() {
+		dbQueue = queue.NewDBQueue(db, lo)
+		lo.Info("Using built-in store (no Redis server)")
+		lo.Info("No Redis configured: live campaign progress is not pushed to the UI from separate worker processes")
+	} else {
+		lo.Info("Connected to Redis")
+	}
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -456,10 +480,11 @@ func runWorker(args []string) {
 	errCh := make(chan error, *workerCount)
 
 	for i := 0; i < *workerCount; i++ {
-		w, err := worker.New(cfg, db, rdb, lo)
+		consumer, err := newConsumer(stores, dbQueue, lo)
 		if err != nil {
 			lo.Fatal("Failed to create worker", "error", err, "worker_num", i+1)
 		}
+		w := worker.New(cfg, db, consumer, stores.Broker, lo)
 		workers[i] = w
 
 		go func(workerNum int) {
@@ -494,11 +519,19 @@ func runWorker(args []string) {
 	lo.Info("Workers stopped")
 }
 
+// newConsumer returns a campaign job consumer for the active store mode.
+func newConsumer(stores *store.Stores, dbQueue *queue.DBQueue, lo logf.Logger) (queue.Consumer, error) {
+	if stores.Embedded() {
+		return dbQueue.NewConsumer(), nil
+	}
+	return queue.NewRedisConsumer(stores.Redis, lo)
+}
+
 // ============================================================================
 // ROUTES
 // ============================================================================
 
-func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePath string, rdb *redis.Client, cfg *config.Config) {
+func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePath string, counter store.Counter, cfg *config.Config) {
 	// Health check
 	g.GET("/health", app.HealthCheck)
 	g.GET("/ready", app.ReadyCheck)
@@ -516,21 +549,21 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 			"window_seconds", cfg.RateLimit.WindowSeconds)
 
 		g.POST("/api/auth/login", withRateLimit(app.Login, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "login", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "login", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/register", withRateLimit(app.Register, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.RegisterMaxAttempts, Window: window, KeyPrefix: "register", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.RegisterMaxAttempts, Window: window, KeyPrefix: "register", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/refresh", withRateLimit(app.RefreshToken, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.RefreshMaxAttempts, Window: window, KeyPrefix: "refresh", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.RefreshMaxAttempts, Window: window, KeyPrefix: "refresh", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		// Begin only issues a challenge, and the login page requests one on every
 		// load for passkey autofill, so it gets more headroom than finish.
 		g.POST("/api/auth/passkey/begin", withRateLimit(app.BeginPasskeyLogin, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts * 6, Window: window, KeyPrefix: "passkey_begin", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts * 6, Window: window, KeyPrefix: "passkey_begin", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/passkey/finish", withRateLimit(app.FinishPasskeyLogin, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "passkey_finish", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "passkey_finish", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 	} else {
 		g.POST("/api/auth/login", app.Login)
@@ -548,10 +581,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	if cfg.RateLimit.Enabled {
 		window := time.Duration(cfg.RateLimit.WindowSeconds) * time.Second
 		g.GET("/api/auth/sso/{provider}/init", withRateLimit(app.InitSSO, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_init", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_init", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.GET("/api/auth/sso/{provider}/callback", withRateLimit(app.CallbackSSO, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_callback", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_callback", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 	} else {
 		g.GET("/api/auth/sso/{provider}/init", app.InitSSO)
@@ -598,7 +631,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		if len(path) >= 13 && path[:13] == "/api/auth/sso" {
 			return r
 		}
-		// Google account connect callback (one-time state token in Redis)
+		// Google account connect callback (one-time state token)
 		if path == "/api/google-credentials/oauth/callback" {
 			return r
 		}
@@ -625,7 +658,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 			apiWindow = 60
 		}
 		apiRL := middleware.UserAwareRateLimit(middleware.RateLimitOpts{
-			Redis:      rdb,
+			Counter:    counter,
 			Log:        lo,
 			Max:        apiMax,
 			Window:     time.Duration(apiWindow) * time.Second,
