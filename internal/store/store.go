@@ -11,7 +11,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
+	"github.com/trysoft/whatomate/internal/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 // ErrNotFound is returned by KV reads for a missing or expired key.
@@ -96,6 +98,18 @@ func New(cfg *config.RedisConfig, db *gorm.DB) (*Stores, error) {
 		Redis:   client,
 		closers: []func(){func() { _ = client.Close() }},
 	}, nil
+}
+
+// MissingTables returns the names of the embedded-mode tables (key/value
+// state, scheduler, campaign queue) that do not exist in db.
+func MissingTables(db *gorm.DB) []string {
+	var missing []string
+	for _, m := range []schema.Tabler{models.KVEntry{}, models.ScheduledItem{}, models.CampaignJob{}} {
+		if !db.Migrator().HasTable(m) {
+			missing = append(missing, m.TableName())
+		}
+	}
+	return missing
 }
 
 // Embedded reports whether no Redis server is used.

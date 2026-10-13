@@ -178,6 +178,9 @@ func runServer(args []string) {
 	}
 	defer stores.Close()
 	if stores.Embedded() {
+		if missing := store.MissingTables(db); len(missing) > 0 {
+			lo.Fatal("Built-in store tables are missing; run `whatomate server -migrate` once", "tables", strings.Join(missing, ", "))
+		}
 		lo.Info("Using built-in store (no Redis server)")
 	} else {
 		lo.Info("Connected to Redis")
@@ -460,6 +463,9 @@ func runWorker(args []string) {
 	defer stores.Close()
 	var dbQueue *queue.DBQueue
 	if stores.Embedded() {
+		if missing := store.MissingTables(db); len(missing) > 0 {
+			lo.Fatal("Built-in store tables are missing; run `whatomate server -migrate` once", "tables", strings.Join(missing, ", "))
+		}
 		dbQueue = queue.NewDBQueue(db, lo)
 		lo.Info("Using built-in store (no Redis server)")
 		lo.Info("No Redis configured: live campaign progress is not pushed to the UI from separate worker processes")

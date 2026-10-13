@@ -77,8 +77,11 @@ func (a *App) saveFlowEndpointState(ctx context.Context, key string, st *flowEnd
 }
 
 func (a *App) deleteFlowEndpointState(ctx context.Context, key string) {
-	if a.State != nil {
-		_ = a.State.Del(ctx, key)
+	if a.State == nil {
+		return
+	}
+	if err := a.State.Del(ctx, key); err != nil {
+		a.Log.Warn("flow endpoint: failed to delete state", "error", err)
 	}
 }
 

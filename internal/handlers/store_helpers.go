@@ -33,13 +33,19 @@ func (a *App) cacheSetJSON(ctx context.Context, key string, v any, ttl time.Dura
 }
 
 func (a *App) cacheDel(ctx context.Context, keys ...string) {
-	if a.Cache != nil {
-		_ = a.Cache.Del(ctx, keys...)
+	if a.Cache == nil {
+		return
+	}
+	if err := a.Cache.Del(ctx, keys...); err != nil {
+		a.Log.Warn("Cache delete failed", "keys", keys, "error", err)
 	}
 }
 
 func (a *App) cacheDelPrefix(ctx context.Context, prefix string) {
-	if a.Cache != nil {
-		_ = a.Cache.DelPrefix(ctx, prefix)
+	if a.Cache == nil {
+		return
+	}
+	if err := a.Cache.DelPrefix(ctx, prefix); err != nil {
+		a.Log.Warn("Cache delete failed", "prefix", prefix, "error", err)
 	}
 }

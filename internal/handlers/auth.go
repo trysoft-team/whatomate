@@ -532,7 +532,9 @@ func (a *App) Logout(r *fastglue.Request) error {
 			if claims, ok := token.Claims.(*middleware.JWTClaims); ok && claims.ID != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				_ = a.State.Del(ctx, refreshTokenKey(claims.ID))
+				if err := a.State.Del(ctx, refreshTokenKey(claims.ID)); err != nil {
+					a.Log.Warn("Failed to revoke refresh token", "error", err)
+				}
 			}
 		}
 	}

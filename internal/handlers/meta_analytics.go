@@ -459,7 +459,9 @@ func (a *App) getWABACurrency(ctx context.Context, account *whatsapp.Account) st
 	}
 
 	if a.Cache != nil {
-		_ = a.Cache.Set(ctx, cacheKey, []byte(info.Currency), metaWABACurrencyCacheTTL)
+		if err := a.Cache.Set(ctx, cacheKey, []byte(info.Currency), metaWABACurrencyCacheTTL); err != nil {
+			a.Log.Warn("Cache write failed", "key", cacheKey, "error", err)
+		}
 	}
 
 	return info.Currency
