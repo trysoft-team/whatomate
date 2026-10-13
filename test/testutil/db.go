@@ -3,6 +3,7 @@ package testutil
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -158,6 +159,34 @@ func MySQLConfigFromDSN(raw string) (*config.DatabaseConfig, error) {
 		Driver: config.DriverMySQL, Host: host, Port: port,
 		User: dsn.User, Password: dsn.Passwd, Name: dsn.DBName, SSLMode: "disable",
 		MaxOpenConns: config.DefaultMaxOpenConns, MaxIdleConns: 5, ConnMaxLifetime: 300,
+	}, nil
+}
+
+// PostgresConfigFromURL turns TEST_DATABASE_URL (postgres://user:pass@host:port/name?sslmode=…)
+// into a postgres DatabaseConfig. The database name must start with whatomate_test.
+func PostgresConfigFromURL(raw string) (*config.DatabaseConfig, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_DATABASE_URL does not parse: %w", err)
+	}
+	name := strings.TrimPrefix(u.Path, "/")
+	if !strings.HasPrefix(name, "whatomate_test") {
+		return nil, fmt.Errorf("TEST_DATABASE_URL names database %q; it must start with whatomate_test", name)
+	}
+	port := 5432
+	if p := u.Port(); p != "" {
+		if port, err = strconv.Atoi(p); err != nil {
+			return nil, fmt.Errorf("TEST_DATABASE_URL port: %w", err)
+		}
+	}
+	password, _ := u.User.Password()
+	ssl := u.Query().Get("sslmode")
+	if ssl == "" {
+		ssl = "disable"
+	}
+	return &config.DatabaseConfig{
+		Driver: config.DriverPostgres, Host: u.Hostname(), Port: port,
+		User: u.User.Username(), Password: password, Name: name, SSLMode: ssl,
 	}, nil
 }
 
