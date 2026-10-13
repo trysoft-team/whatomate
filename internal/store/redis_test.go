@@ -28,6 +28,9 @@ func redisClient(t *testing.T) *redis.Client {
 	if c == nil {
 		t.Skip("test Redis unavailable")
 	}
+	if db := c.Options().DB; db != 15 {
+		t.Skipf("test Redis must use db 15, not %d: the suite deletes keys", db)
+	}
 	deleteSuiteKeys(t, c)
 	t.Cleanup(func() { deleteSuiteKeys(t, c) })
 	return c
