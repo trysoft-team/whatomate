@@ -25,6 +25,22 @@ func TestPortFree(t *testing.T) {
 		assert.False(t, PortFree(ln.Addr().(*net.TCPAddr).Port))
 	})
 
+	t.Run("IPv4-only wildcard listener", func(t *testing.T) {
+		ln, err := net.Listen("tcp4", "0.0.0.0:0")
+		require.NoError(t, err)
+		defer func() { _ = ln.Close() }()
+		assert.False(t, PortFree(ln.Addr().(*net.TCPAddr).Port))
+	})
+
+	t.Run("IPv6-only wildcard listener", func(t *testing.T) {
+		ln, err := net.Listen("tcp6", "[::]:0")
+		if err != nil {
+			t.Skip("IPv6 unavailable: " + err.Error())
+		}
+		defer func() { _ = ln.Close() }()
+		assert.False(t, PortFree(ln.Addr().(*net.TCPAddr).Port))
+	})
+
 	t.Run("IPv6 loopback-only listener", func(t *testing.T) {
 		ln, err := net.Listen("tcp", "[::1]:0")
 		if err != nil {

@@ -7,20 +7,24 @@ import (
 )
 
 // PortFree reports whether a TCP listener can bind port on all interfaces
-// without sharing it with another program's loopback-only listener. Go sets
-// SO_REUSEADDR on Unix, so on macOS/BSD a wildcard bind succeeds beside a
-// listener on 127.0.0.1 or ::1; each address is therefore tried separately.
+// without sharing it with another program's listener. Go sets SO_REUSEADDR on
+// Unix, so on macOS/BSD a dual-stack wildcard bind succeeds beside a listener
+// on 0.0.0.0, 127.0.0.1 or ::1 alone; each address is therefore tried
+// separately.
 func PortFree(port int) bool {
 	p := strconv.Itoa(port)
-	if !canListen(":"+p) || !canListen("127.0.0.1:"+p) {
+	if !canListen("tcp", ":"+p) || !canListen("tcp4", "0.0.0.0:"+p) || !canListen("tcp", "127.0.0.1:"+p) {
 		return false
 	}
-	// A failed ::1 bind only means "taken" when the host has IPv6 loopback.
-	return canListen("[::1]:"+p) || !canListen("[::1]:0")
+	// A failed IPv6 bind only means "taken" when the host has that IPv6 address.
+	if !canListen("tcp6", "[::]:"+p) && canListen("tcp6", "[::]:0") {
+		return false
+	}
+	return canListen("tcp", "[::1]:"+p) || !canListen("tcp", "[::1]:0")
 }
 
-func canListen(addr string) bool {
-	ln, err := net.Listen("tcp", addr)
+func canListen(network, addr string) bool {
+	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return false
 	}
