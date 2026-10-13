@@ -172,9 +172,8 @@ homebrew_casks:
       - formula: ffmpeg
       - formula: opus-tools
     caveats: |
-      Whatomate needs Redis and a database. Start Redis:
-        brew install redis
-        brew services start redis
+      Whatomate needs a database. Redis is optional: set [redis] host in
+      config.toml to use one.
 
       Create a config from the example shipped with this cask:
         cp "#{staged_path}/config.example.toml" ./config.toml
