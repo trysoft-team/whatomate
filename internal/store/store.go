@@ -7,6 +7,11 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/database"
+	"gorm.io/gorm"
 )
 
 // ErrNotFound is returned by KV reads for a missing or expired key.
@@ -52,4 +57,53 @@ type Broker interface {
 	// ctx is done. fn may run concurrently with itself and may still run after
 	// stop returns; it must not block.
 	Subscribe(ctx context.Context, channel string, fn func([]byte)) (stop func(), err error)
+}
+
+// Stores bundles the backends the app uses.
+type Stores struct {
+	Cache     KV // short-lived caches; memory in embedded mode
+	State     KV // logins, OAuth/passkey state, flow state, sticky calls; database in embedded mode
+	Counter   Counter
+	Scheduler Scheduler
+	Broker    Broker
+	// Redis is the client in Redis mode and nil in embedded mode.
+	Redis *redis.Client
+
+	closers []func()
+}
+
+// New returns embedded stores when cfg.Host is empty, otherwise Redis stores.
+func New(cfg *config.RedisConfig, db *gorm.DB) (*Stores, error) {
+	if cfg.Host == "" {
+		mem := NewMemory()
+		state := NewSQLKV(db)
+		return &Stores{
+			Cache:     mem,
+			State:     state,
+			Counter:   mem,
+			Scheduler: NewSQLScheduler(db),
+			Broker:    NewMemoryBroker(),
+			closers:   []func(){mem.Close, state.Close},
+		}, nil
+	}
+	client, err := database.NewRedis(cfg)
+	if err != nil {
+		return nil, err
+	}
+	r := NewRedis(client)
+	return &Stores{
+		Cache: r, State: r, Counter: r, Scheduler: r, Broker: r,
+		Redis:   client,
+		closers: []func(){func() { _ = client.Close() }},
+	}, nil
+}
+
+// Embedded reports whether no Redis server is used.
+func (s *Stores) Embedded() bool { return s.Redis == nil }
+
+// Close stops background janitors and closes the Redis client.
+func (s *Stores) Close() {
+	for _, c := range s.closers {
+		c()
+	}
 }
