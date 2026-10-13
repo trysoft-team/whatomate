@@ -353,6 +353,12 @@ const router = createRouter({
           meta: { permission: 'call_logs' }
         },
         {
+          path: 'calling/logs/:id',
+          name: 'call-log-detail',
+          component: () => import('@/views/calling/CallLogDetailView.vue'),
+          meta: { permission: 'call_logs' }
+        },
+        {
           path: 'calling/ivr-flows',
           name: 'ivr-flows',
           component: () => import('@/views/calling/IVRFlowsView.vue'),
