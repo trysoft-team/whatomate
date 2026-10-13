@@ -52,6 +52,10 @@ WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL`)
 				}
 				out = append(out, fk)
 			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("foreign keys of %s: %w", t, err)
+			}
 			if err := rows.Close(); err != nil {
 				return nil, err
 			}
