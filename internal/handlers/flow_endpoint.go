@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,8 +48,15 @@ type flowEndpointState struct {
 	Media map[string]map[string]any `json:"media,omitempty"`
 }
 
+// flowEndpointStateKey hashes tokens that would push the key past the
+// 255-byte kv_entries.kv_key column.
 func flowEndpointStateKey(flowID uuid.UUID, token string) string {
-	return "flow_endpoint:" + flowID.String() + ":" + token
+	prefix := "flow_endpoint:" + flowID.String() + ":"
+	if len(prefix)+len(token) > 255 {
+		sum := sha256.Sum256([]byte(token))
+		token = hex.EncodeToString(sum[:])
+	}
+	return prefix + token
 }
 
 func (a *App) loadFlowEndpointState(ctx context.Context, key string) *flowEndpointState {
