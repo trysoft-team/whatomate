@@ -61,13 +61,17 @@ func seedEveryTable(t *testing.T, db *gorm.DB, precision time.Duration) {
 				}
 				row[f.DBName] = sampleValue(f, i, precision)
 			}
-			require.NoError(t, db.Table(name).Create(row).Error, "seed %s row %d", name, i)
+			require.NoError(t, insertRows(db, name, []map[string]any{row}), "seed %s row %d", name, i)
 			inserted[name] = append(inserted[name], row)
 		}
 	}
 }
 
 func sampleValue(f *schema.Field, i int, precision time.Duration) any {
+	if f.Schema.Table == "user_passkeys" && f.DBName == "credential_id" {
+		// base64url only; MySQL stores it as ASCII.
+		return fmt.Sprintf("cred-%d", i)
+	}
 	v := sampleOf(f.FieldType, f.DBName, f.Size, i, precision)
 	if v == nil && f.NotNull {
 		v = sampleOf(f.FieldType, f.DBName, f.Size, 1, precision)
