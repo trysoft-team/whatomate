@@ -48,6 +48,27 @@ func TestRestore_RoundTripEveryTable(t *testing.T) {
 	assert.Positive(t, inactive, "false survives a column whose default is true")
 }
 
+func TestRestore_OverPopulatedDatabase(t *testing.T) {
+	src := newSQLiteDB(t)
+	seedEveryTable(t, src, time.Nanosecond)
+	dir := t.TempDir()
+	info, err := Create(context.Background(), src, dir, Options{Kind: KindManual}, nil)
+	require.NoError(t, err)
+
+	dst := newSQLiteDB(t)
+	seedEveryTable(t, dst, time.Nanosecond)
+	before := dumpTables(t, dst)
+	want := dumpTables(t, src)
+	require.NotEqual(t, want["organizations"], before["organizations"], "the two databases start out different")
+
+	require.NoError(t, Restore(context.Background(), dst, filepath.Join(dir, info.Name), RestoreOptions{}, nil))
+	got := dumpTables(t, dst)
+	require.Equal(t, len(want), len(got))
+	for name := range want {
+		assert.Equal(t, want[name], got[name], name)
+	}
+}
+
 // editTable rewrites one table's rows (and its manifest entry) in a backup.
 func editTable(t *testing.T, path, name string, edit func(rows []map[string]json.RawMessage) []map[string]json.RawMessage, dropColumn string) string {
 	t.Helper()
