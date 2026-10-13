@@ -19,7 +19,17 @@ Whatomate uses a TOML configuration file for all settings. You don't need to pas
    - macOS (Homebrew): `/opt/homebrew/etc/whatomate/config.toml` or `/usr/local/etc/whatomate/config.toml`
    - Windows: `%ProgramData%\whatomate\config.toml`
 
-If none exists, whatomate stops and lists every path it checked. Run `whatomate config path` to see which file would be used.
+If no file is found, `whatomate server` (or plain `whatomate`) starts the
+setup wizard instead of exiting. The wizard writes the config to the system
+folder when it can, otherwise to your user folder, with mode 0600. It
+generates `[jwt] secret` and `[app] encryption_key`, and sets
+`environment = "production"` only when the wizard was opened over HTTPS.
+When `-config` or `WHATOMATE_CONFIG` names a file that does not exist yet,
+the wizard writes exactly that file. See [First run](/whatomate/getting-started/quickstart/#first-run).
+
+`whatomate worker` never runs the wizard.
+
+Run `whatomate config path` to see which file would be used.
 
 Relative paths in the config (the SQLite `path`, `[storage] local_path`, `[calling] audio_dir`, the Piper model) resolve against the current directory for options 1–3. For a config found in your user folder they resolve against that folder; for a system config they resolve against the data folder: `/var/lib/whatomate` on Linux, `$(brew --prefix)/var/whatomate` on macOS, `%ProgramData%\whatomate` on Windows. Whatomate creates that folder if it is missing. Absolute paths are always used as written.
 
@@ -162,9 +172,13 @@ full_name = "Admin"
 
 ### `[server]`
 
+<Aside type="note" title="Upgrading">
+  The default port changed from 8080 to 4747. A config without `[server] port` now listens on 4747; set `port = 8080` to keep the old port (Docker users: update the published port too).
+</Aside>
+
 | Field | Notes |
 |---|---|
-| `host`, `port` | Default `0.0.0.0:4747`. |
+| `host`, `port` | Default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart. |
 | `read_timeout`, `write_timeout` | Seconds. |
 | `base_path` | Leave empty unless serving at a sub-path (`https://app.example.com/whatomate`) behind a proxy. |
 | `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. **Empty allows all origins** — only safe in development. |
@@ -338,7 +352,7 @@ Dashboard widgets that use the **Webhooks** data source can only report on the d
 
 ### `[default_admin]`
 
-The credentials seeded the first time `whatomate server -migrate` runs against an empty user table. Subsequent runs are no-ops. Always change these on first login.
+Used only by `server -migrate` on a database with no users: it seeds this admin account. Later runs are no-ops. Always change these credentials on first login. The setup wizard does not use this section; it creates the admin account you enter.
 
 ## Environment variables
 
@@ -494,17 +508,20 @@ Releases are published from the `master` branch; see [How Releases Are Published
 
 | Command | Description |
 |---|---|
-| `server` | Start the API server (with optional embedded workers) |
+| `server` | Start the API server (with optional embedded workers). Runs the setup wizard when no config file is found. |
 | `worker` | Start background workers only (no API server) |
+| `config path` | Show which config file would be used |
 | `version` | Show version information |
 | `help` | Show help message |
+
+With no command, `whatomate` runs `server`.
 
 ### `server` options
 
 ```bash
 ./whatomate server [options]
 
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see above)
   -migrate          Run database migrations on startup
   -workers int      Number of embedded workers, 0 to disable (default 1)
 ```
@@ -514,7 +531,7 @@ Releases are published from the `master` branch; see [How Releases Are Published
 ```bash
 ./whatomate worker [options]
 
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see above)
   -workers int      Number of workers to run (default 1)
 ```
 

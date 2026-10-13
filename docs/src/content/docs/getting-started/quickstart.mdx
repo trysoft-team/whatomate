@@ -169,10 +169,10 @@ For production, build a single binary with embedded frontend:
 
 ```bash
 make build-prod
-./whatomate server -migrate
+./whatomate
 ```
 
-This creates a self-contained binary—no separate frontend server needed. Access at http://localhost:4747.
+This creates a self-contained binary—no separate frontend server needed. Without a config file it starts the [setup wizard](#first-run) at http://localhost:4747.
 
 To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=amd64 make build-prod`. `make release-snapshot` builds every release archive into `dist/`.
 
@@ -187,7 +187,7 @@ Each [GitHub release](https://github.com/trysoft-team/whatomate/releases) includ
 | Windows | `amd64`, `arm64` |
 | FreeBSD | `amd64`, `arm64` |
 
-The binary still needs a database (PostgreSQL, MySQL/MariaDB or SQLite) and a `config.toml` (start from `config.example.toml`). Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
+Extract the archive and run `whatomate`; the [setup wizard](#first-run) creates the config. It needs a database: SQLite works out of the box, or point it at a PostgreSQL or MySQL/MariaDB server. Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
 
 <Aside type="note">
   **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the dependencies with Homebrew: `brew install ffmpeg espeak-ng opus-tools`, plus `postgresql@16` or `mysql` unless you use SQLite or an existing server.
@@ -203,13 +203,41 @@ brew install trysoft-team/tap/whatomate
 
 This also installs `ffmpeg` and `opus-tools`. The database is not installed automatically, so you can point Whatomate at a server you already run, or use SQLite, which needs no server. Redis is optional.
 
-The cask ships `config.example.toml`; the install output shows where to copy it from. Set `[database] driver`, then run `whatomate server -config ./config.toml -migrate`. Upgrade with `brew upgrade whatomate`.
+Then run `whatomate` and finish the [setup wizard](#first-run). On macOS it saves the config to `$(brew --prefix)/etc/whatomate/config.toml`. Upgrade with `brew upgrade whatomate`.
 
 ### How Releases Are Published
 
 Every push to the `master` branch of [trysoft-team/whatomate](https://github.com/trysoft-team/whatomate) runs the ~1,100 core tests on PostgreSQL (`make test-release`), then tags the next patch version and publishes the archives above plus the Homebrew cask. Pushes that only touch docs or Markdown are skipped. A minor or major bump is a manual run of the **Release** workflow on `master`, or a `vX.Y.Z` tag pushed by hand.
 
 The cask is written to `trysoft-team/homebrew-tap` only when the `HOMEBREW_TAP_TOKEN` secret is set: a fine-grained token with **Contents: read and write** on that repository. Set the `HOMEBREW_TAP_OWNER` repository variable to publish to a tap under a different owner.
+
+## First run
+
+Start whatomate:
+
+```bash
+whatomate
+```
+
+With no config file, whatomate opens a setup wizard in your browser at
+http://localhost:4747 (on a server without a desktop, open the URL it prints).
+The wizard:
+
+1. checks the system (folders, disk, memory, port, internet, clock, audio tools);
+2. asks which database to use: SQLite (nothing to install), PostgreSQL or MySQL;
+3. creates your organization and admin account;
+4. writes the config file and starts whatomate on the same port.
+
+Then log in with the admin account you created in the setup wizard.
+
+:::caution
+Until setup is finished, anyone who can reach port 4747 can complete it.
+Run the first setup on a private network or behind a firewall, then expose
+whatomate.
+:::
+
+To set up again, delete the config file (`whatomate config path` shows where
+it is) and start whatomate.
 
 ## 3rd Party Hosting
 

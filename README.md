@@ -85,14 +85,13 @@ __________________
 Download the [latest release](https://github.com/trysoft-team/whatomate/releases) for Linux (`amd64`, `arm64`, `armv7`), macOS (one universal binary for Apple Silicon and Intel), Windows or FreeBSD, and extract it.
 
 ```bash
-# Copy and edit config: choose [database] driver = "sqlite", "postgres" or "mysql"
-cp config.example.toml config.toml
-
-# Run with migrations
-./whatomate server -migrate
+./whatomate
 ```
 
-Redis is optional; without it whatomate uses a built-in store. Go to `http://localhost:4747` and login with `admin@admin.com` / `admin`
+With no config file, whatomate opens a setup wizard at `http://localhost:4747`. It checks the system, asks which database to use (SQLite needs nothing installed, or PostgreSQL / MySQL), creates your organization and admin account, writes the config and starts whatomate. Redis is optional; without it whatomate uses a built-in store. Log in with the admin account you created in the setup wizard.
+
+> [!CAUTION]
+> Until setup is finished, anyone who can reach port 4747 can complete it. Run the first setup on a private network or behind a firewall.
 
 __________________
 
@@ -103,7 +102,7 @@ brew install trysoft-team/tap/whatomate
 brew upgrade whatomate   # after a new release
 ```
 
-The install output shows where the bundled `config.example.toml` is and how to start the server.
+Then run `whatomate` and finish setup in your browser, as for the binary above.
 
 __________________
 
@@ -115,7 +114,7 @@ cd whatomate
 
 # Production build (single binary with embedded frontend)
 make build-prod
-./whatomate server -migrate
+./whatomate   # opens the setup wizard on first run
 ```
 
 See [configuration docs](https://trysoft-team.github.io/whatomate/getting-started/configuration/) for detailed setup options.
@@ -123,6 +122,7 @@ See [configuration docs](https://trysoft-team.github.io/whatomate/getting-starte
 ## CLI Usage
 
 ```bash
+./whatomate                     # Same as "server"; runs the setup wizard if there is no config
 ./whatomate server              # API + 1 worker (default)
 ./whatomate server -workers=0   # API only
 ./whatomate worker -workers=4   # Workers only (for scaling)
