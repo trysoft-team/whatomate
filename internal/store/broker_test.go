@@ -23,10 +23,12 @@ func TestMemoryBroker_ContextCancelEndsDelivery(t *testing.T) {
 	var n atomic.Int32
 	_, err := b.Subscribe(ctx, "ch", func([]byte) { n.Add(1) })
 	require.NoError(t, err)
+	require.NoError(t, b.Publish(context.Background(), "ch", []byte("x")))
+	require.Equal(t, int32(1), n.Load())
 	cancel()
 	assert.Eventually(t, func() bool {
 		before := n.Load()
-		require.NoError(t, b.Publish(context.Background(), "ch", []byte("x")))
+		assert.NoError(t, b.Publish(context.Background(), "ch", []byte("x")))
 		return n.Load() == before
 	}, time.Second, 10*time.Millisecond)
 }

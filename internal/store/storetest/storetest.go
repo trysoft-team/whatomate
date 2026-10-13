@@ -237,6 +237,31 @@ func RunScheduler(t *testing.T, newScheduler func(t *testing.T) store.Scheduler)
 		assert.ElementsMatch(t, []string{"X", "x"}, got)
 	})
 
+	t.Run("SetNamesCaseSensitive", func(t *testing.T) {
+		s := newScheduler(t)
+		require.NoError(t, s.Schedule(ctx, "S", "upper", now.Add(-time.Minute)))
+		require.NoError(t, s.Schedule(ctx, "s", "lower", now.Add(-time.Minute)))
+		got, err := s.PopDue(ctx, "S", now, 50)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"upper"}, got)
+		got, err = s.PopDue(ctx, "s", now, 50)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"lower"}, got)
+	})
+
+	t.Run("NonPositiveLimit", func(t *testing.T) {
+		s := newScheduler(t)
+		require.NoError(t, s.Schedule(ctx, "set", "a", now.Add(-time.Minute)))
+		for _, limit := range []int{0, -1} {
+			got, err := s.PopDue(ctx, "set", now, limit)
+			require.NoError(t, err)
+			assert.Empty(t, got, "limit %d", limit)
+		}
+		got, err := s.PopDue(ctx, "set", now, 50)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"a"}, got)
+	})
+
 	t.Run("ExactlyOnceUnderConcurrency", func(t *testing.T) {
 		s := newScheduler(t)
 		for i := range 20 {

@@ -31,6 +31,9 @@ func (s *SQLScheduler) Cancel(ctx context.Context, set string, items ...string) 
 }
 
 func (s *SQLScheduler) PopDue(ctx context.Context, set string, now time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	var due []models.ScheduledItem
 	if err := s.db.WithContext(ctx).
 		Where("set_name = ? AND due_at <= ?", set, now).
@@ -46,7 +49,12 @@ func (s *SQLScheduler) PopDue(ctx context.Context, set string, now time.Time, li
 			Where("set_name = ? AND item = ? AND due_at <= ?", set, d.Item, now).
 			Delete(&models.ScheduledItem{})
 		if res.Error != nil {
-			return out, res.Error
+			// Claimed items are already deleted; returning an error would lose
+			// them. Rows not yet deleted stay for the next poll.
+			if len(out) > 0 {
+				return out, nil
+			}
+			return nil, res.Error
 		}
 		if res.RowsAffected == 1 {
 			out = append(out, d.Item)
