@@ -55,6 +55,9 @@ type App struct {
 	Maintenance *maintenance.Gate
 	// Version is the running build's version, written into backups.
 	Version string
+
+	backupJob backupJobs
+	uploads   uploadStore
 	// wg tracks background goroutines for graceful shutdown
 	wg sync.WaitGroup
 }
