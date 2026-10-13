@@ -59,7 +59,7 @@ func Locate(flagPath string) (Source, error) {
 
 func locate(flagPath string, e locateEnv) (Source, error) {
 	if flagPath != "" {
-		ok, err := isFile(flagPath)
+		ok, err := isExplicitFile(flagPath)
 		if err != nil {
 			return Source{}, err
 		}
@@ -70,7 +70,7 @@ func locate(flagPath string, e locateEnv) (Source, error) {
 	}
 	if p := e.getenv(ConfigEnvVar); p != "" {
 		p = e.abs(p)
-		ok, err := isFile(p)
+		ok, err := isExplicitFile(p)
 		if err != nil {
 			return Source{}, err
 		}
@@ -211,6 +211,16 @@ func isFile(p string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("checking config file: %w", err)
+}
+
+// isExplicitFile is isFile for a path the operator named. A directory there
+// is an error, not a missing file: Docker creates one when a bind-mounted
+// config file is missing on the host, and setup can't write over it.
+func isExplicitFile(p string) (bool, error) {
+	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+		return false, fmt.Errorf("config path %s is a directory, not a file", p)
+	}
+	return isFile(p)
 }
 
 // ResolvePaths makes relative file paths in the config relative to base.

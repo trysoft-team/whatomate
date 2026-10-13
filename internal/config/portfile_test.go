@@ -56,6 +56,60 @@ func TestSetServerPort_KeepsCRLF(t *testing.T) {
 	assert.Equal(t, "[server]\r\nport = 9000\r\n[database]\r\nport = 5432\r\n", read(t, p))
 }
 
+func TestSetServerPort_HeaderAtEndWithoutNewline(t *testing.T) {
+	p := writeTemp(t, "[app]\nname = \"x\"\n[server]")
+	require.NoError(t, SetServerPort(p, 9000))
+	assert.Equal(t, "[app]\nname = \"x\"\n[server]\nport = 9000\n", read(t, p))
+	assertPort(t, p, 9000)
+}
+
+func TestSetServerPort_ArrayOfTablesEndsServerTable(t *testing.T) {
+	p := writeTemp(t, "[server]\nhost = \"0.0.0.0\"\n\n[[calling.ice_servers]]\nurls = [\"stun:stun.example.com\"]\nport = 3478\n")
+	require.NoError(t, SetServerPort(p, 9000))
+	assert.Equal(t, "[server]\nport = 9000\nhost = \"0.0.0.0\"\n\n[[calling.ice_servers]]\nurls = [\"stun:stun.example.com\"]\nport = 3478\n", read(t, p))
+	assertPort(t, p, 9000)
+}
+
+// TestSetServerPort_LayoutsItCannotEdit covers files whose [server] table is
+// not a plain header: each is either edited into a valid file holding the new
+// port, or refused with ErrCannotEditPort and left byte-identical.
+func TestSetServerPort_LayoutsItCannotEdit(t *testing.T) {
+	for name, content := range map[string]string{
+		"dotted key":    "server.port = 8080\nserver.host = \"0.0.0.0\"\n\n[database]\nport = 5432\n",
+		"inline table":  "server = { port = 8080, host = \"0.0.0.0\" }\n\n[database]\nport = 5432\n",
+		"quoted header": "[\"server\"]\nport = 8080\n\n[database]\nport = 5432\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := writeTemp(t, content)
+			err := SetServerPort(p, 9000)
+			if err != nil {
+				assert.ErrorIs(t, err, ErrCannotEditPort)
+				assert.Equal(t, content, read(t, p), "refused edits leave the file untouched")
+				return
+			}
+			assertPort(t, p, 9000)
+			cfg, err := Load(p)
+			require.NoError(t, err)
+			assert.Equal(t, 5432, cfg.Database.Port)
+		})
+	}
+}
+
+func TestSetServerPort_RefusesWhenOtherValuesWouldChange(t *testing.T) {
+	// A multi-line string holding a line that looks like the port key.
+	content := "[server]\nnote = \"\"\"\nport = 1\n\"\"\"\n"
+	p := writeTemp(t, content)
+	assert.ErrorIs(t, SetServerPort(p, 9000), ErrCannotEditPort)
+	assert.Equal(t, content, read(t, p))
+}
+
+func assertPort(t *testing.T, p string, want int) {
+	t.Helper()
+	cfg, err := Load(p)
+	require.NoError(t, err, "the edited file is valid TOML")
+	assert.Equal(t, want, cfg.Server.Port)
+}
+
 func TestSetServerPort_KeepsMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file modes")

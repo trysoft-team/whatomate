@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -65,6 +66,10 @@ func (a *App) UpdateServerSettings(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, fmt.Sprintf("Port %d is in use by another program", req.Port), nil, "")
 	}
 	if err := config.SetServerPort(a.ConfigPath, req.Port); err != nil {
+		if errors.Is(err, config.ErrCannotEditPort) {
+			return r.SendErrorEnvelope(fasthttp.StatusConflict,
+				fmt.Sprintf("Can't change the port in %s automatically; set [server] port by hand and restart.", a.ConfigPath), nil, "")
+		}
 		a.Log.Error("Failed to save server port", "path", a.ConfigPath, "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, fmt.Sprintf("Could not save %s: %v", a.ConfigPath, err), nil, "")
 	}

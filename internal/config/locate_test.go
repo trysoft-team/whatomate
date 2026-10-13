@@ -146,6 +146,31 @@ func TestLocate_NotFoundErrorsMatchErrNotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrNotFound), "missing WHATOMATE_CONFIG file")
 }
 
+func TestLocate_ExplicitDirectoryIsAnError(t *testing.T) {
+	e, root := fakeEnv(t, "linux", nil, "cwd/config.toml")
+	dir := filepath.Join(root, "mounted", "config.toml")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	_, err := locate(dir, e)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "-config naming a directory")
+	assert.Contains(t, err.Error(), "is a directory")
+
+	e.getenv = func(k string) string { return map[string]string{"WHATOMATE_CONFIG": "/mounted/config.toml"}[k] }
+	_, err = locate("", e)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "WHATOMATE_CONFIG naming a directory")
+	assert.Contains(t, err.Error(), "is a directory")
+}
+
+func TestLocate_SearchSkipsDirectories(t *testing.T) {
+	e, root := fakeEnv(t, "linux", nil, "home/.config/whatomate/config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "cwd", "config.toml"), 0o755))
+	src, err := locate("", e)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "home/.config/whatomate/config.toml"), src.Path)
+}
+
 func TestLocate_InaccessibleIsNotErrNotFound(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs POSIX permissions and a non-root user")

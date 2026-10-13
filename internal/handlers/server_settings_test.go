@@ -94,6 +94,26 @@ func TestServerSettings_RejectsBadPorts(t *testing.T) {
 	}
 }
 
+func TestServerSettings_FileItCannotEdit(t *testing.T) {
+	app, path, orgID, adminID := serverSettingsApp(t)
+	content := "server = { port = 4747 }\n\n[database]\nport = 5432\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	ln, err := net.Listen("tcp", ":0")
+	require.NoError(t, err)
+	free := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	put := testutil.NewJSONRequest(t, map[string]any{"port": free})
+	testutil.SetAuthContext(put, orgID, adminID)
+	require.NoError(t, app.UpdateServerSettings(put))
+	assert.Equal(t, fasthttp.StatusConflict, testutil.GetResponseStatusCode(put))
+	assert.Contains(t, string(testutil.GetResponseBody(put)), "set [server] port by hand")
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(raw))
+}
+
 func TestServerSettings_NoConfigFile(t *testing.T) {
 	app, _, orgID, adminID := serverSettingsApp(t)
 	app.ConfigPath = ""

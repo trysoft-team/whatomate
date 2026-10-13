@@ -6,15 +6,23 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/knadh/koanf/parsers/toml"
 )
 
 var (
-	tableHeader = regexp.MustCompile(`^\s*\[\s*([^\[\]]+?)\s*\]\s*(#.*)?$`)
-	portLine    = regexp.MustCompile(`^(\s*)port\s*=\s*([^#]*?)(\s*#.*)?$`)
+	tableHeader      = regexp.MustCompile(`^\s*\[\s*([^\[\]]+?)\s*\]\s*(#.*)?$`)
+	arrayTableHeader = regexp.MustCompile(`^\s*\[\[.*\]\]\s*(#.*)?$`)
+	portLine         = regexp.MustCompile(`^(\s*)port\s*=\s*([^#]*?)(\s*#.*)?$`)
 )
+
+// ErrCannotEditPort is returned by SetServerPort when the file's layout
+// keeps it from changing only [server] port; the file is left untouched.
+var ErrCannotEditPort = errors.New("can't change [server] port in this file automatically")
 
 // WriteFileAtomic writes data to path through a temp file in the same folder
 // and a rename, creating the folder (0750) if needed. When the folder can't
@@ -136,6 +144,10 @@ func serverPortLine(lines []string) (header, port int) {
 	inServer := false
 	for i, line := range lines {
 		body, _ := lineEnding(line)
+		if arrayTableHeader.MatchString(body) {
+			inServer = false
+			continue
+		}
 		if m := tableHeader.FindStringSubmatch(body); m != nil {
 			inServer = m[1] == "server"
 			if inServer && header < 0 {
@@ -151,7 +163,9 @@ func serverPortLine(lines []string) (header, port int) {
 }
 
 // SetServerPort sets port in the [server] table of the TOML file at path and
-// keeps every other byte. It adds the key, or the table, when missing.
+// keeps every other byte. It adds the key, or the table, when missing. When
+// the edit wouldn't leave a valid file differing only in [server] port, it
+// returns ErrCannotEditPort and writes nothing.
 func SetServerPort(path string, port int) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -176,6 +190,9 @@ func SetServerPort(path string, port int) error {
 		m := portLine.FindStringSubmatch(body)
 		lines[at] = m[1] + "port = " + value + m[3] + end
 	case header >= 0:
+		if _, end := lineEnding(lines[header]); end == "" {
+			lines[header] += nl
+		}
 		lines = append(lines[:header+1], append([]string{"port = " + value + nl}, lines[header+1:]...)...)
 	default:
 		if n := len(lines); n > 0 {
@@ -185,7 +202,42 @@ func SetServerPort(path string, port int) error {
 		}
 		lines = append(lines, nl, "[server]"+nl, "port = "+value+nl)
 	}
-	return WriteFileAtomic(path, []byte(strings.Join(lines, "")), fi.Mode().Perm())
+	edited := []byte(strings.Join(lines, ""))
+	if !onlyPortChanged(raw, edited, port) {
+		return ErrCannotEditPort
+	}
+	return WriteFileAtomic(path, edited, fi.Mode().Perm())
+}
+
+// onlyPortChanged reports whether after parses, sets [server] port to port,
+// and otherwise decodes to the same values as before.
+func onlyPortChanged(before, after []byte, port int) bool {
+	old, err := toml.Parser().Unmarshal(before)
+	if err != nil {
+		return false
+	}
+	upd, err := toml.Parser().Unmarshal(after)
+	if err != nil {
+		return false
+	}
+	if srv, _ := upd["server"].(map[string]any); srv == nil || srv["port"] != int64(port) {
+		return false
+	}
+	return reflect.DeepEqual(withoutServerPort(old), withoutServerPort(upd))
+}
+
+// withoutServerPort drops server.port from doc, and the server table too when
+// nothing else is left in it.
+func withoutServerPort(doc map[string]any) map[string]any {
+	srv, ok := doc["server"].(map[string]any)
+	if !ok {
+		return doc
+	}
+	delete(srv, "port")
+	if len(srv) == 0 {
+		delete(doc, "server")
+	}
+	return doc
 }
 
 // ReadServerPort returns [server] port from the TOML file at path, or
