@@ -40,9 +40,23 @@ func (r *Redis) Del(ctx context.Context, keys ...string) error {
 	return r.c.Del(ctx, keys...).Err()
 }
 
+// GetDel runs GET and DEL in one MULTI/EXEC rather than GETDEL, which needs
+// Redis 6.2+. Only the caller whose DEL removed the key gets the value.
 func (r *Redis) GetDel(ctx context.Context, key string) ([]byte, error) {
-	v, err := r.c.GetDel(ctx, key).Bytes()
-	return v, notFound(err)
+	var get *redis.StringCmd
+	var del *redis.IntCmd
+	_, err := r.c.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		get = p.Get(ctx, key)
+		del = p.Del(ctx, key)
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, err
+	}
+	if del.Val() != 1 {
+		return nil, ErrNotFound
+	}
+	return get.Bytes()
 }
 
 func (r *Redis) DelPrefix(ctx context.Context, prefix string) error {

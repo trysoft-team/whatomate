@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -57,6 +58,41 @@ func newRedisStore(t *testing.T) *store.Redis {
 
 func TestRedisKV(t *testing.T) {
 	storetest.RunKV(t, func(t *testing.T) store.KV { return newRedisStore(t) })
+}
+
+// noGetDelHook rejects GETDEL the way Redis servers before 6.2 do.
+type noGetDelHook struct{}
+
+func (noGetDelHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (noGetDelHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "getdel" {
+			return errors.New("ERR unknown command 'getdel'")
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (noGetDelHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			if cmd.Name() == "getdel" {
+				return errors.New("ERR unknown command 'getdel'")
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func TestRedisKVWithoutGetDel(t *testing.T) {
+	storetest.RunKV(t, func(t *testing.T) store.KV {
+		opts := *redisClient(t).Options()
+		c := redis.NewClient(&opts)
+		t.Cleanup(func() { _ = c.Close() })
+		c.AddHook(noGetDelHook{})
+		return store.NewRedis(c)
+	})
 }
 
 func TestRedisCounter(t *testing.T) {
