@@ -66,6 +66,7 @@ func (m *Manager) executeAICallTurnBased(session *CallSession, node *IVRNode, ct
 		systemInstr = "You are a helpful phone IVR assistant. Keep replies under 2 short sentences. Use tools when needed."
 	}
 	systemInstr = interpolateTemplate(systemInstr, ctx.Variables)
+	systemInstr, welcome = m.applyAITransferBusy(session, ctx, systemInstr, welcome)
 	// Seed with org AI Contexts + optional extra_knowledge; refreshed each turn.
 	baseSystem := systemInstr
 	systemInstr = m.composeAICallSystemPrompt(session, ctx, baseSystem, "", node.Config)

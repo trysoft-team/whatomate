@@ -551,7 +551,7 @@ const aiCallTools = computed((): AICallTool[] => {
       description: t?.description || '',
       handler,
       // Default on for nodes; otherwise respect saved flag
-      return_to_call: handler === 'nodes' ? (t?.return_to_call !== false) : !!t?.return_to_call,
+      return_to_call: handler === 'nodes' ? (t?.return_to_call !== false) : handler !== 'hangup' && !!t?.return_to_call,
       parameters: t?.parameters,
       http: t?.http || {},
     }
@@ -589,6 +589,10 @@ function updateAICallTool(index: number, key: keyof AICallTool, value: string | 
     // Selecting Nodes implies return-to-call (subgraph resumes AI Call)
     if (key === 'handler' && value === 'nodes') {
       updated.return_to_call = true
+    }
+    // Hangup ends the call, so there is nothing to return to.
+    if (key === 'handler' && value === 'hangup') {
+      updated.return_to_call = false
     }
     return updated
   })
@@ -1371,7 +1375,7 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
             Canvas handle <code class="font-mono">fn:{{ tool.name || '…' }}</code> —
             link to Send Message, Condition, HTTP, or other logic nodes.
           </p>
-          <div class="flex items-center gap-2 pt-0.5 border-t border-border/50">
+          <div v-if="tool.handler !== 'hangup'" class="flex items-center gap-2 pt-0.5 border-t border-border/50">
             <Checkbox
               :checked="!!tool.return_to_call"
               @update:checked="(v: boolean) => updateAICallTool(idx, 'return_to_call', !!v)"
@@ -1382,6 +1386,9 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
           </div>
           <p v-if="tool.handler === 'nodes'" class="text-[10px] text-muted-foreground">
             Nodes always resume this AI Call after the linked subgraph. The edge is only on the Nodes type.
+          </p>
+          <p v-else-if="tool.handler === 'transfer' && tool.return_to_call" class="text-[10px] text-muted-foreground">
+            If no agent answers, the AI tells the caller the agents are busy and continues the conversation.
           </p>
         </div>
       </div>

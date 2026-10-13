@@ -171,6 +171,7 @@ func (m *Manager) executeAICallPipecat(session *CallSession, node *IVRNode, ctx 
 
 	synthOpts := m.resolveSynthOpts(session.OrganizationID, node.Config)
 	welcome = interpolateTemplate(welcome, ctx.Variables)
+	systemInstr, welcome = m.applyAITransferBusy(session, ctx, systemInstr, welcome)
 
 	eventCh := make(chan PipecatControlEvent, 2)
 	session.mu.Lock()
