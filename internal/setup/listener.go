@@ -13,6 +13,7 @@ type Shared struct {
 	conns chan net.Conn
 	done  chan struct{}
 	once  sync.Once
+	err   error // set before done is closed; nil after an orderly Close
 }
 
 // Share starts accepting on raw.
@@ -26,7 +27,7 @@ func (s *Shared) loop() {
 	for {
 		c, err := s.raw.Accept()
 		if err != nil {
-			_ = s.Close()
+			s.fail(err)
 			return
 		}
 		select {
@@ -48,6 +49,23 @@ func (s *Shared) Close() error {
 	return err
 }
 
+// fail shuts s down because the socket stopped accepting; views report cause.
+func (s *Shared) fail(cause error) {
+	s.once.Do(func() {
+		s.err = cause
+		close(s.done)
+		_ = s.raw.Close()
+	})
+}
+
+// closedErr is what views return once s.done is closed.
+func (s *Shared) closedErr() error {
+	if s.err != nil {
+		return s.err
+	}
+	return net.ErrClosed
+}
+
 // View returns a listener that takes connections from s until it is closed.
 // Closing an owner view also closes s.
 func (s *Shared) View(owner bool) net.Listener {
@@ -66,7 +84,7 @@ func (v *view) Accept() (net.Conn, error) {
 	case <-v.done:
 		return nil, net.ErrClosed
 	case <-v.s.done:
-		return nil, net.ErrClosed
+		return nil, v.s.closedErr()
 	default:
 	}
 	select {
@@ -75,7 +93,7 @@ func (v *view) Accept() (net.Conn, error) {
 	case <-v.done:
 		return nil, net.ErrClosed
 	case <-v.s.done:
-		return nil, net.ErrClosed
+		return nil, v.s.closedErr()
 	}
 }
 

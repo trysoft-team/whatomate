@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -83,4 +84,40 @@ func TestShared_ClosedViewStopsAccepting(t *testing.T) {
 		t.Fatal("Accept did not return after Close")
 	}
 	assert.Equal(t, raw.Addr(), v.Addr())
+}
+
+type failingListener struct{ err error }
+
+func (l failingListener) Accept() (net.Conn, error) { return nil, l.err }
+func (l failingListener) Close() error              { return nil }
+func (l failingListener) Addr() net.Addr            { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+
+func TestShared_AcceptErrorReachesViews(t *testing.T) {
+	boom := errors.New("boom")
+	s := Share(failingListener{err: boom})
+	defer s.Close()
+	v := s.View(true)
+	_, err := v.Accept()
+	assert.ErrorIs(t, err, boom)
+	assert.NotErrorIs(t, err, net.ErrClosed)
+}
+
+func TestShared_CloseWakesBlockedAccept(t *testing.T) {
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	s := Share(raw)
+	v := s.View(false)
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.Accept()
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, s.Close())
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, net.ErrClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Accept did not return after Shared.Close")
+	}
 }
