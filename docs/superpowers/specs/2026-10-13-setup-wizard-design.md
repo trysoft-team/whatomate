@@ -111,10 +111,11 @@ indicator. Strings go through i18n like the rest of the frontend.
 4. **Admin.**
    - Organization name, full name, email, password, confirm password.
    - Password: minimum 8 characters, strength hint, must match.
-   - **Finish** shows a progress screen: Writing config → Setting up
-     database → Creating admin → Starting whatomate. Errors show on the step
-     that failed with a Back button; nothing is half-written (see
-     "Failure handling").
+   - **Finish** shows a progress screen in two phases: "Setting up the
+     database, admin account and config file" (the `complete` request), then
+     "Starting whatomate" (waiting for the app). Errors show the server's
+     message with a Back button; nothing is half-written (see "Failure
+     handling").
 
 ### System checks
 
@@ -123,7 +124,7 @@ indicator. Strings go through i18n like the rest of the frontend.
 | OS / architecture / version | — | — (info only) |
 | Config folder and data folder writable | not writable | — |
 | Free disk on data folder | — | below 1 GB |
-| Available memory | — | below 512 MB |
+| Memory (total RAM) | — | below 512 MB |
 | Port free | taken by another process | — |
 | Internet: HTTPS to `graph.facebook.com` | — | unreachable within 5 s |
 | Clock: `Date` header from the internet check | — | off by more than 2 minutes |
@@ -140,7 +141,7 @@ app, plus the embedded frontend.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/setup/status` | `{needed, version, listen_port, config_path, config_path_fixed, candidates[], data_dir}`; after completion `{needed:false, ready, url}` |
+| `GET /api/setup/status` | before completion `{needed:true, version, listen_port, config_path, config_path_fixed, candidates[{path, data_dir, writable}]}`; after completion, while setup is handing off `{needed:false, ready:false, url}`; from the app or the old-port responder `{needed:false, ready:true[, url]}` |
 | `GET /api/setup/checks?port=&config_path=` | list of `{id, status: pass\|warn\|fail, detail}` |
 | `POST /api/setup/database/test` | `{driver, path \| host, port, user, password, name, ssl_mode}` → `{ok, database_exists, error}` |
 | `POST /api/setup/database/create` | same body; `CREATE DATABASE` (MySQL: `utf8mb4`) → `{ok, error}` |
@@ -159,13 +160,16 @@ app, plus the embedded frontend.
 `POST /api/setup/complete` runs, in order:
 
 1. Validate the input again on the server.
-2. Open the database with the given settings and run
-   `RunMigrationWithProgress` **without** the default admin.
-3. Create the organization (given name) and the admin user (super admin,
-   admin system role, `UserOrganization` row), in one transaction, via a new
-   `database.CreateInitialAdmin(db, orgName, fullName, email, password)`.
-   This shares code with `CreateDefaultAdmin`.
-4. Write the config file:
+2. Open the database with the given settings. If it already has users other
+   than the admin email being set up, stop with "database already has users;
+   choose an empty database".
+3. Run `RunMigrationWithProgress` with a `DefaultAdminConfig` built from the
+   wizard (new field `OrganizationName`), so the existing code creates the
+   organization with the given name and the super-admin user.
+4. Apply the wizard's admin details to that user (password hash, full name)
+   and organization (name). This makes a retry after a later failure use the
+   values from the retry.
+5. Write the config file:
    - `MkdirAll` the folder with 0750, write to a temp file in the same
      folder with 0600, `fsync`, rename.
    - Contents, rendered from a template with TOML-escaped values:
@@ -178,7 +182,7 @@ app, plus the embedded frontend.
      - no `[default_admin]` section and no `[redis]` host.
    - The written file must load with `config.Load` and produce the same
      values (checked in tests).
-5. Return `{url}` and hand off to normal startup (below).
+6. Return `{url}` and hand off to normal startup (below).
 
 ### Environment and origin
 
@@ -204,9 +208,11 @@ matching its doc comment. Covered by a test.
 
 - Setup creates its own `net.Listener` and serves fasthttp on it. On
   completion it stops the setup fasthttp server without closing the listener
-  (a wrapper whose `Close` is a no-op until hand-off) and returns
-  `(configPath, listener)` to `runServer`.
-- `runServer` then runs the existing startup with the new config. The final
+  (a shared listener whose views can be closed without closing the socket)
+  and returns the listener to `runServer` (nil when the port changed).
+- `runServer` then runs the config search again, which now finds the new
+  file with the right data folder, and continues the existing startup. The
+  final
   `server.ListenAndServe(addr)` becomes `server.Serve(ln)` when a listener
   was handed over. Connections that arrive during startup wait in the
   kernel backlog instead of being refused.
@@ -229,20 +235,22 @@ matching its doc comment. Covered by a test.
   retrying `complete` re-runs migrations and creates the admin.
 - If the admin exists but writing the config fails (folder not writable),
   the error names the path. Retrying with another location succeeds because
-  `CreateInitialAdmin` treats "this exact email already exists in this
-  organization" as done; any other existing user makes it fail with
-  "database already has users; choose an empty database".
+  a database whose only user is the admin being set up counts as empty, and
+  step 4 re-applies the admin details; any other existing user makes it fail
+  with "database already has users; choose an empty database".
 - Ctrl+C during setup exits cleanly without writing anything.
 
 ## Port in Settings → General
 
 - New "Server" card in the General tab, visible to super admins only. Shows
   the port and the config file path.
-- `GET /api/admin/server-settings` → `{port, config_path, writable}`;
-  `PUT /api/admin/server-settings` `{port}` (super admin only).
+- `GET /api/admin/server-settings` → `{port, config_port, config_path,
+  writable}` (`port` is the running port, `config_port` the one in the
+  file); `PUT /api/admin/server-settings` `{port}` (super admin only).
 - The PUT edits only the `port = …` line inside `[server]` in the file the
   app loaded (adding it if missing), keeps everything else byte-for-byte,
-  and writes via temp file + rename keeping the file mode.
+  and writes via temp file + rename keeping the file mode. When the folder
+  isn't writable but the file is, it rewrites the file in place.
 - Response says a restart is needed; the card shows "Restart whatomate to
   apply". Not writable (e.g. root-owned `/etc`) → clear error with the path.
 - Port 1–65535; a port other than the current one must be free.
@@ -267,7 +275,8 @@ matching its doc comment. Covered by a test.
   - config writer round trip through `config.Load`;
   - setup endpoints end to end against a temp SQLite database and temp
     config folder, including failure and retry paths;
-  - `CreateDefaultAdmin` skips when any user exists; `CreateInitialAdmin`;
+  - `CreateDefaultAdmin` skips when any user exists and uses
+    `OrganizationName`;
   - listener hand-off (same port serves the app after completion);
   - port-line editing (missing section, missing key, comments kept).
 - Postgres/MySQL `database/test` and `create` against the test servers
