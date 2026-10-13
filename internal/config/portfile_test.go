@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -100,6 +101,108 @@ func TestSetServerPort_RefusesWhenOtherValuesWouldChange(t *testing.T) {
 	content := "[server]\nnote = \"\"\"\nport = 1\n\"\"\"\n"
 	p := writeTemp(t, content)
 	assert.ErrorIs(t, SetServerPort(p, 9000), ErrCannotEditPort)
+	assert.Equal(t, content, read(t, p))
+}
+
+func TestSetServerPort_MovesSetupOrigins(t *testing.T) {
+	before := "# Written by whatomate setup on 2026-10-13.\n\n[app]\nenvironment = \"production\"\n\n" +
+		"[server]\nhost = \"0.0.0.0\"\nport = 4747\nallowed_origins = \"http://localhost:4747,http://192.168.1.219:4747\"\n\n" +
+		"[database]\ndriver = \"sqlite\"\npath = \"whatomate.db\"\n\n[jwt]\nsecret = \"s\"\n"
+	p := writeTemp(t, before)
+	require.NoError(t, SetServerPort(p, 4790))
+	want := strings.Replace(before, "port = 4747\n", "port = 4790\n", 1)
+	want = strings.Replace(want, "\"http://localhost:4747,http://192.168.1.219:4747\"", "\"http://localhost:4790,http://192.168.1.219:4790\"", 1)
+	assert.Equal(t, want, read(t, p))
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:4790,http://192.168.1.219:4790", cfg.Server.AllowedOrigins)
+}
+
+func TestSetServerPort_MovesOnlyOriginsOnOldPort(t *testing.T) {
+	p := writeTemp(t, "[server]\nport = 4747\nallowed_origins = \"https://app.example.com, http://localhost:4747 ,http://10.0.0.5:9000\"\n")
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, "[server]\nport = 4790\nallowed_origins = \"https://app.example.com,http://localhost:4790,http://10.0.0.5:9000\"\n", read(t, p))
+}
+
+func TestSetServerPort_OriginsKeptUnlessOnlySchemeHostPort(t *testing.T) {
+	origins := "http://localhost:4747/,http://localhost:4747/app,http://localhost:4747?x=1,http://localhost:4747#f," +
+		"http://u@localhost:4747,ws://localhost:4747,localhost:4747,http://localhost,http://localhost:04747,%zz"
+	content := "[server]\nport = 4747\nallowed_origins = \"" + origins + "\"\n"
+	p := writeTemp(t, content)
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, strings.Replace(content, "port = 4747", "port = 4790", 1), read(t, p))
+}
+
+func TestSetServerPort_MovesHTTPSAndIPv6Origins(t *testing.T) {
+	p := writeTemp(t, "[server]\nport = 4747\nallowed_origins = \"https://example.com:4747,http://[::1]:4747\"\n")
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, "[server]\nport = 4790\nallowed_origins = \"https://example.com:4790,http://[::1]:4790\"\n", read(t, p))
+}
+
+func TestSetServerPort_DropsDuplicateOrigins(t *testing.T) {
+	p := writeTemp(t, "[server]\nport = 4747\nallowed_origins = \"http://localhost:4747,http://localhost:4790\"\n")
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, "[server]\nport = 4790\nallowed_origins = \"http://localhost:4790\"\n", read(t, p))
+}
+
+func TestSetServerPort_OldPortDefaultsWhenFileHasNone(t *testing.T) {
+	p := writeTemp(t, "[server]\nallowed_origins = \"http://localhost:4747\"\n")
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, "[server]\nport = 4790\nallowed_origins = \"http://localhost:4790\"\n", read(t, p))
+}
+
+func TestSetServerPort_OriginsKeepCommentAndCRLF(t *testing.T) {
+	p := writeTemp(t, "[server]\r\nport = 4747\r\n  allowed_origins  =  \"http://localhost:4747\"   # browsers\r\n[database]\r\nport = 5432\r\n")
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, "[server]\r\nport = 4790\r\n  allowed_origins  =  \"http://localhost:4790\"   # browsers\r\n[database]\r\nport = 5432\r\n", read(t, p))
+}
+
+func TestSetServerPort_SamePortLeavesOrigins(t *testing.T) {
+	content := "[server]\nport = 4747\nallowed_origins = \"http://localhost:4747 , http://localhost:4747\"\n"
+	p := writeTemp(t, content)
+	require.NoError(t, SetServerPort(p, 4747))
+	assert.Equal(t, content, read(t, p))
+}
+
+func TestSetServerPort_UnchangedOriginsLineNotRewritten(t *testing.T) {
+	content := "[server]\nport = 4747\nallowed_origins = \"https://app.example.com , http://10.0.0.5:9000,https://app.example.com\"\n"
+	p := writeTemp(t, content)
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, strings.Replace(content, "port = 4747", "port = 4790", 1), read(t, p))
+}
+
+// TestSetServerPort_OriginsItCannotEdit covers allowed_origins forms that are
+// not a single-line basic string in [server]: the port is still saved and the
+// origins are left byte-identical.
+func TestSetServerPort_OriginsItCannotEdit(t *testing.T) {
+	for name, origins := range map[string]string{
+		"literal string":    "allowed_origins = 'http://localhost:4747'\n",
+		"array":             "allowed_origins = [\"http://localhost:4747\"]\n",
+		"multi-line string": "allowed_origins = \"\"\"http://localhost:4747\"\"\"\n",
+		"dotted key":        "server.allowed_origins = \"http://localhost:4747\"\n",
+		"escaped string":    "allowed_origins = \"http://localhost:4747\\u002Chttp://x:4747\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := "[server]\nport = 4747\n" + origins + "\n[database]\nport = 5432\n"
+			p := writeTemp(t, content)
+			require.NoError(t, SetServerPort(p, 4790))
+			assert.Equal(t, "[server]\nport = 4790\n"+origins+"\n[database]\nport = 5432\n", read(t, p))
+		})
+	}
+}
+
+func TestSetServerPort_OriginsOutsideServerTable(t *testing.T) {
+	content := "[server]\nport = 4747\n\n[server.extra]\nallowed_origins = \"http://localhost:4747\"\n\n" +
+		"[[calling.ice_servers]]\nallowed_origins = \"http://localhost:4747\"\n"
+	p := writeTemp(t, content)
+	require.NoError(t, SetServerPort(p, 4790))
+	assert.Equal(t, strings.Replace(content, "port = 4747", "port = 4790", 1), read(t, p))
+}
+
+func TestSetServerPort_RefusesWhenOriginsLineIsInsideAString(t *testing.T) {
+	content := "[server]\nport = 4747\nnote = \"\"\"\nallowed_origins = \"http://localhost:4747\"\n\"\"\"\n"
+	p := writeTemp(t, content)
+	assert.ErrorIs(t, SetServerPort(p, 4790), ErrCannotEditPort)
 	assert.Equal(t, content, read(t, p))
 }
 

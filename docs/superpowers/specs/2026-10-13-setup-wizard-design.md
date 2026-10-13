@@ -253,10 +253,13 @@ matching its doc comment. Covered by a test.
 - `GET /api/admin/server-settings` → `{port, config_port, config_path,
   writable}` (`port` is the running port, `config_port` the one in the
   file); `PUT /api/admin/server-settings` `{port}` (super admin only).
-- The PUT edits only the `port = …` line inside `[server]` in the file the
+- The PUT edits the `port = …` line inside `[server]` in the file the
   app loaded (adding it if missing), keeps everything else byte-for-byte,
   and writes via temp file + rename keeping the file mode. When the folder
   isn't writable but the file is, it rewrites the file in place.
+- Browser addresses in `allowed_origins` that use the old port are moved to
+  the new port in the same write (only `http(s)://host:old-port` entries of
+  a single-line `"…"` value in `[server]`; other forms are left alone).
 - Response says a restart is needed; the card shows "Restart whatomate to
   apply". Not writable (e.g. root-owned `/etc`) → clear error with the path.
 - Port 1–65535; a port other than the current one must be free.

@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ func serverSettingsApp(t *testing.T) (*handlers.App, string, uuid.UUID, uuid.UUI
 	t.Helper()
 	app := newTestApp(t)
 	p := filepath.Join(t.TempDir(), "config.toml")
-	require.NoError(t, os.WriteFile(p, []byte("[server]\n# the port\nport = 4747\n\n[database]\nport = 5432\n"), 0o600))
+	require.NoError(t, os.WriteFile(p, []byte("[server]\n# the port\nport = 4747\nallowed_origins = \"http://localhost:4747,https://app.example.com\"\n\n[database]\nport = 5432\n"), 0o600))
 	app.ConfigPath = p
 	app.Config.Server.Port = 4747
 	org := testutil.CreateTestOrganization(t, app.DB)
@@ -77,6 +78,8 @@ func TestServerSettings_GetAndUpdate(t *testing.T) {
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "# the port\n")
+	assert.Contains(t, string(raw), fmt.Sprintf("allowed_origins = \"http://localhost:%d,https://app.example.com\"\n", free),
+		"browser origins on the old port move to the new one")
 	assert.Contains(t, string(raw), "[database]\nport = 5432\n")
 }
 

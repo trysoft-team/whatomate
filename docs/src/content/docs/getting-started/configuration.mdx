@@ -183,7 +183,7 @@ full_name = "Admin"
 
 | Field | Notes |
 |---|---|
-| `host`, `port` | Default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart. |
+| `host`, `port` | Default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart. Browser addresses in `allowed_origins` that use the old port (such as `http://localhost:4747`) are moved to the new port. |
 | `read_timeout`, `write_timeout` | Seconds. |
 | `base_path` | Leave empty unless serving at a sub-path (`https://app.example.com/whatomate`) behind a proxy. |
 | `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. **Empty allows all origins** — only safe in development. |

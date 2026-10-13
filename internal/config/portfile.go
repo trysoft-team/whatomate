@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,10 +19,14 @@ var (
 	tableHeader      = regexp.MustCompile(`^\s*\[\s*([^\[\]]+?)\s*\]\s*(#.*)?$`)
 	arrayTableHeader = regexp.MustCompile(`^\s*\[\[.*\]\]\s*(#.*)?$`)
 	portLine         = regexp.MustCompile(`^(\s*)port\s*=\s*([^#]*?)(\s*#.*)?$`)
+	// originsLine matches allowed_origins as a single-line basic string
+	// without escapes, so its raw text is its value.
+	originsLine = regexp.MustCompile(`^(\s*allowed_origins\s*=\s*)"([^"\\]*)"(\s*(?:#.*)?)$`)
 )
 
 // ErrCannotEditPort is returned by SetServerPort when the file's layout
-// keeps it from changing only [server] port; the file is left untouched.
+// keeps it from changing only [server] port (and the allowed_origins entries
+// it moves along); the file is left untouched.
 var ErrCannotEditPort = errors.New("can't change [server] port in this file automatically")
 
 // WriteFileAtomic writes data to path through a temp file in the same folder
@@ -137,10 +142,10 @@ func lineEnding(line string) (body, end string) {
 	return line, ""
 }
 
-// serverPortLine finds the [server] table header and its port line. Either
-// index is -1 when missing.
-func serverPortLine(lines []string) (header, port int) {
-	header, port = -1, -1
+// serverPortLine finds the [server] table header, its port line and its
+// allowed_origins line (see originsLine). Each index is -1 when missing.
+func serverPortLine(lines []string) (header, port, origins int) {
+	header, port, origins = -1, -1, -1
 	inServer := false
 	for i, line := range lines {
 		body, _ := lineEnding(line)
@@ -158,14 +163,69 @@ func serverPortLine(lines []string) (header, port int) {
 		if inServer && port < 0 && portLine.MatchString(body) {
 			port = i
 		}
+		if inServer && origins < 0 && originsLine.MatchString(body) {
+			origins = i
+		}
 	}
-	return header, port
+	return header, port, origins
+}
+
+// portValue returns the port set on lines[at], a portLine, or DefaultPort
+// when at is -1.
+func portValue(lines []string, at int) (int, error) {
+	if at < 0 {
+		return DefaultPort, nil
+	}
+	body, _ := lineEnding(lines[at])
+	return strconv.Atoi(strings.TrimSpace(portLine.FindStringSubmatch(body)[2]))
+}
+
+// moveOrigins moves the comma-separated origins in list that are exactly
+// http(s)://host:from to port to, trims every entry and drops duplicates,
+// keeping the first. It reports false, and list unchanged, when no entry is
+// on port from.
+func moveOrigins(list string, from, to int) (string, bool) {
+	var out []string
+	seen := map[string]bool{}
+	moved := false
+	for _, entry := range strings.Split(list, ",") {
+		entry = strings.TrimSpace(entry)
+		if e, ok := moveOrigin(entry, from, to); ok {
+			entry, moved = e, true
+		}
+		if !seen[entry] {
+			seen[entry] = true
+			out = append(out, entry)
+		}
+	}
+	if !moved {
+		return list, false
+	}
+	return strings.Join(out, ","), true
+}
+
+// moveOrigin returns origin with its port set to to when origin is an http or
+// https URL with explicit port from and nothing after it.
+func moveOrigin(origin string, from, to int) (string, bool) {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" || u.User != nil ||
+		u.Path != "" || u.ForceQuery || u.RawQuery != "" || strings.Contains(origin, "#") {
+		return "", false
+	}
+	old := strconv.Itoa(from)
+	if u.Port() != old || !strings.HasSuffix(origin, ":"+old) {
+		return "", false
+	}
+	return strings.TrimSuffix(origin, old) + strconv.Itoa(to), true
 }
 
 // SetServerPort sets port in the [server] table of the TOML file at path and
 // keeps every other byte. It adds the key, or the table, when missing. When
-// the edit wouldn't leave a valid file differing only in [server] port, it
-// returns ErrCannotEditPort and writes nothing.
+// [server] allowed_origins is a single-line basic string, entries that are
+// http(s)://host:old-port (old port being the file's port or DefaultPort)
+// move to the new port in the same write. When the edit wouldn't leave a
+// valid file differing only in those values, it returns ErrCannotEditPort
+// and writes nothing.
 func SetServerPort(path string, port int) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -183,7 +243,16 @@ func SetServerPort(path string, port int) error {
 		}
 	}
 	value := strconv.Itoa(port)
-	header, at := serverPortLine(lines)
+	header, at, originsAt := serverPortLine(lines)
+	var origins *string
+	if old, err := portValue(lines, at); err == nil && old != port && originsAt >= 0 {
+		body, end := lineEnding(lines[originsAt])
+		m := originsLine.FindStringSubmatch(body)
+		if list, ok := moveOrigins(m[2], old, port); ok {
+			lines[originsAt] = m[1] + `"` + list + `"` + m[3] + end
+			origins = &list
+		}
+	}
 	switch {
 	case at >= 0:
 		body, end := lineEnding(lines[at])
@@ -203,15 +272,17 @@ func SetServerPort(path string, port int) error {
 		lines = append(lines, nl, "[server]"+nl, "port = "+value+nl)
 	}
 	edited := []byte(strings.Join(lines, ""))
-	if !onlyPortChanged(raw, edited, port) {
+	if !onlyServerEdits(raw, edited, port, origins) {
 		return ErrCannotEditPort
 	}
 	return WriteFileAtomic(path, edited, fi.Mode().Perm())
 }
 
-// onlyPortChanged reports whether after parses, sets [server] port to port,
-// and otherwise decodes to the same values as before.
-func onlyPortChanged(before, after []byte, port int) bool {
+// onlyServerEdits reports whether after parses, sets [server] port to port,
+// sets [server] allowed_origins to *origins when origins is non-nil (and
+// leaves it as it was otherwise), and decodes to the same values as before in
+// everything else.
+func onlyServerEdits(before, after []byte, port int, origins *string) bool {
 	old, err := toml.Parser().Unmarshal(before)
 	if err != nil {
 		return false
@@ -220,20 +291,30 @@ func onlyPortChanged(before, after []byte, port int) bool {
 	if err != nil {
 		return false
 	}
-	if srv, _ := upd["server"].(map[string]any); srv == nil || srv["port"] != int64(port) {
+	srv, _ := upd["server"].(map[string]any)
+	if srv == nil || srv["port"] != int64(port) {
 		return false
 	}
-	return reflect.DeepEqual(withoutServerPort(old), withoutServerPort(upd))
+	keys := []string{"port"}
+	if origins != nil {
+		if srv["allowed_origins"] != *origins {
+			return false
+		}
+		keys = append(keys, "allowed_origins")
+	}
+	return reflect.DeepEqual(withoutServerKeys(old, keys), withoutServerKeys(upd, keys))
 }
 
-// withoutServerPort drops server.port from doc, and the server table too when
-// nothing else is left in it.
-func withoutServerPort(doc map[string]any) map[string]any {
+// withoutServerKeys drops keys from doc's server table, and the table too
+// when nothing else is left in it.
+func withoutServerKeys(doc map[string]any, keys []string) map[string]any {
 	srv, ok := doc["server"].(map[string]any)
 	if !ok {
 		return doc
 	}
-	delete(srv, "port")
+	for _, k := range keys {
+		delete(srv, k)
+	}
 	if len(srv) == 0 {
 		delete(doc, "server")
 	}
@@ -248,13 +329,8 @@ func ReadServerPort(path string) (int, error) {
 		return 0, err
 	}
 	lines := splitLines(string(raw))
-	_, at := serverPortLine(lines)
-	if at < 0 {
-		return DefaultPort, nil
-	}
-	body, _ := lineEnding(lines[at])
-	m := portLine.FindStringSubmatch(body)
-	port, err := strconv.Atoi(strings.TrimSpace(m[2]))
+	_, at, _ := serverPortLine(lines)
+	port, err := portValue(lines, at)
 	if err != nil {
 		return 0, fmt.Errorf("[server] port in %s is not a number", path)
 	}
