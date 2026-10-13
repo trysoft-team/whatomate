@@ -25,7 +25,9 @@ import (
 // App holds all dependencies for handlers
 type App struct {
 	Config *config.Config
-	DB     *gorm.DB
+	// ConfigPath is the config file the app loaded ("" when none).
+	ConfigPath string
+	DB         *gorm.DB
 	// Cache holds short-lived caches (memory, or Redis in Redis mode).
 	Cache store.KV
 	// State holds logins, OAuth/passkey state, flow state and sticky calls

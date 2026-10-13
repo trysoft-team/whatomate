@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +21,7 @@ import (
 	"github.com/trysoft/whatomate/internal/handlers"
 	"github.com/trysoft/whatomate/internal/middleware"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/setup"
 	"github.com/trysoft/whatomate/internal/storage"
 	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/tts"
@@ -37,24 +40,24 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	args := os.Args[1:]
+	if len(args) == 0 {
+		args = []string{"server"}
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "server":
-		runServer(os.Args[2:])
+		runServer(args[1:])
 	case "worker":
-		runWorker(os.Args[2:])
+		runWorker(args[1:])
 	case "config":
-		runConfig(os.Args[2:])
+		runConfig(args[1:])
 	case "version":
 		fmt.Printf("Whatomate %s (built %s)\n", Version, BuildTime)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		fmt.Printf("Unknown command: %s\n\n", os.Args[1])
+		fmt.Printf("Unknown command: %s\n\n", args[0])
 		printUsage()
 		os.Exit(1)
 	}
@@ -64,7 +67,7 @@ func printUsage() {
 	fmt.Println(`Whatomate - WhatsApp Business API Platform
 
 Usage:
-  whatomate <command> [options]
+  whatomate [command] [options]
 
 Commands:
   server    Start the API server (with optional embedded workers)
@@ -72,6 +75,9 @@ Commands:
 	config    "config path" shows which config file would be used
 	version   Show version information
   help      Show this help message
+
+With no command, whatomate runs "server". When no config file is found,
+server opens a setup wizard in the browser (port 4747) and writes one.
 
 Server Options:
   -config string    Path to config file (default: search, see below)
@@ -125,7 +131,11 @@ func runServer(args []string) {
 
 	lo.Info("Starting Whatomate server...", "version", Version)
 
-	cfg := loadConfig(*configPath, lo)
+	var handoff net.Listener
+	if _, err := config.Locate(*configPath); errors.Is(err, config.ErrNotFound) {
+		handoff = runSetup(*configPath, lo)
+	}
+	cfg, cfgPath := loadConfig(*configPath, lo)
 
 	// Validate JWT secret
 	if cfg.App.Environment == "production" && len(cfg.JWT.Secret) < 32 {
@@ -232,6 +242,7 @@ func runServer(args []string) {
 
 	app := &handlers.App{
 		Config:     cfg,
+		ConfigPath: cfgPath,
 		DB:         db,
 		Cache:      stores.Cache,
 		State:      stores.State,
@@ -328,8 +339,15 @@ func runServer(args []string) {
 	// Start server in goroutine
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	go func() {
-		lo.Info("Server listening", "address", addr)
-		if err := server.ListenAndServe(addr); err != nil {
+		var err error
+		if handoff != nil {
+			lo.Info("Server listening", "address", handoff.Addr().String())
+			err = server.Serve(handoff)
+		} else {
+			lo.Info("Server listening", "address", addr)
+			err = server.ListenAndServe(addr)
+		}
+		if err != nil {
 			lo.Fatal("Server failed", "error", err)
 		}
 	}()
@@ -443,7 +461,7 @@ func runWorker(args []string) {
 
 	lo.Info("Starting Whatomate worker...", "version", Version)
 
-	cfg := loadConfig(*configPath, lo)
+	cfg, _ := loadConfig(*configPath, lo)
 
 	// Set log level based on environment
 	if cfg.App.Environment == "production" {
@@ -533,10 +551,35 @@ func runWorker(args []string) {
 	lo.Info("Workers stopped")
 }
 
+// runSetup serves the first-run setup wizard. It returns the setup socket
+// for the app to keep serving on, or nil when the app binds its own port.
+func runSetup(flagPath string, lo logf.Logger) net.Listener {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	res, err := setup.Run(ctx, setup.Options{
+		Version: Version,
+		Target:  config.Target(flagPath),
+		Port:    config.DefaultPort,
+		Log:     lo,
+	})
+	if errors.Is(err, context.Canceled) {
+		lo.Info("Setup cancelled; nothing was written")
+		os.Exit(0)
+	}
+	if err != nil {
+		lo.Fatal("Setup failed", "error", err)
+	}
+	return res.Listener
+}
+
 // loadConfig finds and loads the config file, anchoring relative paths in a
-// config from the user or system folder to its base folder.
-func loadConfig(flagPath string, lo logf.Logger) *config.Config {
+// config from the user or system folder to its base folder. It returns the
+// config and the file it came from.
+func loadConfig(flagPath string, lo logf.Logger) (*config.Config, string) {
 	src, err := config.Locate(flagPath)
+	if errors.Is(err, config.ErrNotFound) {
+		lo.Fatal("No config file found. Run `whatomate server` once to open the setup wizard", "error", err)
+	}
 	if err != nil {
 		lo.Fatal("Failed to find config", "error", err)
 	}
@@ -551,7 +594,7 @@ func loadConfig(flagPath string, lo logf.Logger) *config.Config {
 		cfg.ResolvePaths(src.BaseDir)
 	}
 	lo.Info("Loaded config", "path", src.Path, "data_dir", src.BaseDir)
-	return cfg
+	return cfg, src.Path
 }
 
 // runConfig handles "whatomate config path [-config file]".
@@ -597,6 +640,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Health check
 	g.GET("/health", app.HealthCheck)
 	g.GET("/ready", app.ReadyCheck)
+	g.GET("/api/setup/status", app.SetupStatus)
 
 	g.GET("/api/embedded-signup/config", app.GetEmbeddedSignupConfig)
 
@@ -675,7 +719,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		}
 		path := string(r.RequestCtx.Path())
 		// Skip auth for public routes
-		if path == "/health" || path == "/ready" ||
+		if path == "/health" || path == "/ready" || path == "/api/setup/status" ||
 			path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" ||
 			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" ||
 			path == "/api/auth/passkey/begin" || path == "/api/auth/passkey/finish" {
