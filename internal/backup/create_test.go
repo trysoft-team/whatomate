@@ -74,6 +74,58 @@ func TestCreate_FilesSkipSymlinksAndSkipDirs(t *testing.T) {
 	assert.Equal(t, FileStats{Count: 1, Bytes: 4}, info.Manifest.Files["media"])
 }
 
+func TestCreate_FollowsSymlinkedAreaRoot(t *testing.T) {
+	db := newSQLiteDB(t)
+	target := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "sub"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "sub", "a.txt"), []byte("hi"), 0o640))
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "backups"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "backups", "old.zip"), []byte("x"), 0o640))
+	link := filepath.Join(t.TempDir(), "media")
+	require.NoError(t, os.Symlink(target, link))
+	backups := filepath.Join(link, "backups")
+
+	info, err := Create(context.Background(), db, backups, Options{
+		Kind: KindManual, IncludeFiles: true, Areas: []FileArea{{Name: "media", Dir: link}}, Skip: []string{backups},
+	}, nil)
+	require.NoError(t, err)
+
+	zr, err := zip.OpenReader(filepath.Join(backups, info.Name))
+	require.NoError(t, err)
+	defer zr.Close()
+	var names []string
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "files/") {
+			names = append(names, f.Name)
+		}
+	}
+	assert.Equal(t, []string{"files/media/sub/a.txt"}, names)
+	assert.Equal(t, FileStats{Count: 1, Bytes: 2}, info.Manifest.Files["media"])
+}
+
+func TestCreate_ReadsChildrenBeforeParents(t *testing.T) {
+	db := newSQLiteDB(t)
+	info, err := Create(context.Background(), db, t.TempDir(), Options{Kind: KindManual}, nil)
+	require.NoError(t, err)
+	pos := map[string]int{}
+	for i, te := range info.Manifest.Tables {
+		pos[te.Name] = i
+	}
+	fks, err := foreignKeys(db)
+	require.NoError(t, err)
+	checked := 0
+	for _, fk := range fks {
+		child, okC := pos[fk.Table]
+		parent, okP := pos[fk.RefTable]
+		if !okC || !okP || fk.Table == fk.RefTable {
+			continue
+		}
+		checked++
+		assert.Less(t, child, parent, "%s.%s -> %s read after its parent", fk.Table, fk.Column, fk.RefTable)
+	}
+	assert.NotZero(t, checked)
+}
+
 func TestCreate_CancelLeavesNothing(t *testing.T) {
 	db := newSQLiteDB(t)
 	seedEveryTable(t, db, time.Nanosecond)
@@ -121,11 +173,23 @@ func TestNames(t *testing.T) {
 }
 
 func TestAreas_DropNestedAndEmpty(t *testing.T) {
-	root := t.TempDir()
+	root := realDir(t, t.TempDir())
 	assert.Equal(t, []FileArea{{Name: "media", Dir: root}}, Areas(root, filepath.Join(root, "audio")))
-	other := t.TempDir()
+	other := realDir(t, t.TempDir())
 	assert.Equal(t, []FileArea{{Name: "media", Dir: root}, {Name: "audio", Dir: other}}, Areas(root, other))
 	assert.Equal(t, []FileArea{{Name: "audio", Dir: other}}, Areas("", other))
+
+	link := filepath.Join(t.TempDir(), "media-link")
+	require.NoError(t, os.Symlink(root, link))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "audio"), 0o750))
+	assert.Equal(t, []FileArea{{Name: "media", Dir: root}}, Areas(link, filepath.Join(root, "audio")))
+}
+
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	return real
 }
 
 func TestCleanTemp(t *testing.T) {

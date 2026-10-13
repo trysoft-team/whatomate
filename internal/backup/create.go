@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trysoft/whatomate/internal/config"
 	"gorm.io/gorm"
 )
 
@@ -33,7 +35,7 @@ func Areas(media, audio string) []FileArea {
 		if dir == "" {
 			return
 		}
-		abs, err := filepath.Abs(dir)
+		abs, err := realPath(dir)
 		if err != nil {
 			return
 		}
@@ -47,6 +49,19 @@ func Areas(media, audio string) []FileArea {
 	add("media", media)
 	add("audio", audio)
 	return out
+}
+
+// realPath returns p made absolute with symlinks resolved, or just absolute
+// when p does not exist yet.
+func realPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real, nil
+	}
+	return abs, nil
 }
 
 func within(p, root string) bool {
@@ -103,12 +118,40 @@ func Create(ctx context.Context, db *gorm.DB, dir string, opts Options, progress
 	if err != nil {
 		return Info{}, err
 	}
+	fks, err := foreignKeys(db)
+	if err != nil {
+		return Info{}, err
+	}
+	byName := make(map[string]table, len(tbls))
+	names := make([]string, 0, len(tbls))
 	for _, t := range tbls {
-		entry, err := writeTable(ctx, db, zw, t, progress)
-		if err != nil {
-			return Info{}, fmt.Errorf("table %s: %w", t.Name, err)
+		byName[t.Name] = t
+		names = append(names, t.Name)
+	}
+	order := planLoad(names, fks).Order
+	// Children are read before their parents so a row inserted during the
+	// backup cannot appear without the parent it points to.
+	readTables := func(tx *gorm.DB) error {
+		for i := len(order) - 1; i >= 0; i-- {
+			t := byName[order[i]]
+			entry, err := writeTable(ctx, tx, zw, t, progress)
+			if err != nil {
+				return fmt.Errorf("table %s: %w", t.Name, err)
+			}
+			m.Tables = append(m.Tables, entry)
 		}
-		m.Tables = append(m.Tables, entry)
+		return nil
+	}
+	switch db.Name() {
+	case config.DriverPostgres, config.DriverMySQL:
+		err = db.WithContext(ctx).Transaction(readTables, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	default:
+		// SQLite opens transactions with _txlock=immediate, which would block
+		// every writer for the whole backup.
+		err = readTables(db)
+	}
+	if err != nil {
+		return Info{}, err
 	}
 	if opts.IncludeFiles {
 		m.Files = map[string]FileStats{}
@@ -205,8 +248,18 @@ func writeArea(ctx context.Context, zw *zip.Writer, a FileArea, skip []string, p
 	if err != nil {
 		return st, err
 	}
-	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+	root, err = filepath.EvalSymlinks(root)
+	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
+	}
+	if err != nil {
+		return st, err
+	}
+	var skipReal []string
+	for _, s := range skip {
+		if p, err := realPath(s); err == nil {
+			skipReal = append(skipReal, p)
+		}
 	}
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -216,7 +269,7 @@ func writeArea(ctx context.Context, zw *zip.Writer, a FileArea, skip []string, p
 			return err
 		}
 		if d.IsDir() {
-			if p != root && (isWorkDir(d.Name()) || skipped(p, skip)) {
+			if p != root && (isWorkDir(d.Name()) || skipped(p, skipReal)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -266,7 +319,7 @@ func isWorkDir(name string) bool {
 
 func skipped(p string, skip []string) bool {
 	for _, s := range skip {
-		if abs, err := filepath.Abs(s); err == nil && abs == p {
+		if s == p {
 			return true
 		}
 	}
