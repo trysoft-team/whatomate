@@ -19,11 +19,12 @@ const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 
-type Stage = 'loading' | 'confirm' | 'running' | 'done' | 'failed'
+type Stage = 'loading' | 'confirm' | 'running' | 'done' | 'partial' | 'failed'
 const stage = ref<Stage>('loading')
 const summary = ref<BackupSummary | null>(null)
 const error = ref('')
 const typed = ref('')
+const starting = ref(false)
 const status = ref<MaintenanceStatus['restore'] | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -64,7 +65,15 @@ async function poll() {
     status.value = r
     if (!r.finished) return
     stopPolling()
-    if (r.failed) {
+    if (r.failed && r.db_replaced) {
+      stage.value = 'partial'
+      try {
+        const job = await backupsService.job()
+        error.value = job.data.data.error ?? ''
+      } catch {
+        // Best effort: the session may already be gone after the restore.
+      }
+    } else if (r.failed) {
       stage.value = 'failed'
       try {
         const job = await backupsService.job()
@@ -81,7 +90,8 @@ async function poll() {
 }
 
 async function start() {
-  if (!props.name || !canConfirmRestore(typed.value)) return
+  if (starting.value || !props.name || !canConfirmRestore(typed.value)) return
+  starting.value = true
   try {
     await backupsService.restore(props.name)
     stage.value = 'running'
@@ -89,6 +99,8 @@ async function start() {
   } catch (e) {
     error.value = getErrorMessage(e, t('backup.restoreDialog.failedTitle'))
     stage.value = 'failed'
+  } finally {
+    starting.value = false
   }
 }
 
@@ -100,6 +112,10 @@ async function signIn() {
 
 function close(open: boolean) {
   if (stage.value === 'running') return
+  if (!open && (stage.value === 'done' || stage.value === 'partial')) {
+    signIn()
+    return
+  }
   if (!open && stage.value === 'failed') emit('finished')
   emit('update:open', open)
 }
@@ -151,14 +167,23 @@ onBeforeUnmount(stopPolling)
         <div><p class="font-medium">{{ $t('backup.restoreDialog.doneTitle') }}</p><p class="text-white/60 light:text-gray-600">{{ $t('backup.restoreDialog.doneBody') }}</p></div>
       </div>
 
+      <div v-else-if="stage === 'partial'" class="flex gap-3 py-2 text-sm" data-testid="restore-partial">
+        <AlertTriangle class="h-5 w-5 shrink-0 text-amber-400" />
+        <div class="space-y-1">
+          <p class="font-medium">{{ $t('backup.restoreDialog.partialTitle') }}</p>
+          <p class="text-white/60 light:text-gray-600">{{ $t('backup.restoreDialog.partialBody') }}</p>
+          <p v-if="error" class="break-words text-white/50 light:text-gray-500">{{ error }}</p>
+        </div>
+      </div>
+
       <div v-else class="flex gap-3 py-2 text-sm">
         <XCircle class="h-5 w-5 shrink-0 text-red-400" />
         <div><p class="font-medium">{{ $t('backup.restoreDialog.failedTitle') }}</p><p class="break-words text-white/60 light:text-gray-600">{{ error }}</p></div>
       </div>
 
       <DialogFooter>
-        <Button v-if="stage === 'confirm'" variant="destructive" :disabled="!canConfirmRestore(typed)" data-testid="restore-start" @click="start">{{ $t('backup.restoreDialog.start') }}</Button>
-        <Button v-else-if="stage === 'done'" data-testid="restore-sign-in" @click="signIn">{{ $t('backup.restoreDialog.signIn') }}</Button>
+        <Button v-if="stage === 'confirm'" variant="destructive" :disabled="starting || !canConfirmRestore(typed)" data-testid="restore-start" @click="start">{{ $t('backup.restoreDialog.start') }}</Button>
+        <Button v-else-if="stage === 'done' || stage === 'partial'" data-testid="restore-sign-in" @click="signIn">{{ $t('backup.restoreDialog.signIn') }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

@@ -1005,7 +1005,9 @@
       "doneBody": "Sign in with an account from the backup.",
       "signIn": "Go to sign in",
       "failedTitle": "Restore failed",
-      "failedBody": "Nothing was changed."
+      "failedBody": "Nothing was changed.",
+      "partialTitle": "Restore partly finished",
+      "partialBody": "The data was restored, but the uploaded files could not be put back, so the files from before the restore are still in place. Sign in with an account from the backup."
     }
   },
   "tags": {

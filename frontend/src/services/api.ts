@@ -1667,7 +1667,7 @@ export interface BackupSummary {
 
 export interface MaintenanceStatus {
   active: boolean
-  restore?: { running: boolean; phase: string; table?: string; done: number; total: number; finished: boolean; failed: boolean }
+  restore?: { running: boolean; phase: string; table?: string; done: number; total: number; finished: boolean; failed: boolean; db_replaced: boolean }
 }
 
 const backupPath = (name: string) => `/admin/backups/${encodeURIComponent(name)}`

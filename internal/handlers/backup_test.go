@@ -1,7 +1,9 @@
 package handlers_test
 
 import (
+	"archive/zip"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,6 +156,64 @@ func TestBackupAPI_Restore(t *testing.T) {
 	require.NotNil(t, st.Restore)
 	assert.True(t, st.Restore.Finished)
 	assert.False(t, st.Restore.Failed)
+	assert.True(t, st.Restore.DBReplaced)
+}
+
+// corruptTable rewrites the backup with one table's rows changed, so its
+// checksum no longer matches the manifest.
+func corruptTable(t *testing.T, path, table string) {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		require.NoError(t, err)
+		data, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		require.NoError(t, rc.Close())
+		if f.Name == "db/"+table+".jsonl" {
+			data = append(data, []byte("{}\n")...)
+		}
+		w, err := zw.Create(f.Name)
+		require.NoError(t, err)
+		_, err = w.Write(data)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zr.Close())
+	require.NoError(t, zw.Close())
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+}
+
+func TestBackupAPI_RestoreFailsBeforeDatabase(t *testing.T) {
+	handlers.SetRestoreGraceForTest(t, 10*time.Millisecond)
+	app, orgID, adminID := backupApp(t)
+	call(t, app.CreateBackup, testutil.NewJSONRequest(t, map[string]any{"include_files": false}), orgID, adminID)
+	made := waitJob(t, app, orgID, adminID)
+	require.Empty(t, made.Error)
+	corruptTable(t, filepath.Join(app.Config.Backup.Dir, made.Name), "organizations")
+	later := models.Organization{Name: "later", Slug: "later-" + uuid.NewString()[:8]}
+	require.NoError(t, app.DB.Create(&later).Error)
+
+	req := testutil.NewJSONRequest(t, map[string]any{"confirm": "RESTORE"})
+	testutil.SetPathParam(req, "name", made.Name)
+	require.Equal(t, fasthttp.StatusOK, call(t, app.RestoreBackup, req, orgID, adminID))
+	job := waitJob(t, app, orgID, adminID)
+	require.NotEmpty(t, job.Error)
+	assert.False(t, job.DBReplaced)
+
+	var n int64
+	require.NoError(t, app.DB.Model(&models.Organization{}).Where("id = ?", later.ID).Count(&n).Error)
+	assert.Equal(t, int64(1), n)
+
+	pub := testutil.NewGETRequest(t)
+	require.NoError(t, app.GetMaintenance(pub))
+	var st handlers.MaintenanceStatus
+	testutil.ParseEnvelopeResponse(t, pub, &st)
+	require.NotNil(t, st.Restore)
+	assert.True(t, st.Restore.Failed)
+	assert.False(t, st.Restore.DBReplaced)
 }
 
 func TestMaintenanceGuard(t *testing.T) {

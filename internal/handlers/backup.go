@@ -30,6 +30,7 @@ type BackupJob struct {
 	Name       string     `json:"name,omitempty"`
 	SafetyName string     `json:"safety_name,omitempty"`
 	Error      string     `json:"error,omitempty"`
+	DBReplaced bool       `json:"db_replaced,omitempty"`
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
@@ -265,6 +266,7 @@ func (a *App) runRestore(path string, sum backup.Summary) {
 	}, a.backupJob.progress)
 	if err == nil || errors.Is(err, backup.ErrFiles) {
 		a.clearCachesAfterRestore()
+		a.backupJob.update(func(j *BackupJob) { j.DBReplaced = true })
 	}
 	a.Maintenance.Set(false)
 	if errors.Is(err, backup.ErrFiles) {
@@ -331,6 +333,9 @@ type RestoreStatus struct {
 	Total    int64  `json:"total"`
 	Finished bool   `json:"finished"`
 	Failed   bool   `json:"failed"`
+	// DBReplaced is true once the database holds the backup's data, even if
+	// putting the files back then failed.
+	DBReplaced bool `json:"db_replaced"`
 }
 
 // MaintenanceStatus answers GET /api/maintenance.
@@ -348,7 +353,7 @@ func (a *App) GetMaintenance(r *fastglue.Request) error {
 	if job.Kind == "restore" && (job.Running || (job.FinishedAt != nil && time.Since(*job.FinishedAt) < time.Hour)) {
 		st.Restore = &RestoreStatus{
 			Running: job.Running, Phase: job.Phase, Table: job.Table, Done: job.Done, Total: job.Total,
-			Finished: !job.Running, Failed: !job.Running && job.Error != "",
+			Finished: !job.Running, Failed: !job.Running && job.Error != "", DBReplaced: job.DBReplaced,
 		}
 	}
 	return r.SendEnvelope(st)

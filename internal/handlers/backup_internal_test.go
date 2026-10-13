@@ -21,11 +21,13 @@ func TestBackupJobs_OneAtATime(t *testing.T) {
 	var j backupJobs
 	assert.True(t, j.start("backup", ""))
 	assert.False(t, j.start("restore", "x.zip"))
+	j.update(func(b *BackupJob) { b.DBReplaced = true })
 	j.finish(errors.New("boom"))
 	got := j.get()
 	assert.False(t, got.Running)
 	assert.Equal(t, "boom", got.Error)
 	assert.True(t, j.start("restore", "x.zip"))
+	assert.False(t, j.get().DBReplaced)
 }
 
 func maintenanceStatus(t *testing.T, a *App) MaintenanceStatus {
