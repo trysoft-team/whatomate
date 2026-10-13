@@ -50,6 +50,11 @@ type DBQueue struct {
 	wake *wakeup
 }
 
+var (
+	_ Queue    = (*DBQueue)(nil)
+	_ Consumer = (*DBConsumer)(nil)
+)
+
 func NewDBQueue(db *gorm.DB, log logf.Logger) *DBQueue {
 	return &DBQueue{db: db, log: log, wake: &wakeup{ch: make(chan struct{})}}
 }
@@ -104,13 +109,16 @@ func (c *DBConsumer) Consume(ctx context.Context, handler JobHandler) error {
 			return err
 		}
 		wake := c.q.wake.wait()
-		job, err := c.claim(ctx)
+		job, contended, err := c.claim(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			c.q.log.Error("Failed to claim job", "error", err)
 			sleep(ctx, time.Second)
+			continue
+		}
+		if job == nil && contended {
 			continue
 		}
 		if job == nil {
@@ -134,13 +142,15 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 // claim locks the oldest available job for this consumer, or returns nil.
-func (c *DBConsumer) claim(ctx context.Context) (*models.CampaignJob, error) {
+// contended reports that jobs were available but other consumers claimed them
+// first, so more may be waiting.
+func (c *DBConsumer) claim(ctx context.Context) (job *models.CampaignJob, contended bool, err error) {
 	now := time.Now()
 	var cands []models.CampaignJob
 	if err := c.q.db.WithContext(ctx).
 		Where("locked_until IS NULL OR locked_until < ?", now).
 		Order("id").Limit(10).Find(&cands).Error; err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for i := range cands {
 		res := c.q.db.WithContext(ctx).Model(&models.CampaignJob{}).
@@ -151,14 +161,14 @@ func (c *DBConsumer) claim(ctx context.Context) (*models.CampaignJob, error) {
 				"attempts":     gorm.Expr("attempts + 1"),
 			})
 		if res.Error != nil {
-			return nil, res.Error
+			return nil, false, res.Error
 		}
 		if res.RowsAffected == 1 {
 			cands[i].Attempts++
-			return &cands[i], nil
+			return &cands[i], false, nil
 		}
 	}
-	return nil, nil
+	return nil, len(cands) > 0, nil
 }
 
 func (c *DBConsumer) process(ctx context.Context, job *models.CampaignJob, handler JobHandler) {

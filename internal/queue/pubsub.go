@@ -62,6 +62,7 @@ func NewSubscriber(b store.Broker, log logf.Logger) *Subscriber {
 }
 
 // SubscribeCampaignStats calls handler for each update until ctx is done or Close is called.
+// handler may run concurrently with itself and must not block.
 func (s *Subscriber) SubscribeCampaignStats(ctx context.Context, handler func(update *CampaignStatsUpdate)) error {
 	stop, err := s.broker.Subscribe(ctx, CampaignStatsChannel, func(payload []byte) {
 		var update CampaignStatsUpdate
