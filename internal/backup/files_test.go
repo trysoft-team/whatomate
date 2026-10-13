@@ -104,6 +104,18 @@ func TestRestore_RejectsNestedBackupFolder(t *testing.T) {
 	assert.FileExists(t, filepath.Join(backups, info.Name))
 }
 
+func TestLeftoverWorkDirs(t *testing.T) {
+	media, audio := t.TempDir(), t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(media, ".restore-123"), 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Join(audio, ".old-456"), 0o750))
+	require.NoError(t, os.MkdirAll(filepath.Join(media, "sub", ".old-789"), 0o750))
+	write(t, filepath.Join(media, "a.txt"), "a")
+	areas := []FileArea{{Name: "media", Dir: media}, {Name: "audio", Dir: audio}, {Name: "gone", Dir: filepath.Join(media, "missing")}}
+	assert.Equal(t, []string{filepath.Join(media, ".restore-123"), filepath.Join(audio, ".old-456")}, LeftoverWorkDirs(areas))
+	assert.FileExists(t, filepath.Join(media, "a.txt"))
+	assert.DirExists(t, filepath.Join(media, ".restore-123"), "nothing is deleted")
+}
+
 func TestPutBack_ReportsFailedMoves(t *testing.T) {
 	dst, src := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, "a"), "a")

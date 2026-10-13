@@ -1,13 +1,17 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/maintenance"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
+	"github.com/valyala/fasthttp"
 )
 
 // SetRestoreGraceForTest shortens the pause before a restore for the test.
@@ -15,6 +19,80 @@ func SetRestoreGraceForTest(t *testing.T, d time.Duration) {
 	old := restoreGrace
 	restoreGrace = d
 	t.Cleanup(func() { restoreGrace = old })
+}
+
+// SetEnsureSpaceForTest replaces the free disk check for the test.
+func SetEnsureSpaceForTest(t *testing.T, fn func(dir string, need int64) error) {
+	old := ensureSpace
+	ensureSpace = fn
+	t.Cleanup(func() { ensureSpace = old })
+}
+
+func TestGoBackupJob_PanicFailsJob(t *testing.T) {
+	a := &App{Log: testutil.NopLogger(), Maintenance: &maintenance.Gate{}}
+	require.True(t, a.backupJob.start("restore", "x.zip"))
+	a.Maintenance.Set(true)
+	a.goBackupJob(func() { panic("boom") })
+	a.WaitForBackgroundTasks()
+	job := a.backupJob.get()
+	assert.False(t, job.Running)
+	assert.Equal(t, "failed", job.Phase)
+	assert.Contains(t, job.Error, "boom")
+	assert.False(t, a.Maintenance.Active())
+}
+
+func TestRunningBackupJob(t *testing.T) {
+	a := &App{}
+	_, ok := a.RunningBackupJob()
+	assert.False(t, ok)
+	a.backupJob.start("restore", "x.zip")
+	kind, ok := a.RunningBackupJob()
+	assert.True(t, ok)
+	assert.Equal(t, "restore", kind)
+}
+
+func TestClearRestoreState(t *testing.T) {
+	ctx := context.Background()
+	cache, state := store.NewMemory(), store.NewMemory()
+	t.Cleanup(cache.Close)
+	t.Cleanup(state.Close)
+	require.NoError(t, cache.Set(ctx, settingsCachePrefix+"x", []byte("1"), 0))
+	require.NoError(t, cache.Set(ctx, "ivr_flow:y", []byte("1"), 0))
+	require.NoError(t, cache.Set(ctx, "unrelated", []byte("1"), 0))
+	require.NoError(t, state.Set(ctx, "refresh:abc", []byte("1"), 0))
+	require.NoError(t, state.Set(ctx, "oauth:keep", []byte("1"), 0))
+	ClearRestoreState(ctx, cache, state, testutil.NopLogger())
+	for _, k := range []string{settingsCachePrefix + "x", "ivr_flow:y"} {
+		_, err := cache.Get(ctx, k)
+		assert.ErrorIs(t, err, store.ErrNotFound, k)
+	}
+	_, err := state.Get(ctx, "refresh:abc")
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, err = cache.Get(ctx, "unrelated")
+	assert.NoError(t, err)
+	_, err = state.Get(ctx, "oauth:keep")
+	assert.NoError(t, err)
+	ClearRestoreState(ctx, nil, nil, testutil.NopLogger())
+}
+
+func TestLongUploadRead(t *testing.T) {
+	h := func(method, uri string, set func(*fasthttp.RequestHeader)) *fasthttp.RequestHeader {
+		var hdr fasthttp.RequestHeader
+		hdr.SetMethod(method)
+		hdr.SetRequestURI(uri)
+		if set != nil {
+			set(&hdr)
+		}
+		return &hdr
+	}
+	cookie := func(hdr *fasthttp.RequestHeader) { hdr.SetCookie("whm_access", "tok") }
+	bearer := func(hdr *fasthttp.RequestHeader) { hdr.Set("Authorization", "Bearer tok") }
+	assert.True(t, LongUploadRead(h("PUT", "/api/admin/backup-uploads/abc?offset=0", cookie)))
+	assert.True(t, LongUploadRead(h("PUT", "/api/admin/backup-uploads/abc", bearer)))
+	assert.False(t, LongUploadRead(h("PUT", "/api/admin/backup-uploads/abc", nil)), "no credentials, no long timeout")
+	assert.False(t, LongUploadRead(h("PUT", "/api/admin/backup-uploads/abc", func(hdr *fasthttp.RequestHeader) { hdr.SetCookie("whm_access", "") })))
+	assert.False(t, LongUploadRead(h("POST", "/api/admin/backup-uploads/abc/finish", cookie)))
+	assert.False(t, LongUploadRead(h("PUT", "/api/contacts/abc", bearer)))
 }
 
 func TestBackupJobs_OneAtATime(t *testing.T) {

@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/trysoft/whatomate/internal/backup"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
+	"github.com/zerodha/logf"
 )
 
 // restoreGrace lets processor ticks and recipient jobs that started just
@@ -86,11 +89,41 @@ func (a *App) backupAreas() []backup.FileArea {
 	return backup.Areas(a.getMediaStoragePath(), a.Config.Calling.AudioDir)
 }
 
+func (a *App) backupSkip() []string {
+	return backup.ProtectedPaths(a.Config.Backup.Dir, a.ConfigPath, a.Config.Database)
+}
+
 func (a *App) backupOptions(kind string, includeFiles bool) backup.Options {
 	return backup.Options{
 		Kind: kind, AppVersion: a.Version, EncryptionKey: a.Config.App.EncryptionKey,
-		IncludeFiles: includeFiles, Areas: a.backupAreas(), Skip: []string{a.Config.Backup.Dir},
+		IncludeFiles: includeFiles, Areas: a.backupAreas(), Skip: a.backupSkip(), Warn: a.Log.Warn,
 	}
+}
+
+var ensureSpace = backup.EnsureSpace
+
+// goBackupJob runs fn in the background; shutdown waits for it. A panic fails
+// the job and turns maintenance mode off.
+func (a *App) goBackupJob(fn func()) {
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		defer func() {
+			if p := recover(); p != nil {
+				a.Log.Error("Backup or restore crashed", "panic", p, "stack", string(debug.Stack()))
+				a.Maintenance.Set(false)
+				a.backupJob.finish(fmt.Errorf("internal error: %v", p))
+			}
+		}()
+		fn()
+	}()
+}
+
+// RunningBackupJob returns the kind ("backup" or "restore") of the job that
+// is running, if any.
+func (a *App) RunningBackupJob() (string, bool) {
+	j := a.backupJob.get()
+	return j.Kind, j.Running
 }
 
 // ListBackups returns the saved backups, the backup folder and the current job.
@@ -120,11 +153,18 @@ func (a *App) CreateBackup(r *fastglue.Request) error {
 		return nil
 	}
 	includeFiles := req.IncludeFiles == nil || *req.IncludeFiles
+	if _, running := a.RunningBackupJob(); running {
+		return r.SendErrorEnvelope(fasthttp.StatusConflict, "A backup or restore is already running", nil, "")
+	}
+	opts := a.backupOptions(backup.KindManual, includeFiles)
+	if err := ensureSpace(a.Config.Backup.Dir, backup.EstimateSize(a.DB, opts.Areas, includeFiles, opts.Skip)); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, err.Error(), nil, "")
+	}
 	if !a.backupJob.start("backup", "") {
 		return r.SendErrorEnvelope(fasthttp.StatusConflict, "A backup or restore is already running", nil, "")
 	}
-	go func() {
-		info, err := backup.Create(context.Background(), a.DB, a.Config.Backup.Dir, a.backupOptions(backup.KindManual, includeFiles), a.backupJob.progress)
+	a.goBackupJob(func() {
+		info, err := backup.Create(context.Background(), a.DB, a.Config.Backup.Dir, opts, a.backupJob.progress)
 		if err != nil {
 			a.Log.Error("Backup failed", "error", err)
 		} else {
@@ -132,7 +172,7 @@ func (a *App) CreateBackup(r *fastglue.Request) error {
 			a.backupJob.update(func(j *BackupJob) { j.Name = info.Name })
 		}
 		a.backupJob.finish(err)
-	}()
+	})
 	return r.SendEnvelope(a.backupJob.get())
 }
 
@@ -167,11 +207,20 @@ func IsBackupDownload(method, uri string) bool {
 	return method == fasthttp.MethodGet && strings.Contains(path, "/api/admin/backups/") && strings.HasSuffix(path, "/download")
 }
 
-// IsBackupUploadChunk reports whether a request sends a backup upload chunk;
-// those get a long read timeout.
+// IsBackupUploadChunk reports whether a request sends a backup upload chunk.
 func IsBackupUploadChunk(method, uri string) bool {
 	path, _, _ := strings.Cut(uri, "?")
 	return method == fasthttp.MethodPut && strings.Contains(path, "/api/admin/backup-uploads/")
+}
+
+// LongUploadRead reports whether a request gets the long read timeout for
+// backup upload chunks: only chunks that carry credentials, since the timeout
+// is granted before authentication runs.
+func LongUploadRead(h *fasthttp.RequestHeader) bool {
+	if !IsBackupUploadChunk(string(h.Method()), string(h.RequestURI())) {
+		return false
+	}
+	return len(h.Cookie(cookieAccessName)) > 0 || len(h.Peek(fasthttp.HeaderAuthorization)) > 0
 }
 
 // DownloadBackup streams a backup file.
@@ -227,19 +276,20 @@ func (a *App) RestoreBackup(r *fastglue.Request) error {
 	if err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusUnprocessableEntity, err.Error(), nil, "")
 	}
+	// The safety backup comes first, then the backup's files are staged.
+	need := backup.EstimateSize(a.DB, a.backupAreas(), sum.Manifest.IncludeFiles, a.backupSkip())
 	if sum.Manifest.IncludeFiles {
-		var need int64
 		for _, st := range sum.Manifest.Files {
 			need += st.Bytes
 		}
-		if err := backup.EnsureSpace(a.Config.Backup.Dir, 2*need); err != nil {
-			return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, err.Error(), nil, "")
-		}
+	}
+	if err := ensureSpace(a.Config.Backup.Dir, need); err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, err.Error(), nil, "")
 	}
 	if !a.backupJob.start("restore", sum.Name) {
 		return r.SendErrorEnvelope(fasthttp.StatusConflict, "A backup or restore is already running", nil, "")
 	}
-	go a.runRestore(p, sum)
+	a.goBackupJob(func() { a.runRestore(p, sum) })
 	return r.SendEnvelope(a.backupJob.get())
 }
 
@@ -262,10 +312,12 @@ func (a *App) runRestore(path string, sum backup.Summary) {
 	}
 	time.Sleep(restoreGrace)
 	err = backup.Restore(ctx, a.DB, path, backup.RestoreOptions{
-		EncryptionKey: a.Config.App.EncryptionKey, Areas: a.backupAreas(), Skip: []string{a.Config.Backup.Dir},
+		EncryptionKey: a.Config.App.EncryptionKey, Areas: a.backupAreas(), Skip: a.backupSkip(),
 	}, a.backupJob.progress)
 	if err == nil || errors.Is(err, backup.ErrFiles) {
-		a.clearCachesAfterRestore()
+		clearCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ClearRestoreState(clearCtx, a.Cache, a.State, a.Log)
+		cancel()
 		a.backupJob.update(func(j *BackupJob) { j.DBReplaced = true })
 	}
 	a.Maintenance.Set(false)
@@ -289,19 +341,19 @@ var restoreCachePrefixes = []string{
 	"team:assignment:", "ivr_flow:", "org:calling_settings:",
 }
 
-func (a *App) clearCachesAfterRestore() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if a.Cache != nil {
+// ClearRestoreState drops the caches that can hold data from the database and
+// signs everyone out, after a restore. Either store may be nil.
+func ClearRestoreState(ctx context.Context, cache, state store.KV, log logf.Logger) {
+	if cache != nil {
 		for _, p := range restoreCachePrefixes {
-			if err := a.Cache.DelPrefix(ctx, p); err != nil {
-				a.Log.Warn("Could not clear cache after restore", "prefix", p, "error", err)
+			if err := cache.DelPrefix(ctx, p); err != nil {
+				log.Warn("Could not clear cache after restore", "prefix", p, "error", err)
 			}
 		}
 	}
-	if a.State != nil {
-		if err := a.State.DelPrefix(ctx, "refresh:"); err != nil {
-			a.Log.Warn("Could not sign out sessions after restore", "error", err)
+	if state != nil {
+		if err := state.DelPrefix(ctx, "refresh:"); err != nil {
+			log.Warn("Could not sign out sessions after restore", "error", err)
 		}
 	}
 }

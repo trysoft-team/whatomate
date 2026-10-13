@@ -3,14 +3,17 @@ package backup
 import (
 	"archive/zip"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
 )
 
 func TestCreate_WritesEveryTableAndManifest(t *testing.T) {
@@ -170,6 +173,103 @@ func TestNames(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "my-backup.zip"), nil, 0o640))
 	assert.Equal(t, "my-backup-2.zip", UploadName(dir, "my backup.zip"))
 	assert.Equal(t, "uploaded-backup.zip", UploadName(dir, "...zip"))
+}
+
+func fileEntries(t *testing.T, p string) []string {
+	t.Helper()
+	zr, err := zip.OpenReader(p)
+	require.NoError(t, err)
+	defer zr.Close()
+	var names []string
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "files/") {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+func TestCreate_SkipsBackslashNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is the path separator on Windows")
+	}
+	db := newSQLiteDB(t)
+	media := t.TempDir()
+	write(t, filepath.Join(media, `odd\name.txt`), "x")
+	write(t, filepath.Join(media, "ok.txt"), "ok")
+	backups := t.TempDir()
+	var warned []string
+	info, err := Create(context.Background(), db, backups, Options{
+		Kind: KindManual, IncludeFiles: true, Areas: []FileArea{{Name: "media", Dir: media}},
+		Warn: func(msg string, kv ...any) { warned = append(warned, fmt.Sprint(append([]any{msg}, kv...)...)) },
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"files/media/ok.txt"}, fileEntries(t, filepath.Join(backups, info.Name)))
+	require.Len(t, warned, 1)
+	assert.Contains(t, warned[0], `odd\name.txt`)
+	require.NoError(t, Verify(filepath.Join(backups, info.Name), nil), "the backup stays restorable")
+}
+
+func TestProtectedPaths(t *testing.T) {
+	db := config.DatabaseConfig{Driver: config.DriverSQLite, Path: "/data/w.db"}
+	assert.Equal(t, []string{"/b", "/data/config.toml", "/data/w.db", "/data/w.db-wal", "/data/w.db-shm", "/data/w.db-journal"},
+		ProtectedPaths("/b", "/data/config.toml", db))
+	assert.Equal(t, []string{"/b"}, ProtectedPaths("/b", "", config.DatabaseConfig{Driver: config.DriverPostgres, Path: "/data/w.db"}))
+}
+
+func TestCreateAndRestore_LeaveConfigAndDatabaseAlone(t *testing.T) {
+	db := newSQLiteDB(t)
+	media := t.TempDir()
+	write(t, filepath.Join(media, "config.toml"), "cfg-before")
+	write(t, filepath.Join(media, "w.db"), "db-before")
+	write(t, filepath.Join(media, "w.db-wal"), "wal-before")
+	write(t, filepath.Join(media, "a.txt"), "a1")
+	backups := filepath.Join(media, "backups")
+	skip := ProtectedPaths(backups, filepath.Join(media, "config.toml"), config.DatabaseConfig{Driver: config.DriverSQLite, Path: filepath.Join(media, "w.db")})
+	areas := []FileArea{{Name: "media", Dir: media}}
+	info, err := Create(context.Background(), db, backups, Options{Kind: KindManual, IncludeFiles: true, Areas: areas, Skip: skip}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"files/media/a.txt"}, fileEntries(t, filepath.Join(backups, info.Name)))
+
+	write(t, filepath.Join(media, "config.toml"), "cfg-after")
+	write(t, filepath.Join(media, "w.db"), "db-after")
+	write(t, filepath.Join(media, "w.db-shm"), "shm-after")
+	write(t, filepath.Join(media, "a.txt"), "a2")
+	require.NoError(t, Restore(context.Background(), db, filepath.Join(backups, info.Name), RestoreOptions{Areas: areas, Skip: skip}, nil))
+	assert.Equal(t, "a1", read(t, filepath.Join(media, "a.txt")))
+	assert.Equal(t, "cfg-after", read(t, filepath.Join(media, "config.toml")))
+	assert.Equal(t, "db-after", read(t, filepath.Join(media, "w.db")))
+	assert.Equal(t, "wal-before", read(t, filepath.Join(media, "w.db-wal")))
+	assert.Equal(t, "shm-after", read(t, filepath.Join(media, "w.db-shm")))
+}
+
+func TestRestore_RejectsNestedProtectedFile(t *testing.T) {
+	db := newSQLiteDB(t)
+	media := t.TempDir()
+	write(t, filepath.Join(media, "data", "w.db"), "db")
+	backups := t.TempDir()
+	skip := ProtectedPaths(backups, "", config.DatabaseConfig{Driver: config.DriverSQLite, Path: filepath.Join(media, "data", "w.db")})
+	areas := []FileArea{{Name: "media", Dir: media}}
+	info, err := Create(context.Background(), db, backups, Options{Kind: KindManual, IncludeFiles: true, Areas: areas, Skip: skip}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, fileEntries(t, filepath.Join(backups, info.Name)))
+
+	err = Restore(context.Background(), db, filepath.Join(backups, info.Name), RestoreOptions{Areas: areas, Skip: skip}, nil)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrFiles)
+	assert.Contains(t, err.Error(), "must be directly inside")
+	assert.Equal(t, "db", read(t, filepath.Join(media, "data", "w.db")))
+}
+
+func TestEstimateSize(t *testing.T) {
+	db := newSQLiteDB(t)
+	media := t.TempDir()
+	write(t, filepath.Join(media, "a.bin"), strings.Repeat("x", 1000))
+	write(t, filepath.Join(media, "backups", "old.zip"), strings.Repeat("x", 5000))
+	areas := []FileArea{{Name: "media", Dir: media}}
+	dbOnly := EstimateSize(db, areas, false, nil)
+	assert.Positive(t, dbOnly)
+	assert.Equal(t, dbOnly+1000, EstimateSize(db, areas, true, []string{filepath.Join(media, "backups")}))
 }
 
 func TestAreas_DropNestedAndEmpty(t *testing.T) {

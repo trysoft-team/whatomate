@@ -61,7 +61,24 @@ func realPath(p string) (string, error) {
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		return real, nil
 	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(dir, filepath.Base(abs)), nil
+	}
 	return abs, nil
+}
+
+// ProtectedPaths are the paths a backup never copies and a restore never
+// replaces: the backup folder, the config file in use and, on SQLite, the
+// database file with its journal files.
+func ProtectedPaths(backupDir, configPath string, db config.DatabaseConfig) []string {
+	out := []string{backupDir}
+	if configPath != "" {
+		out = append(out, configPath)
+	}
+	if db.Driver == config.DriverSQLite && db.Path != "" {
+		out = append(out, db.Path, db.Path+"-wal", db.Path+"-shm", db.Path+"-journal")
+	}
+	return out
 }
 
 func within(p, root string) bool {
@@ -76,10 +93,13 @@ type Options struct {
 	EncryptionKey string
 	IncludeFiles  bool
 	Areas         []FileArea
-	// Skip lists folders never copied, such as the backup folder itself.
+	// Skip lists folders and files never copied, such as the backup folder
+	// itself (see ProtectedPaths).
 	Skip []string
 	// Path, when set, is the file to write instead of a new name in dir.
 	Path string
+	// Warn, when set, is told about files left out of the backup.
+	Warn func(msg string, kv ...any)
 }
 
 // Create writes a backup of db (and, if asked, the local files) into dir.
@@ -156,7 +176,7 @@ func Create(ctx context.Context, db *gorm.DB, dir string, opts Options, progress
 	if opts.IncludeFiles {
 		m.Files = map[string]FileStats{}
 		for _, a := range opts.Areas {
-			st, err := writeArea(ctx, zw, a, opts.Skip, progress)
+			st, err := writeArea(ctx, zw, a, opts.Skip, opts.Warn, progress)
 			if err != nil {
 				return Info{}, fmt.Errorf("files in %s: %w", a.Dir, err)
 			}
@@ -242,48 +262,14 @@ func writeTable(ctx context.Context, db *gorm.DB, zw *zip.Writer, t table, progr
 	return entry, nil
 }
 
-func writeArea(ctx context.Context, zw *zip.Writer, a FileArea, skip []string, progress ProgressFunc) (FileStats, error) {
+func writeArea(ctx context.Context, zw *zip.Writer, a FileArea, skip []string, warn func(string, ...any), progress ProgressFunc) (FileStats, error) {
 	var st FileStats
-	root, err := filepath.Abs(a.Dir)
-	if err != nil {
-		return st, err
-	}
-	root, err = filepath.EvalSymlinks(root)
-	if errors.Is(err, fs.ErrNotExist) {
-		return st, nil
-	}
-	if err != nil {
-		return st, err
-	}
-	var skipReal []string
-	for _, s := range skip {
-		if p, err := realPath(s); err == nil {
-			skipReal = append(skipReal, p)
-		}
-	}
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p != root && (isWorkDir(d.Name()) || skipped(p, skipReal)) {
-				return filepath.SkipDir
+	err := walkArea(ctx, a, skip, func(p, rel string, info fs.FileInfo) error {
+		if strings.Contains(rel, `\`) {
+			if warn != nil {
+				warn("Left a file out of the backup because its name contains a backslash", "path", p)
 			}
 			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
 		}
 		hdr, err := zip.FileInfoHeader(info)
 		if err != nil {
@@ -310,6 +296,83 @@ func writeArea(ctx context.Context, zw *zip.Writer, a FileArea, skip []string, p
 		return nil
 	})
 	return st, err
+}
+
+// walkArea calls fn for each regular file in the area, leaving out symlinks,
+// restore work folders and the skip paths. A missing area folder is empty.
+func walkArea(ctx context.Context, a FileArea, skip []string, fn func(p, rel string, info fs.FileInfo) error) error {
+	root, err := filepath.Abs(a.Dir)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var skipReal []string
+	for _, s := range skip {
+		if p, err := realPath(s); err == nil {
+			skipReal = append(skipReal, p)
+		}
+	}
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && (isWorkDir(d.Name()) || skipped(p, skipReal)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || skipped(p, skipReal) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		return fn(p, rel, info)
+	})
+}
+
+// EstimateSize roughly predicts a backup's size: the database's size plus,
+// when files are included, the files in the areas. Sizes that cannot be read
+// count as zero.
+func EstimateSize(db *gorm.DB, areas []FileArea, includeFiles bool, skip []string) int64 {
+	n := databaseSize(db)
+	if includeFiles {
+		for _, a := range areas {
+			_ = walkArea(context.Background(), a, skip, func(_, _ string, info fs.FileInfo) error {
+				n += info.Size()
+				return nil
+			})
+		}
+	}
+	return n
+}
+
+func databaseSize(db *gorm.DB) int64 {
+	var n int64
+	switch db.Name() {
+	case config.DriverPostgres:
+		db.Raw("SELECT pg_database_size(current_database())").Scan(&n)
+	case config.DriverMySQL:
+		db.Raw("SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = DATABASE()").Scan(&n)
+	default:
+		db.Raw("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()").Scan(&n)
+	}
+	return n
 }
 
 // isWorkDir reports whether name is a restore's staging or old-files folder.

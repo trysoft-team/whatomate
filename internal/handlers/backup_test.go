@@ -3,9 +3,11 @@ package handlers_test
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +159,80 @@ func TestBackupAPI_Restore(t *testing.T) {
 	assert.True(t, st.Restore.Finished)
 	assert.False(t, st.Restore.Failed)
 	assert.True(t, st.Restore.DBReplaced)
+}
+
+func TestBackupAPI_ShutdownWaitsForRestore(t *testing.T) {
+	handlers.SetRestoreGraceForTest(t, 200*time.Millisecond)
+	app, orgID, adminID := backupApp(t)
+	call(t, app.CreateBackup, testutil.NewJSONRequest(t, map[string]any{"include_files": false}), orgID, adminID)
+	made := waitJob(t, app, orgID, adminID)
+
+	req := testutil.NewJSONRequest(t, map[string]any{"confirm": "RESTORE"})
+	testutil.SetPathParam(req, "name", made.Name)
+	require.Equal(t, fasthttp.StatusOK, call(t, app.RestoreBackup, req, orgID, adminID))
+	kind, running := app.RunningBackupJob()
+	require.True(t, running)
+	assert.Equal(t, "restore", kind)
+	app.WaitForBackgroundTasks()
+	_, running = app.RunningBackupJob()
+	assert.False(t, running, "shutdown waits for the restore")
+	assert.False(t, app.Maintenance.Active())
+}
+
+func TestBackupAPI_CreateRefusesWithoutSpace(t *testing.T) {
+	app, orgID, adminID := backupApp(t)
+	var asked int64
+	handlers.SetEnsureSpaceForTest(t, func(dir string, need int64) error {
+		asked = need
+		return errors.New("not enough disk space in " + dir)
+	})
+	req := testutil.NewJSONRequest(t, map[string]any{"include_files": true})
+	assert.Equal(t, fasthttp.StatusInsufficientStorage, call(t, app.CreateBackup, req, orgID, adminID))
+	assert.Contains(t, string(req.RequestCtx.Response.Body()), "not enough disk space")
+	assert.Positive(t, asked)
+	_, running := app.RunningBackupJob()
+	assert.False(t, running)
+	entries, _ := os.ReadDir(app.Config.Backup.Dir)
+	assert.Empty(t, entries)
+}
+
+func TestBackupAPI_LeavesConfigAndDatabaseFilesAlone(t *testing.T) {
+	handlers.SetRestoreGraceForTest(t, 10*time.Millisecond)
+	app, orgID, adminID := backupApp(t)
+	root := filepath.Dir(app.Config.Backup.Dir)
+	app.Config.Storage.LocalPath = root
+	app.Config.Database = config.DatabaseConfig{Driver: config.DriverSQLite, Path: filepath.Join(root, "w.db")}
+	app.ConfigPath = filepath.Join(root, "config.toml")
+	require.NoError(t, os.WriteFile(app.ConfigPath, []byte("before"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "media.txt"), []byte("m1"), 0o600))
+
+	call(t, app.CreateBackup, testutil.NewJSONRequest(t, map[string]any{"include_files": true}), orgID, adminID)
+	made := waitJob(t, app, orgID, adminID)
+	require.Empty(t, made.Error)
+	zr, err := zip.OpenReader(filepath.Join(app.Config.Backup.Dir, made.Name))
+	require.NoError(t, err)
+	var files []string
+	for _, f := range zr.File {
+		if strings.HasPrefix(f.Name, "files/") {
+			files = append(files, f.Name)
+		}
+	}
+	require.NoError(t, zr.Close())
+	assert.Equal(t, []string{"files/media/media.txt"}, files)
+
+	require.NoError(t, os.WriteFile(app.ConfigPath, []byte("after"), 0o600))
+	req := testutil.NewJSONRequest(t, map[string]any{"confirm": "RESTORE"})
+	testutil.SetPathParam(req, "name", made.Name)
+	require.Equal(t, fasthttp.StatusOK, call(t, app.RestoreBackup, req, orgID, adminID))
+	job := waitJob(t, app, orgID, adminID)
+	require.Empty(t, job.Error)
+	b, err := os.ReadFile(app.ConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, "after", string(b))
+	assert.FileExists(t, filepath.Join(root, "w.db"))
+	var n int64
+	require.NoError(t, app.DB.Model(&models.Organization{}).Count(&n).Error, "the live database file was not moved away")
+	assert.Positive(t, n)
 }
 
 // corruptTable rewrites the backup with one table's rows changed, so its

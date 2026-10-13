@@ -129,7 +129,25 @@ func putBack(dst, src string, names []string) error {
 	return errors.Join(errs...)
 }
 
-// checkSkips rejects a skip folder nested below an area's direct children,
+// LeftoverWorkDirs returns the staging and old-files folders an interrupted
+// restore left directly inside the areas.
+func LeftoverWorkDirs(areas []FileArea) []string {
+	var out []string
+	for _, a := range areas {
+		entries, err := os.ReadDir(a.Dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() && isWorkDir(e.Name()) {
+				out = append(out, filepath.Join(a.Dir, e.Name()))
+			}
+		}
+	}
+	return out
+}
+
+// checkSkips rejects a skip path nested below an area's direct children,
 // because restoring the area would move it away with its parent.
 func checkSkips(areas []FileArea, skip []string) error {
 	for _, a := range areas {
@@ -143,7 +161,7 @@ func checkSkips(areas []FileArea, skip []string) error {
 				return err
 			}
 			if p == root || (within(p, root) && filepath.Dir(p) != root) {
-				return fmt.Errorf("backup folder %s must be directly inside the %s folder (%s) or outside it", s, a.Name, a.Dir)
+				return fmt.Errorf("%s must be directly inside the %s folder (%s) or outside it, because a restore leaves it alone", s, a.Name, a.Dir)
 			}
 		}
 	}

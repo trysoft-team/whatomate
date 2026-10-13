@@ -9,11 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
+	"github.com/trysoft/whatomate/internal/handlers"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/zerodha/logf"
+	"gorm.io/gorm"
 )
 
 func cliLogger() logf.Logger {
@@ -29,8 +33,9 @@ func cliAreas(cfg *config.Config) []backup.FileArea {
 	return backup.Areas(media, cfg.Calling.AudioDir)
 }
 
-// cliLock is the server lock a command holds so a server starting meanwhile
-// leaves its temp files alone. release only removes a lock this process wrote.
+// cliLock is the server lock a command holds so a server starting on this host
+// meanwhile leaves its temp files alone. release only removes a lock this
+// process wrote.
 type cliLock struct {
 	dir string
 	lo  logf.Logger
@@ -42,6 +47,24 @@ func (l cliLock) release() { backup.RemoveServerLock(l.dir) }
 func (l cliLock) fatal(msg string, kv ...any) {
 	l.release()
 	l.lo.Fatal(msg, kv...)
+}
+
+// clearRestoreState clears what the server clears after a restore. Without
+// Redis the caches live in the server's memory and the sessions in the
+// database the restore already emptied, so only Redis needs it.
+func clearRestoreState(cfg *config.Config, db *gorm.DB, lo logf.Logger) {
+	if cfg.Redis.Host == "" {
+		return
+	}
+	stores, err := store.New(&cfg.Redis, db)
+	if err != nil {
+		lo.Warn("Could not connect to Redis to clear caches and sign everyone out; do this before starting whatomate", "error", err)
+		return
+	}
+	defer stores.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	handlers.ClearRestoreState(ctx, stores.Cache, stores.State, lo)
 }
 
 func printProgress(p backup.Progress) {
@@ -64,8 +87,8 @@ func runBackupCmd(args []string) {
 	if _, err := config.Locate(*configPath); errors.Is(err, config.ErrNotFound) {
 		lo.Fatal("No config file found; run whatomate server first to set one up")
 	}
-	cfg, _ := loadConfig(*configPath, lo)
-	_, _, _ = backup.ClaimServerLock(cfg.Backup.Dir)
+	cfg, cfgPath := loadConfig(*configPath, lo)
+	_, _, _ = backup.ClaimCLILock(cfg.Backup.Dir)
 	lock := cliLock{dir: cfg.Backup.Dir, lo: lo}
 	defer lock.release()
 	fatal := lock.fatal
@@ -73,10 +96,18 @@ func runBackupCmd(args []string) {
 	if err != nil {
 		fatal("Failed to connect to database", "error", err)
 	}
-	info, err := backup.Create(context.Background(), db, cfg.Backup.Dir, backup.Options{
-		Kind: backup.KindCLI, AppVersion: Version, EncryptionKey: cfg.App.EncryptionKey,
-		IncludeFiles: !*noFiles, Areas: cliAreas(cfg), Skip: []string{cfg.Backup.Dir}, Path: *out,
-	}, printProgress)
+	opts := backup.Options{
+		Kind: backup.KindCLI, AppVersion: Version, EncryptionKey: cfg.App.EncryptionKey, IncludeFiles: !*noFiles,
+		Areas: cliAreas(cfg), Skip: backup.ProtectedPaths(cfg.Backup.Dir, cfgPath, cfg.Database), Path: *out, Warn: lo.Warn,
+	}
+	spaceDir := cfg.Backup.Dir
+	if *out != "" {
+		spaceDir = filepath.Dir(*out)
+	}
+	if err := backup.EnsureSpace(spaceDir, backup.EstimateSize(db, opts.Areas, opts.IncludeFiles, opts.Skip)); err != nil {
+		fatal("Cannot back up", "error", err)
+	}
+	info, err := backup.Create(context.Background(), db, cfg.Backup.Dir, opts, printProgress)
 	fmt.Println()
 	if err != nil {
 		fatal("Backup failed", "error", err)
@@ -103,9 +134,10 @@ func runRestoreCmd(args []string) {
 	if _, err := config.Locate(*configPath); errors.Is(err, config.ErrNotFound) {
 		lo.Fatal("No config file found; run whatomate server first to set one up, then restore")
 	}
-	cfg, _ := loadConfig(*configPath, lo)
-	if claimed, pid, err := backup.ClaimServerLock(cfg.Backup.Dir); !claimed && err == nil {
-		lo.Fatal("whatomate server is running; stop it first or restore from Settings → Backup & Restore", "pid", pid)
+	cfg, cfgPath := loadConfig(*configPath, lo)
+	if claimed, other, err := backup.ClaimCLILock(cfg.Backup.Dir); !claimed && err == nil {
+		lo.Fatal(fmt.Sprintf("A whatomate server seems to be running; stop it first or restore from Settings → Backup & Restore. If no server is running, delete %s and try again",
+			filepath.Join(cfg.Backup.Dir, "server.lock")), "pid", other.PID, "host", other.Host)
 	}
 	lock := cliLock{dir: cfg.Backup.Dir, lo: lo}
 	defer lock.release()
@@ -139,9 +171,17 @@ func runRestoreCmd(args []string) {
 		}
 	}
 	areas := cliAreas(cfg)
+	skip := backup.ProtectedPaths(cfg.Backup.Dir, cfgPath, cfg.Database)
+	need := backup.EstimateSize(db, areas, m.IncludeFiles, skip)
+	for _, st := range m.Files {
+		need += st.Bytes
+	}
+	if err := backup.EnsureSpace(cfg.Backup.Dir, need); err != nil {
+		fatal("Cannot restore; nothing was changed", "error", err)
+	}
 	safety, err := backup.Create(context.Background(), db, cfg.Backup.Dir, backup.Options{
 		Kind: backup.KindPreRestore, AppVersion: Version, EncryptionKey: cfg.App.EncryptionKey,
-		IncludeFiles: m.IncludeFiles, Areas: areas, Skip: []string{cfg.Backup.Dir},
+		IncludeFiles: m.IncludeFiles, Areas: areas, Skip: skip, Warn: lo.Warn,
 	}, printProgress)
 	fmt.Println()
 	if err != nil {
@@ -149,9 +189,12 @@ func runRestoreCmd(args []string) {
 	}
 	fmt.Printf("Safety backup: %s\n", safety.Name)
 	err = backup.Restore(context.Background(), db, file, backup.RestoreOptions{
-		EncryptionKey: cfg.App.EncryptionKey, Areas: areas, Skip: []string{cfg.Backup.Dir},
+		EncryptionKey: cfg.App.EncryptionKey, Areas: areas, Skip: skip,
 	}, printProgress)
 	fmt.Println()
+	if err == nil || errors.Is(err, backup.ErrFiles) {
+		clearRestoreState(cfg, db, lo)
+	}
 	if errors.Is(err, backup.ErrFiles) {
 		fatal("Restore incomplete", "error", err, "undo_with", safety.Name)
 	}

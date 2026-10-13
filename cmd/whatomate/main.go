@@ -158,10 +158,16 @@ func runServer(args []string) {
 		lo.Warn("Could not write the server lock in the backup folder", "dir", cfg.Backup.Dir, "error", err)
 		backup.CleanTemp(cfg.Backup.Dir)
 	case !claimed:
-		lo.Warn("Another whatomate process is using this backup folder; leaving its lock and temp files alone", "pid", other)
+		lo.Warn("Another whatomate process is using this backup folder; leaving its lock and temp files alone", "pid", other.PID)
 	default:
+		if other.FromOtherHost() {
+			lo.Warn("Took over the backup folder lock written on another host; make sure no other whatomate server uses this folder", "host", other.Host, "pid", other.PID)
+		}
 		backup.CleanTemp(cfg.Backup.Dir)
 		defer backup.RemoveServerLock(cfg.Backup.Dir)
+		for _, dir := range backup.LeftoverWorkDirs(cliAreas(cfg)) {
+			lo.Warn("Folder left by an interrupted restore; check it and delete it when it is no longer needed", "path", dir)
+		}
 	}
 	gate := &maintenance.Gate{}
 
@@ -365,11 +371,10 @@ func runServer(args []string) {
 		MaxRequestBodySize: 15 * 1024 * 1024,
 		Name:               "Whatomate",
 		HeaderReceived: func(h *fasthttp.RequestHeader) fasthttp.RequestConfig {
-			method, uri := string(h.Method()), string(h.RequestURI())
 			switch {
-			case handlers.IsBackupDownload(method, uri):
+			case handlers.IsBackupDownload(string(h.Method()), string(h.RequestURI())):
 				return fasthttp.RequestConfig{WriteTimeout: 6 * time.Hour}
-			case handlers.IsBackupUploadChunk(method, uri):
+			case handlers.LongUploadRead(h):
 				return fasthttp.RequestConfig{ReadTimeout: 5 * time.Minute}
 			}
 			return fasthttp.RequestConfig{}
@@ -476,6 +481,12 @@ func runServer(args []string) {
 		}
 		lo.Info("Workers stopped")
 	}
+
+	// The server keeps answering /api/maintenance while a restore finishes.
+	if kind, running := app.RunningBackupJob(); running {
+		lo.Info(fmt.Sprintf("Waiting for the running %s to finish", kind))
+	}
+	app.WaitForBackgroundTasks()
 
 	// Then stop server
 	lo.Info("Stopping server...")

@@ -79,7 +79,7 @@ func (a *App) StartBackupUpload(r *fastglue.Request) error {
 	if err := os.MkdirAll(a.Config.Backup.Dir, 0o750); err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
 	}
-	if err := backup.EnsureSpace(a.Config.Backup.Dir, req.Size); err != nil {
+	if err := ensureSpace(a.Config.Backup.Dir, req.Size); err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, err.Error(), nil, "")
 	}
 	id := uuid.NewString()

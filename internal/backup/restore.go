@@ -24,8 +24,8 @@ type RestoreOptions struct {
 	// Areas are the live file folders; an area is restored only when the
 	// backup holds an area of the same name.
 	Areas []FileArea
-	// Skip lists folders a restore leaves alone, such as the backup folder.
-	// One inside an area must be directly inside it.
+	// Skip lists folders and files a restore leaves alone, such as the backup
+	// folder (see ProtectedPaths). One inside an area must be directly inside it.
 	Skip []string
 }
 
