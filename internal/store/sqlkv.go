@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/models"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -103,9 +104,14 @@ func (s *SQLKV) GetDel(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (s *SQLKV) DelPrefix(ctx context.Context, prefix string) error {
-	return s.db.WithContext(ctx).
-		Where("kv_key LIKE ? ESCAPE '!'", escapeLike(prefix)+"%").
-		Delete(&models.KVEntry{}).Error
+	q := s.db.WithContext(ctx)
+	if s.db.Name() == config.DriverSQLite {
+		// SQLite's LIKE ignores ASCII case; GLOB does not.
+		q = q.Where("kv_key GLOB ?", escapeGlob(prefix)+"*")
+	} else {
+		q = q.Where("kv_key LIKE ? ESCAPE '!'", escapeLike(prefix)+"%")
+	}
+	return q.Delete(&models.KVEntry{}).Error
 }
 
 func (s *SQLKV) Ping(ctx context.Context) error {
@@ -119,4 +125,9 @@ func (s *SQLKV) Ping(ctx context.Context) error {
 // escapeLike escapes LIKE wildcards using '!' as the escape character.
 func escapeLike(s string) string {
 	return strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(s)
+}
+
+// escapeGlob escapes SQLite GLOB wildcards by wrapping each in a bracket set.
+func escapeGlob(s string) string {
+	return strings.NewReplacer("*", "[*]", "?", "[?]", "[", "[[]").Replace(s)
 }

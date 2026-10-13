@@ -112,6 +112,33 @@ func RunKV(t *testing.T, newKV func(t *testing.T) store.KV) {
 		assert.NoError(t, err)
 		_, err = kv.Get(ctx, "p:a%:1")
 		assert.ErrorIs(t, err, store.ErrNotFound)
+
+		require.NoError(t, kv.Set(ctx, "g:[ab]?:1", []byte("x"), time.Hour))
+		require.NoError(t, kv.Set(ctx, "g:a1:1", []byte("x"), time.Hour))
+		require.NoError(t, kv.DelPrefix(ctx, "g:[ab]?"))
+		_, err = kv.Get(ctx, "g:a1:1")
+		assert.NoError(t, err)
+		_, err = kv.Get(ctx, "g:[ab]?:1")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("KeysCaseSensitive", func(t *testing.T) {
+		kv := newKV(t)
+		require.NoError(t, kv.Set(ctx, "Abc", []byte("1"), time.Hour))
+		require.NoError(t, kv.Set(ctx, "abc", []byte("2"), time.Hour))
+		v, err := kv.Get(ctx, "Abc")
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(v))
+		v, err = kv.Get(ctx, "abc")
+		require.NoError(t, err)
+		assert.Equal(t, "2", string(v))
+
+		require.NoError(t, kv.DelPrefix(ctx, "Ab"))
+		_, err = kv.Get(ctx, "Abc")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		v, err = kv.Get(ctx, "abc")
+		require.NoError(t, err)
+		assert.Equal(t, "2", string(v))
 	})
 
 	t.Run("Ping", func(t *testing.T) {
@@ -199,6 +226,15 @@ func RunScheduler(t *testing.T, newScheduler func(t *testing.T) store.Scheduler)
 		got, err := s.PopDue(ctx, "set", now, 2)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"i0", "i1"}, got)
+	})
+
+	t.Run("ItemsCaseSensitive", func(t *testing.T) {
+		s := newScheduler(t)
+		require.NoError(t, s.Schedule(ctx, "set", "X", now.Add(-time.Minute)))
+		require.NoError(t, s.Schedule(ctx, "set", "x", now.Add(-time.Minute)))
+		got, err := s.PopDue(ctx, "set", now, 50)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"X", "x"}, got)
 	})
 
 	t.Run("ExactlyOnceUnderConcurrency", func(t *testing.T) {

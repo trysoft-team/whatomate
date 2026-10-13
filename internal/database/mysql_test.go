@@ -126,6 +126,15 @@ func TestMySQLColumnSuffixes(t *testing.T) {
 	d := portableDialector{Dialector: mysql.New(mysql.Config{}), types: mysqlTypes, columnSuffixes: mysqlColumnSuffixes}
 	assert.Equal(t, "varchar(1400) CHARACTER SET ascii COLLATE ascii_bin", d.DataTypeOf(s.LookUpField("CredentialID")))
 	assert.Equal(t, "varchar(255)", d.DataTypeOf(s.LookUpField("RPID")))
+
+	s, err = schema.Parse(&models.KVEntry{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(t, err)
+	assert.Equal(t, "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", d.DataTypeOf(s.LookUpField("Key")))
+
+	s, err = schema.Parse(&models.ScheduledItem{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(t, err)
+	assert.Equal(t, "varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", d.DataTypeOf(s.LookUpField("SetName")))
+	assert.Equal(t, "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", d.DataTypeOf(s.LookUpField("Item")))
 }
 
 func TestMySQLStringLiteral(t *testing.T) {
