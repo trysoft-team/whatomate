@@ -21,6 +21,7 @@ func TestNew_EmbeddedWhenHostEmpty(t *testing.T) {
 	assert.Nil(t, s.Redis)
 	assert.IsType(t, &store.Memory{}, s.Cache)
 	assert.IsType(t, &store.SQLKV{}, s.State)
+	assert.IsType(t, &store.Memory{}, s.Counter)
 	assert.IsType(t, &store.SQLScheduler{}, s.Scheduler)
 	assert.IsType(t, &store.MemoryBroker{}, s.Broker)
 }
@@ -39,7 +40,9 @@ func TestNew_RedisWhenHostSet(t *testing.T) {
 	defer s.Close()
 	assert.False(t, s.Embedded())
 	assert.NotNil(t, s.Redis)
-	assert.IsType(t, &store.Redis{}, s.Cache)
+	for _, v := range []any{s.Cache, s.State, s.Counter, s.Scheduler, s.Broker} {
+		assert.IsType(t, &store.Redis{}, v)
+	}
 }
 
 func TestNew_RedisUnreachableFails(t *testing.T) {
