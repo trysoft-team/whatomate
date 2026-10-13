@@ -61,16 +61,16 @@ const counts = computed(() => ({
 <template>
   <div class="flex flex-1 flex-col">
     <div class="flex-1 space-y-8 px-6 pb-8 sm:px-10">
-      <section class="grid gap-6 lg:grid-cols-[180px_1fr]">
-        <div class="space-y-2">
+      <section class="grid grid-cols-1 gap-6">
+        <div class="max-w-xs space-y-2">
           <Label for="setup-port" class="text-white/70 light:text-gray-700">{{ t('setup.checks.port') }}</Label>
           <Input id="setup-port" v-model.number="port" type="number" min="1" max="65535" class="font-mono" data-testid="setup-port" />
           <p class="text-xs leading-relaxed text-white/40 light:text-gray-500">{{ t('setup.checks.portHint') }}</p>
         </div>
 
-        <div class="space-y-2">
+        <div class="min-w-0 space-y-2">
           <Label class="text-white/70 light:text-gray-700">{{ t('setup.checks.location') }}</Label>
-          <div class="grid gap-2" role="radiogroup">
+          <div class="grid grid-cols-1 gap-2" role="radiogroup">
             <label
               v-for="c in candidates"
               :key="c.path"
@@ -90,7 +90,7 @@ const counts = computed(() => ({
                 <component :is="scopeIcon[c.scope]" class="h-4 w-4" />
               </span>
               <span class="min-w-0 flex-1">
-                <span class="block truncate font-mono text-xs text-white/85 light:text-gray-800" :title="c.path">{{ c.path }}</span>
+                <span class="block break-all font-mono text-xs leading-relaxed text-white/85 light:text-gray-800">{{ c.path }}</span>
                 <span class="mt-1 flex flex-wrap items-center gap-1.5">
                   <span class="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white/55 light:bg-gray-100 light:text-gray-600">
                     {{ t(`setup.checks.scope.${c.scope}`) }}
@@ -108,7 +108,7 @@ const counts = computed(() => ({
               </span>
             </label>
           </div>
-          <p v-if="dataDir" class="text-xs leading-relaxed text-white/40 light:text-gray-500">{{ t('setup.checks.locationHint', { dir: dataDir }) }}</p>
+          <p v-if="dataDir" class="break-words text-xs leading-relaxed text-white/40 light:text-gray-500">{{ t('setup.checks.locationHint', { dir: dataDir }) }}</p>
         </div>
       </section>
 

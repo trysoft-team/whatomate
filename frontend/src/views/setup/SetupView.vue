@@ -158,7 +158,7 @@ async function finish() {
       <div class="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:56px_56px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)] light:bg-[linear-gradient(to_right,rgba(0,0,0,0.04)_1px,transparent_1px),linear-gradient(to_bottom,rgba(0,0,0,0.04)_1px,transparent_1px)]" />
     </div>
 
-    <div class="relative w-full max-w-5xl overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0f0f11]/85 shadow-2xl shadow-black/50 backdrop-blur-xl md:grid md:grid-cols-[288px_1fr] light:border-gray-200 light:bg-white/90 light:shadow-gray-300/40">
+    <div class="relative w-full max-w-5xl overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0f0f11]/85 shadow-2xl shadow-black/50 backdrop-blur-xl md:grid md:grid-cols-[288px_minmax(0,1fr)] light:border-gray-200 light:bg-white/90 light:shadow-gray-300/40">
       <aside class="relative flex flex-col border-b border-white/[0.06] bg-gradient-to-b from-emerald-500/[0.08] via-transparent to-transparent p-6 md:border-b-0 md:border-r md:p-8 light:border-gray-200 light:from-emerald-50">
         <div class="flex items-center gap-3">
           <div class="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-400 to-green-600 flex items-center justify-center shadow-lg shadow-emerald-500/25">
@@ -221,7 +221,7 @@ async function finish() {
         </p>
       </aside>
 
-      <main class="flex min-h-[600px] flex-col">
+      <main class="flex min-h-[600px] min-w-0 flex-col">
         <div v-if="loadFailed" class="flex flex-1 flex-col items-center justify-center gap-4 p-10 text-center" data-testid="setup-load-error">
           <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-red-500/10 ring-1 ring-red-500/30">
             <AlertTriangle class="h-6 w-6 text-red-400" />
