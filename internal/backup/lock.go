@@ -25,6 +25,18 @@ func RemoveServerLock(dir string) {
 	}
 }
 
+// ClaimServerLock writes the lock unless another live process holds it, in
+// which case it returns that process's PID and leaves the lock alone.
+func ClaimServerLock(dir string) (claimed bool, otherPID int, err error) {
+	if pid, running := ServerRunning(dir); running {
+		return false, pid, nil
+	}
+	if err := WriteServerLock(dir); err != nil {
+		return false, 0, err
+	}
+	return true, 0, nil
+}
+
 // ServerRunning reports whether another live process holds the lock.
 func ServerRunning(dir string) (int, bool) {
 	pid, ok := readLock(dir)

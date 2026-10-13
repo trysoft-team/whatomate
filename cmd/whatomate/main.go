@@ -153,11 +153,16 @@ func runServer(args []string) {
 		handoff = runSetup(*configPath, lo)
 	}
 	cfg, cfgPath := loadConfig(*configPath, lo)
-	backup.CleanTemp(cfg.Backup.Dir)
-	if err := backup.WriteServerLock(cfg.Backup.Dir); err != nil {
+	switch claimed, other, err := backup.ClaimServerLock(cfg.Backup.Dir); {
+	case err != nil:
 		lo.Warn("Could not write the server lock in the backup folder", "dir", cfg.Backup.Dir, "error", err)
+		backup.CleanTemp(cfg.Backup.Dir)
+	case !claimed:
+		lo.Warn("Another whatomate process is using this backup folder; leaving its lock and temp files alone", "pid", other)
+	default:
+		backup.CleanTemp(cfg.Backup.Dir)
+		defer backup.RemoveServerLock(cfg.Backup.Dir)
 	}
-	defer backup.RemoveServerLock(cfg.Backup.Dir)
 	gate := &maintenance.Gate{}
 
 	// Validate JWT secret
@@ -360,8 +365,12 @@ func runServer(args []string) {
 		MaxRequestBodySize: 15 * 1024 * 1024,
 		Name:               "Whatomate",
 		HeaderReceived: func(h *fasthttp.RequestHeader) fasthttp.RequestConfig {
-			if handlers.IsBackupDownload(string(h.Method()), string(h.RequestURI())) {
+			method, uri := string(h.Method()), string(h.RequestURI())
+			switch {
+			case handlers.IsBackupDownload(method, uri):
 				return fasthttp.RequestConfig{WriteTimeout: 6 * time.Hour}
+			case handlers.IsBackupUploadChunk(method, uri):
+				return fasthttp.RequestConfig{ReadTimeout: 5 * time.Minute}
 			}
 			return fasthttp.RequestConfig{}
 		},

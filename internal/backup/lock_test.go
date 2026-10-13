@@ -33,4 +33,34 @@ func TestServerLock(t *testing.T) {
 	require.NoError(t, WriteServerLock(dir))
 	RemoveServerLock(dir)
 	assert.NoFileExists(t, filepath.Join(dir, lockName))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, lockName), []byte("999999999\n"), 0o640))
+	RemoveServerLock(dir)
+	assert.FileExists(t, filepath.Join(dir, lockName), "a lock written by another PID stays")
+}
+
+func TestClaimServerLock(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "backups")
+	claimed, other, err := ClaimServerLock(dir)
+	require.NoError(t, err)
+	assert.True(t, claimed, "a free folder is claimed")
+	assert.Zero(t, other)
+	pid, ok := readLock(dir)
+	assert.True(t, ok)
+	assert.Equal(t, os.Getpid(), pid)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, lockName), []byte("999999999\n"), 0o640))
+	claimed, _, err = ClaimServerLock(dir)
+	require.NoError(t, err)
+	assert.True(t, claimed, "a stale lock is taken over")
+
+	if runtime.GOOS != "windows" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, lockName), []byte("1\n"), 0o640))
+		claimed, other, err = ClaimServerLock(dir)
+		require.NoError(t, err)
+		assert.False(t, claimed, "a live process keeps its lock")
+		assert.Equal(t, 1, other)
+		pid, _ = readLock(dir)
+		assert.Equal(t, 1, pid, "the other process's lock is unchanged")
+	}
 }

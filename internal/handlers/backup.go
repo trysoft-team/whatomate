@@ -166,6 +166,13 @@ func IsBackupDownload(method, uri string) bool {
 	return method == fasthttp.MethodGet && strings.Contains(path, "/api/admin/backups/") && strings.HasSuffix(path, "/download")
 }
 
+// IsBackupUploadChunk reports whether a request sends a backup upload chunk;
+// those get a long read timeout.
+func IsBackupUploadChunk(method, uri string) bool {
+	path, _, _ := strings.Cut(uri, "?")
+	return method == fasthttp.MethodPut && strings.Contains(path, "/api/admin/backup-uploads/")
+}
+
 // DownloadBackup streams a backup file.
 func (a *App) DownloadBackup(r *fastglue.Request) error {
 	if _, _, err := a.requireSuperAdmin(r); err != nil {

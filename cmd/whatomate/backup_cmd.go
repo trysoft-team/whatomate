@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/trysoft/whatomate/internal/backup"
@@ -26,6 +27,21 @@ func cliAreas(cfg *config.Config) []backup.FileArea {
 		media = "./media"
 	}
 	return backup.Areas(media, cfg.Calling.AudioDir)
+}
+
+// cliLock is the server lock a command holds so a server starting meanwhile
+// leaves its temp files alone. release only removes a lock this process wrote.
+type cliLock struct {
+	dir string
+	lo  logf.Logger
+}
+
+func (l cliLock) release() { backup.RemoveServerLock(l.dir) }
+
+// fatal releases the lock first, since lo.Fatal skips deferred calls.
+func (l cliLock) fatal(msg string, kv ...any) {
+	l.release()
+	l.lo.Fatal(msg, kv...)
 }
 
 func printProgress(p backup.Progress) {
@@ -49,9 +65,13 @@ func runBackupCmd(args []string) {
 		lo.Fatal("No config file found; run whatomate server first to set one up")
 	}
 	cfg, _ := loadConfig(*configPath, lo)
+	_, _, _ = backup.ClaimServerLock(cfg.Backup.Dir)
+	lock := cliLock{dir: cfg.Backup.Dir, lo: lo}
+	defer lock.release()
+	fatal := lock.fatal
 	db, err := database.Open(&cfg.Database, false)
 	if err != nil {
-		lo.Fatal("Failed to connect to database", "error", err)
+		fatal("Failed to connect to database", "error", err)
 	}
 	info, err := backup.Create(context.Background(), db, cfg.Backup.Dir, backup.Options{
 		Kind: backup.KindCLI, AppVersion: Version, EncryptionKey: cfg.App.EncryptionKey,
@@ -59,11 +79,11 @@ func runBackupCmd(args []string) {
 	}, printProgress)
 	fmt.Println()
 	if err != nil {
-		lo.Fatal("Backup failed", "error", err)
+		fatal("Backup failed", "error", err)
 	}
 	where := *out
 	if where == "" {
-		where = cfg.Backup.Dir + string(os.PathSeparator) + info.Name
+		where = filepath.Join(cfg.Backup.Dir, info.Name)
 	}
 	fmt.Printf("Backup written: %s (%d MB)\n", where, info.Size>>20)
 }
@@ -84,16 +104,19 @@ func runRestoreCmd(args []string) {
 		lo.Fatal("No config file found; run whatomate server first to set one up, then restore")
 	}
 	cfg, _ := loadConfig(*configPath, lo)
-	if pid, running := backup.ServerRunning(cfg.Backup.Dir); running {
+	if claimed, pid, err := backup.ClaimServerLock(cfg.Backup.Dir); !claimed && err == nil {
 		lo.Fatal("whatomate server is running; stop it first or restore from Settings → Backup & Restore", "pid", pid)
 	}
+	lock := cliLock{dir: cfg.Backup.Dir, lo: lo}
+	defer lock.release()
+	fatal := lock.fatal
 	db, err := database.Open(&cfg.Database, false)
 	if err != nil {
-		lo.Fatal("Failed to connect to database", "error", err)
+		fatal("Failed to connect to database", "error", err)
 	}
 	sum, err := backup.Inspect(file, db, cfg.App.EncryptionKey)
 	if err != nil {
-		lo.Fatal("Cannot restore this file", "error", err)
+		fatal("Cannot restore this file", "error", err)
 	}
 	m := sum.Manifest
 	var rows int64
@@ -111,6 +134,7 @@ func runRestoreCmd(args []string) {
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if strings.TrimSpace(line) != "RESTORE" {
 			fmt.Println("Cancelled.")
+			lock.release()
 			os.Exit(1)
 		}
 	}
@@ -121,7 +145,7 @@ func runRestoreCmd(args []string) {
 	}, printProgress)
 	fmt.Println()
 	if err != nil {
-		lo.Fatal("Safety backup failed; nothing was changed", "error", err)
+		fatal("Safety backup failed; nothing was changed", "error", err)
 	}
 	fmt.Printf("Safety backup: %s\n", safety.Name)
 	err = backup.Restore(context.Background(), db, file, backup.RestoreOptions{
@@ -129,10 +153,10 @@ func runRestoreCmd(args []string) {
 	}, printProgress)
 	fmt.Println()
 	if errors.Is(err, backup.ErrFiles) {
-		lo.Fatal("Restore incomplete", "error", err, "undo_with", safety.Name)
+		fatal("Restore incomplete", "error", err, "undo_with", safety.Name)
 	}
 	if err != nil {
-		lo.Fatal("Restore failed; nothing was changed", "error", err)
+		fatal("Restore failed; nothing was changed", "error", err)
 	}
 	fmt.Println("Restore finished. Start whatomate and sign in with an account from the backup.")
 }

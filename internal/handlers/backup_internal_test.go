@@ -65,3 +65,11 @@ func TestIsBackupDownload(t *testing.T) {
 	assert.False(t, IsBackupDownload("POST", "/api/admin/backups/a.zip/download"))
 	assert.False(t, IsBackupDownload("GET", "/api/admin/backups"))
 }
+
+func TestIsBackupUploadChunk(t *testing.T) {
+	assert.True(t, IsBackupUploadChunk("PUT", "/api/admin/backup-uploads/abc?offset=0"))
+	assert.True(t, IsBackupUploadChunk("PUT", "/base/api/admin/backup-uploads/abc"))
+	assert.False(t, IsBackupUploadChunk("POST", "/api/admin/backup-uploads/abc/finish"))
+	assert.False(t, IsBackupUploadChunk("PUT", "/api/admin/backup-uploads"))
+	assert.False(t, IsBackupUploadChunk("PUT", "/api/admin/server-settings?x=/api/admin/backup-uploads/a"))
+}
