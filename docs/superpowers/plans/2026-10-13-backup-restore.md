@@ -2099,7 +2099,7 @@ func TestRestore_RoundTripEveryTable(t *testing.T) {
 	dst := newSQLiteDB(t)
 	stale := models.Organization{Name: "stale", Slug: "stale-" + uuid.NewString()[:8]}
 	require.NoError(t, dst.Create(&stale).Error)
-	require.NoError(t, dst.Exec("INSERT INTO kv_entries (kv_key, value) VALUES ('x', 'y')").Error)
+	require.NoError(t, dst.Exec("INSERT INTO kv_entries (kv_key, kv_value) VALUES ('x', 'y')").Error)
 
 	var phases []string
 	require.NoError(t, Restore(context.Background(), dst, filepath.Join(dir, info.Name), RestoreOptions{}, func(p Progress) { phases = append(phases, p.Phase) }))
