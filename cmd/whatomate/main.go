@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/trysoft/whatomate/internal/assignment"
+	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/frontend"
 	"github.com/trysoft/whatomate/internal/handlers"
+	"github.com/trysoft/whatomate/internal/maintenance"
 	"github.com/trysoft/whatomate/internal/middleware"
 	"github.com/trysoft/whatomate/internal/queue"
 	"github.com/trysoft/whatomate/internal/setup"
@@ -52,6 +54,10 @@ func main() {
 		runWorker(args[1:])
 	case "config":
 		runConfig(args[1:])
+	case "backup":
+		runBackupCmd(args[1:])
+	case "restore":
+		runRestoreCmd(args[1:])
 	case "version":
 		fmt.Printf("Whatomate %s (built %s)\n", Version, BuildTime)
 	case "help", "-h", "--help":
@@ -73,6 +79,8 @@ Commands:
   server    Start the API server (with optional embedded workers)
 	worker    Start background workers only (no API server)
 	config    "config path" shows which config file would be used
+  backup    Back up the database (and files) into the backup folder
+  restore   Restore a backup into the configured database
 	version   Show version information
   help      Show this help message
 
@@ -87,6 +95,15 @@ Server Options:
 Worker Options:
   -config string    Path to config file (default: search, see below)
   -workers int      Number of workers to run (default 1)
+
+Backup Options:
+  -config string    Path to config file
+  -no-files         Leave out uploaded media and audio
+  -o string         Write to this file instead of the backup folder
+
+Restore Options:
+  -config string    Path to config file
+  -yes              Do not ask to type RESTORE
 
 Config file search (first found wins):
   -config, then $WHATOMATE_CONFIG, then (the current folder is not searched)
@@ -136,6 +153,12 @@ func runServer(args []string) {
 		handoff = runSetup(*configPath, lo)
 	}
 	cfg, cfgPath := loadConfig(*configPath, lo)
+	backup.CleanTemp(cfg.Backup.Dir)
+	if err := backup.WriteServerLock(cfg.Backup.Dir); err != nil {
+		lo.Warn("Could not write the server lock in the backup folder", "dir", cfg.Backup.Dir, "error", err)
+	}
+	defer backup.RemoveServerLock(cfg.Backup.Dir)
+	gate := &maintenance.Gate{}
 
 	// Validate JWT secret
 	if cfg.App.Environment == "production" && len(cfg.JWT.Secret) < 32 {
@@ -241,18 +264,20 @@ func runServer(args []string) {
 	}
 
 	app := &handlers.App{
-		Config:     cfg,
-		ConfigPath: cfgPath,
-		DB:         db,
-		Cache:      stores.Cache,
-		State:      stores.State,
-		Scheduler:  stores.Scheduler,
-		Broker:     stores.Broker,
-		Log:        lo,
-		WhatsApp:   waClient,
-		WSHub:      wsHub,
-		Queue:      jobQueue,
-		HTTPClient: httpClient,
+		Config:      cfg,
+		ConfigPath:  cfgPath,
+		DB:          db,
+		Cache:       stores.Cache,
+		State:       stores.State,
+		Scheduler:   stores.Scheduler,
+		Broker:      stores.Broker,
+		Log:         lo,
+		WhatsApp:    waClient,
+		WSHub:       wsHub,
+		Queue:       jobQueue,
+		HTTPClient:  httpClient,
+		Maintenance: gate,
+		Version:     Version,
 	}
 
 	// Initialize recording storage (S3 when configured, otherwise local_path)
@@ -334,6 +359,12 @@ func runServer(args []string) {
 		WriteTimeout:       time.Duration(cfg.Server.WriteTimeout) * time.Second,
 		MaxRequestBodySize: 15 * 1024 * 1024,
 		Name:               "Whatomate",
+		HeaderReceived: func(h *fasthttp.RequestHeader) fasthttp.RequestConfig {
+			if handlers.IsBackupDownload(string(h.Method()), string(h.RequestURI())) {
+				return fasthttp.RequestConfig{WriteTimeout: 6 * time.Hour}
+			}
+			return fasthttp.RequestConfig{}
+		},
 	}
 
 	// Start server in goroutine
@@ -385,6 +416,7 @@ func runServer(args []string) {
 				lo.Fatal("Failed to create worker", "error", err, "worker_num", i+1)
 			}
 			w := worker.New(cfg, db, consumer, stores.Broker, lo)
+			w.Gate = gate
 			workers = append(workers, w)
 
 			workerNum := i + 1
@@ -724,6 +756,8 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// WebSocket route (auth via message-based flow after upgrade)
 	g.GET("/ws", app.WebSocketHandler)
 
+	g.Before(app.MaintenanceGuard)
+
 	// For protected routes, we'll use a path-based middleware approach
 	// Apply auth middleware globally but check path in the middleware
 	g.Before(func(r *fastglue.Request) *fastglue.Request {
@@ -733,7 +767,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		}
 		path := string(r.RequestCtx.Path())
 		// Skip auth for public routes
-		if path == "/health" || path == "/ready" || path == "/api/setup/status" ||
+		if path == "/health" || path == "/ready" || path == "/api/setup/status" || path == "/api/maintenance" ||
 			path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" ||
 			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" ||
 			path == "/api/auth/passkey/begin" || path == "/api/auth/passkey/finish" {
@@ -1059,6 +1093,18 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.PUT("/api/admin/meta-app", app.UpdateSharedMetaApp)
 	g.GET("/api/admin/server-settings", app.GetServerSettings)
 	g.PUT("/api/admin/server-settings", app.UpdateServerSettings)
+	g.GET("/api/maintenance", app.GetMaintenance)
+	g.GET("/api/admin/backups", app.ListBackups)
+	g.POST("/api/admin/backups", app.CreateBackup)
+	g.GET("/api/admin/backup-job", app.GetBackupJob)
+	g.GET("/api/admin/backups/{name}/download", app.DownloadBackup)
+	g.GET("/api/admin/backups/{name}/inspect", app.InspectBackup)
+	g.POST("/api/admin/backups/{name}/restore", app.RestoreBackup)
+	g.DELETE("/api/admin/backups/{name}", app.DeleteBackup)
+	g.POST("/api/admin/backup-uploads", app.StartBackupUpload)
+	g.PUT("/api/admin/backup-uploads/{id}", app.PutBackupUploadChunk)
+	g.POST("/api/admin/backup-uploads/{id}/finish", app.FinishBackupUpload)
+	g.DELETE("/api/admin/backup-uploads/{id}", app.CancelBackupUpload)
 
 	// Organizations
 	g.GET("/api/organizations", app.ListOrganizations)
