@@ -1,0 +1,252 @@
+package setup
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
+	"github.com/trysoft/whatomate/internal/database"
+	"github.com/trysoft/whatomate/internal/models"
+	"github.com/valyala/fasthttp"
+	"github.com/zerodha/logf"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+type env struct {
+	s          *server
+	dir        string
+	configPath string
+	dbPath     string
+}
+
+func newEnv(t *testing.T) env {
+	t.Helper()
+	dir := t.TempDir()
+	userDir := filepath.Join(dir, "user")
+	o := Options{
+		Version: "test",
+		Log:     logf.New(logf.Opts{}),
+		Target: config.SetupTarget{
+			User:   []config.Source{{Path: filepath.Join(userDir, "config.toml"), BaseDir: userDir}},
+			System: []config.Source{{Path: filepath.Join(dir, "missing-root", "etc", "config.toml"), BaseDir: filepath.Join(dir, "missing-root", "var")}},
+		},
+		Checker: &Checker{PortFree: func(int) bool { return true }},
+	}
+	// The system location is "not writable" for this test: its root is a file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-root"), []byte("x"), 0o600))
+	return env{s: newServer(o, 4747), dir: dir, configPath: filepath.Join(userDir, "config.toml"), dbPath: filepath.Join(userDir, "whatomate.db")}
+}
+
+func call(t *testing.T, s *server, method, path string, body any) (int, map[string]any) {
+	t.Helper()
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(method)
+	ctx.Request.SetRequestURI(path)
+	ctx.Request.Header.SetHost("localhost:4747")
+	if body != nil {
+		b, err := json.Marshal(body)
+		require.NoError(t, err)
+		ctx.Request.SetBody(b)
+		ctx.Request.Header.SetContentType("application/json")
+	}
+	s.handle(&ctx)
+	var out map[string]any
+	_ = json.Unmarshal(ctx.Response.Body(), &out)
+	return ctx.Response.StatusCode(), out
+}
+
+func data(out map[string]any) map[string]any {
+	d, _ := out["data"].(map[string]any)
+	return d
+}
+
+func completeBody(e env) map[string]any {
+	return map[string]any{
+		"config_path":  e.configPath,
+		"port":         4747,
+		"database":     map[string]any{"driver": "sqlite", "path": e.dbPath},
+		"organization": "Acme Ltd",
+		"admin":        map[string]any{"full_name": "Ana Owner", "email": "ana@example.com", "password": "correct-horse-1"},
+	}
+}
+
+func openSQLite(t *testing.T, path string) *gorm.DB {
+	t.Helper()
+	db, err := database.Open(&config.DatabaseConfig{Driver: config.DriverSQLite, Path: path}, false)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	return db
+}
+
+func TestStatus_BeforeSetup(t *testing.T) {
+	e := newEnv(t)
+	code, out := call(t, e.s, "GET", "/api/setup/status", nil)
+	require.Equal(t, 200, code)
+	d := data(out)
+	assert.Equal(t, true, d["needed"])
+	assert.Equal(t, float64(4747), d["listen_port"])
+	assert.Equal(t, e.configPath, d["config_path"], "system not writable, so the user folder is chosen")
+	assert.Len(t, d["candidates"], 2)
+}
+
+func TestChecks_RejectsUnknownLocation(t *testing.T) {
+	e := newEnv(t)
+	code, _ := call(t, e.s, "GET", "/api/setup/checks?port=4747&config_path=/etc/passwd", nil)
+	assert.Equal(t, 400, code)
+}
+
+func TestDatabaseTest_SQLite(t *testing.T) {
+	e := newEnv(t)
+	code, out := call(t, e.s, "POST", "/api/setup/database/test", map[string]any{"driver": "sqlite", "path": e.dbPath})
+	require.Equal(t, 200, code)
+	assert.Equal(t, true, data(out)["ok"])
+	_, err := os.Stat(e.dbPath)
+	assert.True(t, os.IsNotExist(err), "testing must not create the database file")
+
+	code, _ = call(t, e.s, "POST", "/api/setup/database/test", map[string]any{"driver": "sqlite", "path": "relative.db"})
+	assert.Equal(t, 400, code)
+}
+
+func TestComplete_SQLiteWritesConfigAndAdmin(t *testing.T) {
+	e := newEnv(t)
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	require.Equal(t, 200, code, out)
+	assert.Equal(t, "http://localhost:4747", data(out)["url"])
+
+	fi, err := os.Stat(e.configPath)
+	require.NoError(t, err)
+	if os.PathSeparator == '/' {
+		assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+	}
+	cfg, err := config.Load(e.configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "whatomate.db", cfg.Database.Path, "relative to the data folder")
+	assert.Equal(t, 4747, cfg.Server.Port)
+	assert.Equal(t, "development", cfg.App.Environment)
+	assert.Equal(t, "http://localhost:4747", cfg.Server.AllowedOrigins)
+	assert.GreaterOrEqual(t, len(cfg.JWT.Secret), 32)
+	assert.NotEmpty(t, cfg.App.EncryptionKey)
+	raw, _ := os.ReadFile(e.configPath)
+	assert.NotContains(t, string(raw), "correct-horse-1", "the admin password is not stored")
+
+	db := openSQLite(t, e.dbPath)
+	var user models.User
+	require.NoError(t, db.Where("email = ?", "ana@example.com").First(&user).Error)
+	assert.True(t, user.IsSuperAdmin)
+	assert.Equal(t, "Ana Owner", user.FullName)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte("correct-horse-1")))
+	var org models.Organization
+	require.NoError(t, db.First(&org, "id = ?", user.OrganizationID).Error)
+	assert.Equal(t, "Acme Ltd", org.Name)
+
+	select {
+	case f := <-e.s.done:
+		assert.Equal(t, finished{port: 4747, url: "http://localhost:4747"}, f)
+	default:
+		t.Fatal("completion was not signalled")
+	}
+	_, out = call(t, e.s, "GET", "/api/setup/status", nil)
+	assert.Equal(t, false, data(out)["needed"])
+	assert.Equal(t, false, data(out)["ready"])
+	assert.Equal(t, "http://localhost:4747", data(out)["url"])
+
+	code, _ = call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code, "setup completes once")
+}
+
+func TestComplete_RefusesExistingConfig(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(e.configPath), 0o750))
+	require.NoError(t, os.WriteFile(e.configPath, []byte("[app]\n"), 0o600))
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code)
+	assert.Contains(t, out["message"], "already exists")
+	raw, _ := os.ReadFile(e.configPath)
+	assert.Equal(t, "[app]\n", string(raw))
+}
+
+func TestComplete_RejectsDatabaseWithUsers(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(e.dbPath), 0o750))
+	db := openSQLite(t, e.dbPath)
+	require.NoError(t, database.RunMigrationWithProgress(db, &config.DefaultAdminConfig{Email: "other@example.com", Password: "password", FullName: "Other"}))
+
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code)
+	assert.Contains(t, out["message"], "already has users")
+	assert.NoFileExists(t, e.configPath)
+	var n int64
+	require.NoError(t, db.Model(&models.User{}).Where("is_super_admin = ?", true).Count(&n).Error)
+	assert.Equal(t, int64(1), n, "no second super admin")
+}
+
+func TestComplete_RetryAppliesNewAdminDetails(t *testing.T) {
+	e := newEnv(t)
+	// The config folder can't be created: its path is taken by a file.
+	blocker := filepath.Dir(e.configPath)
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	body := completeBody(e)
+	body["database"] = map[string]any{"driver": "sqlite", "path": filepath.Join(e.dir, "db", "whatomate.db")}
+	code, _ := call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 500, code)
+
+	require.NoError(t, os.Remove(blocker))
+	body["organization"] = "Renamed Ltd"
+	body["admin"] = map[string]any{"full_name": "Ana Two", "email": "ana@example.com", "password": "second-password"}
+	code, out := call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 200, code, out)
+
+	db := openSQLite(t, filepath.Join(e.dir, "db", "whatomate.db"))
+	var users []models.User
+	require.NoError(t, db.Find(&users).Error)
+	require.Len(t, users, 1)
+	assert.Equal(t, "Ana Two", users[0].FullName)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(users[0].PasswordHash), []byte("second-password")))
+	var org models.Organization
+	require.NoError(t, db.First(&org, "id = ?", users[0].OrganizationID).Error)
+	assert.Equal(t, "Renamed Ltd", org.Name)
+}
+
+func TestComplete_ValidatesInput(t *testing.T) {
+	e := newEnv(t)
+	mutate := map[string]func(map[string]any){
+		"bad port":        func(b map[string]any) { b["port"] = 0 },
+		"unknown path":    func(b map[string]any) { b["config_path"] = filepath.Join(e.dir, "elsewhere.toml") },
+		"no organization": func(b map[string]any) { b["organization"] = "  " },
+		"bad email": func(b map[string]any) {
+			b["admin"] = map[string]any{"full_name": "A", "email": "nope", "password": "longenough"}
+		},
+		"short password": func(b map[string]any) {
+			b["admin"] = map[string]any{"full_name": "A", "email": "a@b.co", "password": "short"}
+		},
+		"no full name": func(b map[string]any) {
+			b["admin"] = map[string]any{"full_name": "", "email": "a@b.co", "password": "longenough"}
+		},
+		"bad driver":      func(b map[string]any) { b["database"] = map[string]any{"driver": "sqlserver"} },
+		"pg without host": func(b map[string]any) { b["database"] = map[string]any{"driver": "postgres", "user": "u", "name": "n"} },
+	}
+	for name, m := range mutate {
+		body := completeBody(e)
+		m(body)
+		code, _ := call(t, e.s, "POST", "/api/setup/complete", body)
+		assert.Equal(t, 400, code, name)
+	}
+	assert.NoFileExists(t, e.configPath)
+}
+
+func TestUnknownAPIIs404(t *testing.T) {
+	e := newEnv(t)
+	code, _ := call(t, e.s, "GET", "/api/contacts", nil)
+	assert.Equal(t, 404, code)
+	code, _ = call(t, e.s, "GET", "/api/setup/complete", nil)
+	assert.Equal(t, 404, code, "complete is POST only")
+}
