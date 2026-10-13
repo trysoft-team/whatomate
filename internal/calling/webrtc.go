@@ -293,6 +293,15 @@ func (m *Manager) createPeerConnection() (*webrtc.PeerConnection, error) {
 		return nil, fmt.Errorf("failed to set UDP port range: %w", err)
 	}
 
+	// WhatsApp offers a=setup:actpass. As the DTLS client we would send
+	// ClientHello as soon as ICE connects, often before Meta has processed the
+	// pre-accept answer carrying our fingerprint, and Meta then aborts the
+	// handshake with a fatal DecryptError. Answering passive lets the remote
+	// start DTLS once it has our answer.
+	if err := settingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleServer); err != nil {
+		return nil, fmt.Errorf("failed to set answering DTLS role: %w", err)
+	}
+
 	// On cloud/AWS, map private IP to public IP so ICE candidates
 	// advertise the reachable address instead of the internal one.
 	// Skip when relay_only — host candidates are not used in relay mode.
