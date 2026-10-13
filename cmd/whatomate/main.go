@@ -28,6 +28,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 	"github.com/zerodha/logf"
+	"gorm.io/gorm"
 )
 
 var (
@@ -185,6 +186,7 @@ func runServer(args []string) {
 		lo.Info("Using built-in store (no Redis server)")
 	} else {
 		lo.Info("Connected to Redis")
+		warnLeftoverRows(db, lo)
 	}
 
 	// Initialize job queue
@@ -473,6 +475,7 @@ func runWorker(args []string) {
 		lo.Info("No Redis configured: live campaign progress is not pushed to the UI from separate worker processes")
 	} else {
 		lo.Info("Connected to Redis")
+		warnLeftoverRows(db, lo)
 	}
 
 	// Setup context with cancellation
@@ -525,6 +528,13 @@ func runWorker(args []string) {
 		}
 	}
 	lo.Info("Workers stopped")
+}
+
+// warnLeftoverRows logs built-in store rows that Redis mode leaves unprocessed.
+func warnLeftoverRows(db *gorm.DB, lo logf.Logger) {
+	for table, n := range store.LeftoverRows(db) {
+		lo.Warn("Rows left from the built-in store are not processed in Redis mode", "table", table, "rows", n)
+	}
 }
 
 // newConsumer returns a campaign job consumer for the active store mode.

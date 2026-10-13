@@ -112,6 +112,23 @@ func MissingTables(db *gorm.DB) []string {
 	return missing
 }
 
+// LeftoverRows returns the row counts of the embedded-mode scheduler and
+// campaign queue tables that exist and hold rows. Redis mode does not process
+// them. Tables that cannot be counted are left out.
+func LeftoverRows(db *gorm.DB) map[string]int64 {
+	out := map[string]int64{}
+	for _, m := range []schema.Tabler{models.ScheduledItem{}, models.CampaignJob{}} {
+		if !db.Migrator().HasTable(m) {
+			continue
+		}
+		var n int64
+		if err := db.Model(m).Count(&n).Error; err == nil && n > 0 {
+			out[m.TableName()] = n
+		}
+	}
+	return out
+}
+
 // Embedded reports whether no Redis server is used.
 func (s *Stores) Embedded() bool { return s.Redis == nil }
 

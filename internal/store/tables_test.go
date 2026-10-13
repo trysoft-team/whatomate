@@ -3,6 +3,7 @@ package store_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,6 +43,21 @@ func TestMissingTables_ReportsDroppedTable(t *testing.T) {
 
 	require.NoError(t, db.Migrator().DropTable(&models.ScheduledItem{}))
 	assert.Equal(t, []string{"scheduled_items"}, store.MissingTables(db))
+}
+
+func TestLeftoverRows(t *testing.T) {
+	db := tempSQLite(t)
+	assert.Empty(t, store.LeftoverRows(db))
+
+	require.NoError(t, db.AutoMigrate(&models.ScheduledItem{}, &models.CampaignJob{}))
+	assert.Empty(t, store.LeftoverRows(db))
+
+	require.NoError(t, db.Create(&models.ScheduledItem{SetName: "s", Item: "a", DueAt: time.Now()}).Error)
+	require.NoError(t, db.Create(&models.ScheduledItem{SetName: "s", Item: "b", DueAt: time.Now()}).Error)
+	assert.Equal(t, map[string]int64{"scheduled_items": 2}, store.LeftoverRows(db))
+
+	require.NoError(t, db.Create(&models.CampaignJob{JobType: "recipient", Payload: "{}"}).Error)
+	assert.Equal(t, map[string]int64{"scheduled_items": 2, "campaign_jobs": 1}, store.LeftoverRows(db))
 }
 
 func TestMissingTables_EmptyDB(t *testing.T) {

@@ -188,6 +188,12 @@ Switching an existing install from Redis to the built-in store signs users out
 once. Campaign messages still queued in Redis are not moved: pause and start
 the campaign again to re-queue its pending recipients.
 
+Switching from the built-in store to Redis also signs users out once. Campaign
+messages still queued in the database are not moved, so switch when no
+campaign is running, or pause and start unfinished campaigns afterwards.
+Chatbot conversations waiting on a Delay node and pending agent-session
+timeouts will not fire.
+
 | Field | Notes |
 |---|---|
 | `host` | Redis server host. Empty uses the built-in store. |
