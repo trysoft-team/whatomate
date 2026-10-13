@@ -39,13 +39,16 @@ max_open_conns = 25
 max_idle_conns = 5
 conn_max_lifetime = 300       # seconds
 
-[redis]
-host = "localhost"            # Use "redis" inside Docker compose
-port = 6379
-username = ""                 # Redis 6+ ACL username. Empty = default user.
-password = ""
-db = 0
-tls = false                   # true for managed Redis (Upstash, Redis Cloud)
+# Redis is optional. Leave this section commented out to use the built-in
+# store (memory + the main database). Set host to use a Redis server, e.g.
+# when running several API servers or separate worker machines.
+# [redis]
+# host = "localhost"
+# port = 6379
+# username = ""               # Redis 6+ ACL username. Empty = default user.
+# password = ""
+# db = 0
+# tls = false                 # true for managed Redis (Upstash, Redis Cloud)
 
 [jwt]
 secret = "change-me-in-production"   # 32+ chars in production
@@ -163,21 +166,36 @@ The `max_open_conns` / `max_idle_conns` / `conn_max_lifetime` knobs map directly
 `ssl_mode` accepts standard `libpq` values: `disable`, `require`, `verify-ca`, `verify-full`. Use `require` or stricter in production. MySQL maps these values to its own TLS settings and also accepts `preferred`; see [MySQL / MariaDB](#mysql--mariadb).
 
 <Aside type="note">
-  SQLite suits a single server: the API and its embedded workers share one database file. Separate `whatomate worker` processes on other machines cannot share that file — use PostgreSQL or MySQL for that setup. Redis is still required with SQLite. SQLite search matches case-insensitively only for ASCII letters, so `é` and `É` are treated as different.
+  SQLite suits a single server: the API and its embedded workers share one database file. Separate `whatomate worker` processes on other machines cannot share that file — use PostgreSQL or MySQL for that setup. SQLite search matches case-insensitively only for ASCII letters, so `é` and `É` are treated as different.
 </Aside>
 
 ### `[redis]`
 
-Required. Used for:
-- Job queue (Redis Streams) for campaign sends
-- Pub/Sub for campaign-stats fan-out between workers and the API process
-- Rate-limit counters (fixed window)
-- OAuth state during the SSO login round-trip (5-minute TTL)
-- Caches: chatbot settings, flows, keyword rules, AI contexts, WhatsApp accounts, outbound webhooks, user/role permissions, and tags
+Optional. When `host` is empty (the default), whatomate keeps caches and rate
+limits in memory and stores logins, OAuth and passkey state, WhatsApp Flow
+state, chatbot delays and the campaign queue in the main database. No Redis
+server is needed.
 
-CSRF protection does **not** use Redis — it is a stateless double-submit cookie check (`whm_csrf` cookie vs. `X-CSRF-Token` header).
+The built-in store uses tables created by migrations, so start the server once
+with `-migrate` after upgrading; without them whatomate stops at startup and
+names the missing tables.
 
-Set `tls = true` and provide `username` + `password` for managed services like Upstash or AWS ElastiCache Serverless.
+Set `host` to use a Redis server instead. Do this when you run several API
+servers behind a load balancer, or `whatomate worker` on separate machines and
+want live campaign progress in the UI.
+
+Switching an existing install from Redis to the built-in store signs users out
+once. Campaign messages still queued in Redis are not moved: pause and start
+the campaign again to re-queue its pending recipients.
+
+| Field | Notes |
+|---|---|
+| `host` | Redis server host. Empty uses the built-in store. |
+| `port` | Default `6379`. |
+| `username` | Redis 6+ ACL username. Empty uses the default user. |
+| `password` | Redis password. |
+| `db` | Redis database number. Default `0`. |
+| `tls` | `true` for TLS connections, e.g. managed services like Upstash, Redis Cloud or AWS ElastiCache Serverless. |
 
 ### `[jwt]`
 
@@ -230,7 +248,7 @@ Off by default. Turn on with `enabled = true` for any internet-facing deployment
 | `api_window_seconds` | Window for `api_max_requests`. Defaults to `60` when unset or `0`. |
 | `trust_proxy` | Set to `true` only if you run behind a trusted reverse proxy (nginx, Cloudflare, ALB) — otherwise clients can spoof their IP via `X-Forwarded-For`. |
 
-Implemented as Redis fixed-window counters. The limiter **fails open**: if Redis is unreachable the error is logged and the request is allowed through.
+Implemented as fixed-window counters, kept in memory or in Redis when `[redis] host` is set. The limiter **fails open**: if Redis is unreachable the error is logged and the request is allowed through.
 
 ### `[tts]`
 
@@ -499,11 +517,11 @@ Run workers on separate machines:
 ./whatomate worker -workers=4
 ```
 
-Both API and worker processes need access to the same database (PostgreSQL or MySQL) and Redis. SQLite does not support this setup.
+Both API and worker processes need access to the same database (PostgreSQL or MySQL). SQLite does not support this setup. Without Redis the workers still send campaigns from the database queue, but the UI shows no live campaign progress; set `[redis] host` on every process for that.
 
 ### Docker Compose
 
-The bundled [`docker-compose.yml`](https://github.com/trysoft-team/whatomate/blob/main/docker-compose.yml) at the repository root builds the image from source and runs three services — `app`, `db` (postgres:17-alpine) and `redis` (redis:7-alpine). The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
+The bundled [`docker-compose.yml`](https://github.com/trysoft-team/whatomate/blob/main/docker-compose.yml) at the repository root builds the image from source and runs two services — `app` and `db` (postgres:17-alpine). It runs no Redis; the app uses the built-in store, so comment out `[redis]` in a `config.toml` that still sets `host = "redis"`. The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
 
 ```bash
 docker compose up -d --build
@@ -511,7 +529,7 @@ docker compose up -d --build
 
 It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft-team/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
 
-There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` and `redis`.
+There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` (plus a Redis service for live campaign progress).
 
 ## Production Recommendations
 
@@ -519,7 +537,7 @@ There is no separate `worker` service in the bundled file. To scale workers, eit
 - Set `app.encryption_key` to a 32+ char random string. Back it up — losing it means losing all stored credentials.
 - Use strong, unique values for `jwt.secret` (32+ chars).
 - Set `database.ssl_mode = "require"` (or stricter).
-- Configure `redis.password` (and `redis.username` for ACL) and enable `redis.tls = true` for managed Redis.
+- If you use Redis, configure `redis.password` (and `redis.username` for ACL) and enable `redis.tls = true` for managed Redis.
 - Enable `rate_limit.enabled = true` and set `rate_limit.trust_proxy` to match your reverse proxy.
 - Restrict `server.allowed_origins` to your actual frontend hostnames.
 - For voice calling: set `calling.public_ip` on cloud hosts, ensure UDP `udp_port_min`–`udp_port_max` is open in your security group, configure at least one `[[calling.ice_servers]]` (TURN strongly recommended for traversal across strict NATs).

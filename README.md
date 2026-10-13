@@ -72,7 +72,7 @@ cd whatomate
 cp config.example.toml config.toml
 cp .env.example .env
 
-# Build the image and start the app, PostgreSQL and Redis
+# Build the image and start the app and PostgreSQL
 docker compose up -d --build
 ```
 
@@ -92,7 +92,7 @@ cp config.example.toml config.toml
 ./whatomate server -migrate
 ```
 
-Redis is required with every database. Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
+Redis is optional; without it whatomate uses a built-in store. Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
 
 __________________
 
@@ -134,14 +134,14 @@ See [configuration docs](https://trysoft-team.github.io/whatomate/getting-starte
 The backend is written in Go ([Fastglue](https://github.com/zerodha/fastglue)) and the frontend is Vue.js 3 with shadcn-vue.
 - If you are interested in contributing, please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
-Preferred local loop (host Go + Vite; Postgres/Redis in Docker):
+Preferred local loop (host Go + Vite; Postgres in Docker):
 
 ```bash
-# One-time: copy config and point DB/Redis at the host
+# One-time: copy config and point the DB at the host
 cp config.toml config.local.toml
-# In config.local.toml: database.host=localhost, database.port=5433, redis.host=localhost
+# In config.local.toml: database.host=localhost, database.port=5433
 
-make docker-infra          # Postgres :5433 + Redis :6379; stops the app container
+make docker-infra          # Postgres :5433; stops the app container
 make run-migrate           # API on :8080 (uses config.local.toml)
 cd frontend && npm run dev # UI on :3000 (proxies /api → :8080)
 # or: make dev
