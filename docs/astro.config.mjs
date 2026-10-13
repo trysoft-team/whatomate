@@ -36,6 +36,7 @@ export default defineConfig({
             { label: 'Teams', slug: 'features/teams' },
             { label: 'SSO (Single Sign-On)', slug: 'features/sso' },
             { label: 'Audit Logs', slug: 'features/audit-logs' },
+            { label: 'Backup & Restore', slug: 'features/backup-restore' },
             { label: 'Chatbot Automation', slug: 'features/chatbot' },
             { label: 'Canned Responses', slug: 'features/canned-responses' },
             { label: 'Custom Actions', slug: 'features/custom-actions' },
