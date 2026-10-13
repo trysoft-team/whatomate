@@ -55,13 +55,12 @@ func CreateDatabase(cfg *config.DatabaseConfig) error {
 	var driver, dsn, stmt string
 	switch cfg.Driver {
 	case "", config.DriverPostgres:
-		ssl := cfg.SSLMode
-		if ssl == "" {
-			ssl = "disable"
+		server := *cfg
+		if server.SSLMode == "" {
+			server.SSLMode = "disable"
 		}
 		driver = "pgx"
-		dsn = fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-			cfg.Host, cfg.Port, cfg.User, cfg.Password, ssl)
+		dsn = postgresDSN(&server, "postgres")
 		stmt = `CREATE DATABASE "` + cfg.Name + `"`
 	case config.DriverMySQL:
 		server := *cfg
