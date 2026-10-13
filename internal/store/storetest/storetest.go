@@ -146,7 +146,8 @@ func RunCounter(t *testing.T, newCounter func(t *testing.T) store.Counter) {
 
 	t.Run("KeysIndependent", func(t *testing.T) {
 		c := newCounter(t)
-		_, _, _ = c.Incr(ctx, "rl:c", time.Minute)
+		_, _, err := c.Incr(ctx, "rl:c", time.Minute)
+		require.NoError(t, err)
 		n, _, err := c.Incr(ctx, "rl:d", time.Minute)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
@@ -214,7 +215,7 @@ func RunScheduler(t *testing.T, newScheduler func(t *testing.T) store.Scheduler)
 				defer wg.Done()
 				for range 10 {
 					got, err := s.PopDue(ctx, "set", now, 5)
-					if err != nil {
+					if !assert.NoError(t, err) {
 						return
 					}
 					mu.Lock()
@@ -239,11 +240,12 @@ func RunBroker(t *testing.T, newBroker func(t *testing.T) store.Broker) {
 
 	t.Run("DeliversToAllSubscribers", func(t *testing.T) {
 		b := newBroker(t)
+		var extra atomic.Int32
 		gotA, gotB := make(chan string, 1), make(chan string, 1)
-		stopA, err := b.Subscribe(ctx, "ch", func(p []byte) { gotA <- string(p) })
+		stopA, err := b.Subscribe(ctx, "ch", sendTo(gotA, &extra))
 		require.NoError(t, err)
 		defer stopA()
-		stopB, err := b.Subscribe(ctx, "ch", func(p []byte) { gotB <- string(p) })
+		stopB, err := b.Subscribe(ctx, "ch", sendTo(gotB, &extra))
 		require.NoError(t, err)
 		defer stopB()
 		require.NoError(t, b.Publish(ctx, "ch", []byte("hello")))
@@ -255,12 +257,14 @@ func RunBroker(t *testing.T, newBroker func(t *testing.T) store.Broker) {
 				t.Fatal("message not delivered")
 			}
 		}
+		assert.Zero(t, extra.Load(), "duplicate deliveries")
 	})
 
 	t.Run("StopEndsDelivery", func(t *testing.T) {
 		b := newBroker(t)
+		var extra atomic.Int32
 		got := make(chan string, 2)
-		stop, err := b.Subscribe(ctx, "ch2", func(p []byte) { got <- string(p) })
+		stop, err := b.Subscribe(ctx, "ch2", sendTo(got, &extra))
 		require.NoError(t, err)
 		stop()
 		require.NoError(t, b.Publish(ctx, "ch2", []byte("late")))
@@ -273,8 +277,9 @@ func RunBroker(t *testing.T, newBroker func(t *testing.T) store.Broker) {
 
 	t.Run("OtherChannelIgnored", func(t *testing.T) {
 		b := newBroker(t)
+		var extra atomic.Int32
 		got := make(chan string, 1)
-		stop, err := b.Subscribe(ctx, "ch3", func(p []byte) { got <- string(p) })
+		stop, err := b.Subscribe(ctx, "ch3", sendTo(got, &extra))
 		require.NoError(t, err)
 		defer stop()
 		require.NoError(t, b.Publish(ctx, "elsewhere", []byte("x")))
@@ -284,4 +289,16 @@ func RunBroker(t *testing.T, newBroker func(t *testing.T) store.Broker) {
 		case <-time.After(300 * time.Millisecond):
 		}
 	})
+}
+
+// sendTo returns a subscriber callback that never blocks: a delivery that
+// finds ch full is counted in extra instead of stalling the subscriber.
+func sendTo(ch chan string, extra *atomic.Int32) func([]byte) {
+	return func(p []byte) {
+		select {
+		case ch <- string(p):
+		default:
+			extra.Add(1)
+		}
+	}
 }

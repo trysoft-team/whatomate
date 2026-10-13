@@ -38,8 +38,8 @@ type Scheduler interface {
 	// Schedule adds item to set, replacing any existing due time.
 	Schedule(ctx context.Context, set, item string, at time.Time) error
 	Cancel(ctx context.Context, set string, items ...string) error
-	// PopDue removes and returns up to limit items due at or before now. Each
-	// item is returned to exactly one caller.
+	// PopDue removes and returns up to limit items due at or before now,
+	// earliest due first. Each item is returned to exactly one caller.
 	PopDue(ctx context.Context, set string, now time.Time, limit int) ([]string, error)
 }
 
