@@ -20,11 +20,11 @@ var ErrFiles = errors.New("database restored, but files could not be put back")
 // RestoreOptions control a restore.
 type RestoreOptions struct {
 	EncryptionKey string
-	// Areas are the live file folders; files are restored only when the
-	// backup holds files and an area of the same name is given.
+	// Areas are the live file folders; an area is restored only when the
+	// backup holds an area of the same name.
 	Areas []FileArea
-	// Skip lists folders inside an area that a restore leaves alone, such as
-	// the backup folder.
+	// Skip lists folders a restore leaves alone, such as the backup folder.
+	// One inside an area must be directly inside it.
 	Skip []string
 }
 
@@ -34,6 +34,17 @@ func Restore(ctx context.Context, db *gorm.DB, path string, opts RestoreOptions,
 	progress = orNop(progress)
 	sum, err := Inspect(path, db, opts.EncryptionKey)
 	if err != nil {
+		return err
+	}
+	var areas []FileArea
+	if sum.Manifest.IncludeFiles {
+		for _, a := range opts.Areas {
+			if _, ok := sum.Manifest.Files[a.Name]; ok {
+				areas = append(areas, a)
+			}
+		}
+	}
+	if err := checkSkips(areas, opts.Skip); err != nil {
 		return err
 	}
 	if err := Verify(path, progress); err != nil {
@@ -94,8 +105,8 @@ func Restore(ctx context.Context, db *gorm.DB, path string, opts RestoreOptions,
 	if err != nil {
 		return err
 	}
-	if sum.Manifest.IncludeFiles && len(opts.Areas) > 0 {
-		if err := restoreFiles(ctx, &zr.Reader, opts.Areas, opts.Skip, progress); err != nil {
+	if len(areas) > 0 {
+		if err := restoreFiles(ctx, &zr.Reader, areas, opts.Skip, progress); err != nil {
 			return fmt.Errorf("%w: %v", ErrFiles, err)
 		}
 	}

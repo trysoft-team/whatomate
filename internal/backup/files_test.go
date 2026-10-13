@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/models"
 )
 
 func write(t *testing.T, p, s string) {
@@ -59,6 +61,55 @@ func TestRestore_WithoutFilesLeavesFolders(t *testing.T) {
 	write(t, filepath.Join(media, "a.txt"), "changed")
 	require.NoError(t, Restore(context.Background(), db, filepath.Join(dir, info.Name), RestoreOptions{Areas: []FileArea{{Name: "media", Dir: media}}}, nil))
 	assert.Equal(t, "changed", read(t, filepath.Join(media, "a.txt")))
+}
+
+func TestRestore_LeavesAreaNotInBackup(t *testing.T) {
+	db := newSQLiteDB(t)
+	media, audio := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(media, "a.txt"), "a1")
+	dir := t.TempDir()
+	info, err := Create(context.Background(), db, dir, Options{Kind: KindManual, IncludeFiles: true, Areas: []FileArea{{Name: "media", Dir: media}}}, nil)
+	require.NoError(t, err)
+
+	write(t, filepath.Join(media, "a.txt"), "changed")
+	write(t, filepath.Join(audio, "keep.opus"), "voice")
+	areas := []FileArea{{Name: "media", Dir: media}, {Name: "audio", Dir: audio}}
+	require.NoError(t, Restore(context.Background(), db, filepath.Join(dir, info.Name), RestoreOptions{Areas: areas}, nil))
+	assert.Equal(t, "a1", read(t, filepath.Join(media, "a.txt")))
+	assert.Equal(t, "voice", read(t, filepath.Join(audio, "keep.opus")), "an area the backup does not hold is left alone")
+}
+
+func TestRestore_RejectsNestedBackupFolder(t *testing.T) {
+	db := newSQLiteDB(t)
+	media := t.TempDir()
+	backups := filepath.Join(media, "x", "backups")
+	write(t, filepath.Join(media, "a.txt"), "a1")
+	areas := []FileArea{{Name: "media", Dir: media}}
+	opts := Options{Kind: KindManual, IncludeFiles: true, Areas: areas, Skip: []string{backups}}
+	info, err := Create(context.Background(), db, backups, opts, nil)
+	require.NoError(t, err)
+
+	org := models.Organization{Name: "after", Slug: "after-" + uuid.NewString()[:8]}
+	require.NoError(t, db.Create(&org).Error)
+	write(t, filepath.Join(media, "a.txt"), "changed")
+
+	err = Restore(context.Background(), db, filepath.Join(backups, info.Name), RestoreOptions{Areas: areas, Skip: []string{backups}}, nil)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrFiles)
+	assert.Contains(t, err.Error(), "must be directly inside")
+	var n int64
+	require.NoError(t, db.Model(&models.Organization{}).Where("id = ?", org.ID).Count(&n).Error)
+	assert.Equal(t, int64(1), n, "the database is unchanged")
+	assert.Equal(t, "changed", read(t, filepath.Join(media, "a.txt")))
+	assert.FileExists(t, filepath.Join(backups, info.Name))
+}
+
+func TestPutBack_ReportsFailedMoves(t *testing.T) {
+	dst, src := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "a"), "a")
+	require.NoError(t, putBack(dst, src, []string{"a"}))
+	assert.Equal(t, "a", read(t, filepath.Join(dst, "a")))
+	assert.Error(t, putBack(dst, src, []string{"missing"}))
 }
 
 func TestSplitFileEntry(t *testing.T) {

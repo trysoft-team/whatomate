@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,26 +73,36 @@ func restoreArea(ctx context.Context, zr *zip.Reader, a FileArea, skip []string,
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(old)
+	keepOld := false
+	defer func() {
+		if !keepOld {
+			_ = os.RemoveAll(old)
+		}
+	}()
+	var moved []string
+	undo := func(err error) error {
+		if perr := putBack(root, old, moved); perr != nil {
+			keepOld = true
+			return fmt.Errorf("%w; the original files are left in %s: %v", err, old, perr)
+		}
+		return err
+	}
 	current, err := os.ReadDir(root)
 	if err != nil {
 		return err
 	}
-	var moved []string
 	for _, e := range current {
 		if kept(e.Name()) {
 			continue
 		}
 		if err := os.Rename(filepath.Join(root, e.Name()), filepath.Join(old, e.Name())); err != nil {
-			putBack(root, old, moved)
-			return err
+			return undo(err)
 		}
 		moved = append(moved, e.Name())
 	}
 	staged, err := os.ReadDir(stage)
 	if err != nil {
-		putBack(root, old, moved)
-		return err
+		return undo(err)
 	}
 	var placed []string
 	for _, e := range staged {
@@ -99,20 +110,44 @@ func restoreArea(ctx context.Context, zr *zip.Reader, a FileArea, skip []string,
 			continue
 		}
 		if err := os.Rename(filepath.Join(stage, e.Name()), filepath.Join(root, e.Name())); err != nil {
-			putBack(stage, root, placed)
-			putBack(root, old, moved)
-			return fmt.Errorf("move %s into place: %w", e.Name(), err)
+			_ = putBack(stage, root, placed)
+			return undo(fmt.Errorf("move %s into place: %w", e.Name(), err))
 		}
 		placed = append(placed, e.Name())
 	}
 	return nil
 }
 
-// putBack undoes moving names from root into old.
-func putBack(root, old string, names []string) {
+// putBack moves names from src back into dst.
+func putBack(dst, src string, names []string) error {
+	var errs []error
 	for _, name := range names {
-		_ = os.Rename(filepath.Join(old, name), filepath.Join(root, name))
+		if err := os.Rename(filepath.Join(src, name), filepath.Join(dst, name)); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
+}
+
+// checkSkips rejects a skip folder nested below an area's direct children,
+// because restoring the area would move it away with its parent.
+func checkSkips(areas []FileArea, skip []string) error {
+	for _, a := range areas {
+		root, err := realPath(a.Dir)
+		if err != nil {
+			return err
+		}
+		for _, s := range skip {
+			p, err := realPath(s)
+			if err != nil {
+				return err
+			}
+			if p == root || (within(p, root) && filepath.Dir(p) != root) {
+				return fmt.Errorf("backup folder %s must be directly inside the %s folder (%s) or outside it", s, a.Name, a.Dir)
+			}
+		}
+	}
+	return nil
 }
 
 func extract(f *zip.File, dst string) error {
