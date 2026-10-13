@@ -174,7 +174,8 @@ func runServer(args []string) {
 	// Caches, state, scheduler and broker: embedded unless [redis] host is set
 	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
-		lo.Fatal("Failed to connect to Redis", "error", err)
+		lo.Fatal("Failed to connect to Redis; remove [redis] host to use the built-in store",
+			"error", err, "host", cfg.Redis.Host, "port", cfg.Redis.Port)
 	}
 	defer stores.Close()
 	if stores.Embedded() {
@@ -458,7 +459,8 @@ func runWorker(args []string) {
 	// Caches, state, scheduler and broker: embedded unless [redis] host is set
 	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
-		lo.Fatal("Failed to connect to Redis", "error", err)
+		lo.Fatal("Failed to connect to Redis; remove [redis] host to use the built-in store",
+			"error", err, "host", cfg.Redis.Host, "port", cfg.Redis.Port)
 	}
 	defer stores.Close()
 	var dbQueue *queue.DBQueue
