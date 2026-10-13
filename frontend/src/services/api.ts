@@ -1549,4 +1549,79 @@ export const ivrFlowsService = {
     api.post('/ivr-flows/voice-preview', data, { responseType: 'blob' }),
 }
 
+export interface SetupCandidate {
+  path: string
+  data_dir: string
+  scope: 'user' | 'system' | 'fixed'
+  writable: boolean
+}
+
+export interface SetupStatus {
+  needed: boolean
+  ready?: boolean
+  url?: string
+  version?: string
+  listen_port?: number
+  config_path?: string
+  config_path_fixed?: boolean
+  candidates?: SetupCandidate[]
+}
+
+export type CheckStatus = 'pass' | 'warn' | 'fail'
+
+export interface SetupCheck {
+  id: string
+  status: CheckStatus
+  detail: string
+}
+
+export type SetupDriver = 'sqlite' | 'postgres' | 'mysql'
+
+export interface SetupDatabase {
+  driver: SetupDriver
+  path?: string
+  host?: string
+  port?: number
+  user?: string
+  password?: string
+  name?: string
+  ssl_mode?: string
+}
+
+export interface SetupDatabaseResult {
+  ok: boolean
+  database_exists: boolean
+  error?: string
+}
+
+export interface SetupCompleteRequest {
+  config_path: string
+  port: number
+  database: SetupDatabase
+  organization: string
+  admin: { full_name: string; email: string; password: string }
+}
+
+export const setupService = {
+  status: () => api.get<{ data: SetupStatus }>('/setup/status'),
+  checks: (params: { port: number; config_path: string }) =>
+    api.get<{ data: { checks: SetupCheck[] } }>('/setup/checks', { params, timeout: 20000 }),
+  testDatabase: (db: SetupDatabase) => api.post<{ data: SetupDatabaseResult }>('/setup/database/test', db),
+  createDatabase: (db: SetupDatabase) => api.post<{ data: SetupDatabaseResult }>('/setup/database/create', db),
+  complete: (req: SetupCompleteRequest) =>
+    api.post<{ data: { url: string } }>('/setup/complete', req, { timeout: 600000 }),
+}
+
+export interface ServerSettings {
+  port: number
+  config_port: number
+  config_path: string
+  writable: boolean
+}
+
+export const serverSettingsService = {
+  get: () => api.get<{ data: ServerSettings }>('/admin/server-settings'),
+  update: (port: number) => api.put<{ data: ServerSettings }>('/admin/server-settings', { port }),
+}
+
 export default api

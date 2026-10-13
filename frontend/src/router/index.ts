@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { setupNeeded, setupRedirect } from '@/lib/setupState'
 
 // Permission-based route meta type
 declare module 'vue-router' {
@@ -17,6 +18,12 @@ const normalizedBasePath = basePath.endsWith('/') ? basePath : basePath + '/'
 const router = createRouter({
   history: createWebHistory(normalizedBasePath),
   routes: [
+    {
+      path: '/setup',
+      name: 'setup',
+      component: () => import('@/views/setup/SetupView.vue'),
+      meta: { requiresAuth: false }
+    },
     {
       path: '/login',
       name: 'login',
@@ -462,6 +469,10 @@ function getFirstAccessibleRoute(authStore: ReturnType<typeof useAuthStore>): st
 
 // Navigation guard
 router.beforeEach(async (to, _from, next) => {
+  const redirect = setupRedirect(await setupNeeded(), to.name)
+  if (redirect) return next({ path: redirect })
+  if (to.name === 'setup') return next()
+
   const authStore = useAuthStore()
 
   // Hydrate the store from localStorage before any route decision — an authenticated user hitting /login must be redirected away.
