@@ -141,6 +141,10 @@ const (
 // DefaultMaxOpenConns is the connection pool size when max_open_conns is unset.
 const DefaultMaxOpenConns = 25
 
+// DefaultPort is the port whatomate (and its setup wizard) listens on when
+// [server] port is unset.
+const DefaultPort = 4747
+
 type DatabaseConfig struct {
 	Driver          string `koanf:"driver"` // postgres (default), mysql, sqlite, sqlserver
 	Path            string `koanf:"path"`   // sqlite database file
@@ -265,7 +269,7 @@ func setDefaults(cfg *Config) {
 		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
+		cfg.Server.Port = DefaultPort
 	}
 	if cfg.Server.ReadTimeout == 0 {
 		cfg.Server.ReadTimeout = 30

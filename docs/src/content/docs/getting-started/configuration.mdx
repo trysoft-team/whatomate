@@ -36,7 +36,7 @@ encryption_key = ""           # AES-256 key (32+ chars) for encrypting secrets a
 
 [server]
 host = "0.0.0.0"
-port = 8080
+port = 4747
 read_timeout = 30
 write_timeout = 30
 base_path = ""                # Set to "/subpath" if behind nginx proxy_pass at a sub-path
@@ -164,7 +164,7 @@ full_name = "Admin"
 
 | Field | Notes |
 |---|---|
-| `host`, `port` | Default `0.0.0.0:8080`. |
+| `host`, `port` | Default `0.0.0.0:4747`. |
 | `read_timeout`, `write_timeout` | Seconds. |
 | `base_path` | Leave empty unless serving at a sub-path (`https://app.example.com/whatomate`) behind a proxy. |
 | `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. **Empty allows all origins** — only safe in development. |
@@ -469,7 +469,8 @@ For development, run the backend and frontend separately:
 - Backend: `make run-migrate` (or `./whatomate server -migrate`)
 - Frontend: `cd frontend && npm run dev`
 
-The Vite dev server proxies `/api` to `:8080`.
+The Vite dev server proxies `/api` to `:4747`.
+Set `WHATOMATE_API_URL=http://localhost:8080` when your local config uses another port.
 
 ### Production
 

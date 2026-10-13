@@ -12,7 +12,7 @@ encryption_key = ""  # AES-256 key for encrypting secrets at rest (32+ chars, re
 
 [server]
 host = "0.0.0.0"
-port = 8080
+port = 4747
 read_timeout = 30
 write_timeout = 30
 base_path = ""  # Set to "/subpath" if behind nginx proxy pass

@@ -22,7 +22,7 @@ cp .env.example .env  # Edit to set PostgreSQL credentials and timezone
 make docker-up
 
 # Access the application
-open http://localhost:8080
+open http://localhost:4747
 ```
 
 <Aside type="note">
@@ -155,7 +155,7 @@ npm run dev
 | Service | URL |
 |---------|-----|
 | Frontend | http://localhost:3000 |
-| API | http://localhost:8080 |
+| API | http://localhost:4747 |
 
 **Login:** `admin@admin.com` / `admin`
 
@@ -172,7 +172,7 @@ make build-prod
 ./whatomate server -migrate
 ```
 
-This creates a self-contained binary—no separate frontend server needed. Access at http://localhost:8080.
+This creates a self-contained binary—no separate frontend server needed. Access at http://localhost:4747.
 
 To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=amd64 make build-prod`. `make release-snapshot` builds every release archive into `dist/`.
 
@@ -228,7 +228,7 @@ Template to start with a production ready instance!
 | `database does not exist` | Create it: `createdb whatomate` (PostgreSQL) or `CREATE DATABASE whatomate CHARACTER SET utf8mb4` (MySQL/MariaDB) |
 | `permission denied` | Check database user/password in `config.toml` |
 | `port already in use` | Change port in `config.toml` or stop conflicting service |
-| Frontend can't reach API | Ensure backend is running on port 8080 |
+| Frontend can't reach API | Ensure backend is running on port 4747 |
 
 ## WhatsApp Configuration
 

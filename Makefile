@@ -167,7 +167,7 @@ frontend-preview:
 # Development - run both backend and frontend (requires docker-infra first)
 dev:
 	@echo "Starting backend ($(CONFIG)) and frontend..."
-	@echo "API :8080  |  UI :3000 (proxies /api → :8080)"
+	@echo "API :4747 (or [server] port)  |  UI :3000 (proxies /api → the API)"
 	@make run-migrate &
 	@make frontend-dev
 

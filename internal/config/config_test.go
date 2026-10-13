@@ -29,7 +29,8 @@ func TestLoad_AppliesDefaultsForMissingFields(t *testing.T) {
 	assert.Equal(t, "Whatomate", cfg.App.Name)
 	assert.Equal(t, "development", cfg.App.Environment)
 	assert.Equal(t, "0.0.0.0", cfg.Server.Host)
-	assert.Equal(t, 8080, cfg.Server.Port)
+	assert.Equal(t, config.DefaultPort, cfg.Server.Port)
+	assert.Equal(t, 4747, config.DefaultPort)
 	assert.Equal(t, 30, cfg.Server.ReadTimeout)
 	assert.Equal(t, 30, cfg.Server.WriteTimeout)
 	assert.Equal(t, 5432, cfg.Database.Port)
@@ -121,7 +122,7 @@ func TestLoad_EmptyConfigPathStillLoadsDefaults(t *testing.T) {
 	cfg, err := config.Load("")
 	require.NoError(t, err)
 	assert.Equal(t, "Whatomate", cfg.App.Name)
-	assert.Equal(t, 8080, cfg.Server.Port)
+	assert.Equal(t, config.DefaultPort, cfg.Server.Port)
 }
 
 func TestLoad_MissingFileReturnsError(t *testing.T) {

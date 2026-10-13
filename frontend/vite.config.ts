@@ -58,11 +58,11 @@ export default defineConfig({
     allowedHosts: [],
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: process.env.WHATOMATE_API_URL ?? 'http://localhost:4747',
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://localhost:8080',
+        target: (process.env.WHATOMATE_API_URL ?? 'http://localhost:4747').replace(/^http/, 'ws'),
         ws: true
       }
     }

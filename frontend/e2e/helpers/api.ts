@@ -1,6 +1,6 @@
 import { APIRequestContext } from '@playwright/test'
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:8080'
+const BASE_URL = process.env.BASE_URL || 'http://localhost:4747'
 
 export interface Permission {
   id: string

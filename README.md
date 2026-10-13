@@ -76,7 +76,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
+Go to `http://localhost:4747` and login with `admin@admin.com` / `admin`
 
 __________________
 
@@ -92,7 +92,7 @@ cp config.example.toml config.toml
 ./whatomate server -migrate
 ```
 
-Redis is optional; without it whatomate uses a built-in store. Go to `http://localhost:8080` and login with `admin@admin.com` / `admin`
+Redis is optional; without it whatomate uses a built-in store. Go to `http://localhost:4747` and login with `admin@admin.com` / `admin`
 
 __________________
 
@@ -142,8 +142,8 @@ cp config.toml config.local.toml
 # In config.local.toml: database.host=localhost, database.port=5433
 
 make docker-infra          # Postgres :5433; stops the app container
-make run-migrate           # API on :8080 (uses config.local.toml)
-cd frontend && npm run dev # UI on :3000 (proxies /api → :8080)
+make run-migrate           # API on :4747 (uses config.local.toml)
+cd frontend && npm run dev # UI on :3000 (proxies /api → :4747)
 # or: make dev
 ```
 
