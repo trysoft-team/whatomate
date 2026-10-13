@@ -337,7 +337,8 @@ type MaintenanceStatus struct {
 // exist in the backup.
 func (a *App) GetMaintenance(r *fastglue.Request) error {
 	st := MaintenanceStatus{Active: a.Maintenance.Active()}
-	if job := a.backupJob.get(); job.Kind == "restore" && time.Since(job.StartedAt) < time.Hour {
+	job := a.backupJob.get()
+	if job.Kind == "restore" && (job.Running || (job.FinishedAt != nil && time.Since(*job.FinishedAt) < time.Hour)) {
 		st.Restore = &RestoreStatus{
 			Running: job.Running, Phase: job.Phase, Table: job.Table, Done: job.Done, Total: job.Total,
 			Finished: !job.Running, Failed: !job.Running && job.Error != "",
