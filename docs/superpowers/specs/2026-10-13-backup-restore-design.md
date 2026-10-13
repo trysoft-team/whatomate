@@ -62,9 +62,8 @@ in `.zip`; a numeric suffix is added on clash).
 ```
 manifest.json
 db/<table>.jsonl          one JSON object per row, keys are column names
-files/media/...           storage.local_path (chat media, flow_media/<org>/...)
-files/audio/...           calling.audio_dir (IVR / TTS audio)
-files/recordings/...      local call recordings, when they are stored locally
+files/media/...           storage.local_path (chat media, flow media and local call recordings)
+files/audio/...           calling.audio_dir
 ```
 
 `manifest.json`:
@@ -82,7 +81,7 @@ files/recordings/...      local call recordings, when they are stored locally
     { "name": "organizations", "rows": 3, "sha256": "…",
       "columns": ["id", "name", "slug", "settings", "created_at", "…"] }
   ],
-  "files": { "media": { "count": 412, "bytes": 88123456 }, "audio": { "…": 0 }, "recordings": { "…": 0 } }
+  "files": { "media": { "count": 412, "bytes": 88123456 }, "audio": { "…": 0 } }
 }
 ```
 
@@ -160,10 +159,14 @@ anything:
 4. Enter maintenance mode (below).
 5. `database.AutoMigrate` so the target has the current schema.
 6. In **one transaction**:
+   - Columns that are filled in later (self references, cycle breakers) are
+     set to NULL first, because MySQL checks foreign keys row by row while
+     deleting.
    - Delete all rows from every backed-up table and the three store tables,
      children before parents.
    - Insert rows parents before children, in batches of 500. The order comes
-     from the foreign keys gorm knows about (`schema.Relationships`),
+     from the foreign keys the target database reports (information_schema
+     on Postgres and MySQL, `pragma_foreign_key_list` on SQLite),
      topologically sorted; ties keep `GetMigrationModels` order.
    - Self-references and cycles (today: `messages.reply_to_message_id`) are
      inserted with those columns NULL, then set with UPDATEs after the table
@@ -178,10 +181,12 @@ anything:
    - Commit. Any error rolls back and reports the table, row number and
      database message (e.g. a value too long for a MySQL column, or a broken
      reference).
-7. If files are included: extract each area into `<area>.restore-<random>`
-   next to the live folder, then rename live → `<area>.old-<random>`, staged
-   → live, and remove the old folder. A failure here is reported with the
-   pre-restore backup name to undo with.
+7. If files are included: extract each area into a `.restore-<random>`
+   folder inside the area, move the current entries into a `.old-<random>`
+   folder inside the area, move the restored entries in, then remove both.
+   Renames stay inside the folder, so this also works when the folder is a
+   mount point. A failure here is reported with the pre-restore backup name
+   to undo with.
 8. Clear in-memory and store caches (permissions, settings, sessions) and
    resume background tasks; leave maintenance mode.
 
@@ -193,8 +198,9 @@ only auto-increment table, `scheduled_items`, is not backed up).
 - A process-wide flag in the handlers' `App`.
 - While set, the global `Before` hook answers every request with
   `503 {"status":"error","message":"Restore in progress"}`, except
-  `GET /api/maintenance` (public; returns `active`, `phase`, `table`, `done`,
-  `total`, `error`) and the static frontend.
+  `GET /api/maintenance` (public; returns `active` and the restore's phase,
+  progress and whether it failed, never the error text) and the static
+  frontend.
 - Open WebSocket connections are closed; new ones are refused.
 - In-process background tasks (SLA processor, chat delay processor, webhook
   delivery pruner, in-process campaign workers) are stopped through their
@@ -228,17 +234,24 @@ only auto-increment table, `scheduled_items`, is not backed up).
 |---|---|---|
 | GET | `/api/admin/backups` | List backups, the backup folder and the current job. |
 | POST | `/api/admin/backups` | Start a backup. Body: `{"include_files": true}`. 409 if a job is running. |
-| GET | `/api/admin/backups/job` | Current job progress. |
+| GET | `/api/admin/backup-job` | Current job progress. |
 | GET | `/api/admin/backups/{name}/download` | Stream the zip. |
-| POST | `/api/admin/backups/upload` | Multipart upload, streamed to a temp file, inspected, then renamed into the folder. |
+| POST | `/api/admin/backup-uploads` | Start an upload. Body: name, size. |
+| PUT | `/api/admin/backup-uploads/{id}?offset=N` | One chunk of up to 8 MB. |
+| POST | `/api/admin/backup-uploads/{id}/finish` | Finish the upload. |
+| DELETE | `/api/admin/backup-uploads/{id}` | Cancel the upload. |
 | GET | `/api/admin/backups/{name}/inspect` | Summary for the restore dialog. |
 | POST | `/api/admin/backups/{name}/restore` | Body: `{"confirm":"RESTORE"}`. Starts the restore job. |
 | DELETE | `/api/admin/backups/{name}` | Delete a backup. |
-| GET | `/api/maintenance` | Public. Restore progress while maintenance mode is on. |
+| GET | `/api/maintenance` | Public. While a restore runs (and for an hour after) returns its phase, progress and whether it failed — never the error text. |
 
 `{name}` must match a file directly inside the backup folder (no separators,
-no `..`); anything else is 404. Uploads go through fasthttp's streamed
-request body; only this route accepts bodies up to `[backup] max_upload_mb`.
+no `..`); anything else is 404.
+
+Uploads are sent in chunks of at most 8 MB, so the 15 MB request limit stays
+in place for every other route; the total may not exceed
+`[backup] max_upload_mb`. Downloads get a 6-hour write timeout through
+fasthttp's `HeaderReceived` hook.
 
 ### CLI
 

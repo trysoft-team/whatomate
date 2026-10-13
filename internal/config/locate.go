@@ -243,6 +243,7 @@ func (c *Config) ResolvePaths(base string) {
 	join(&c.Database.Path)
 	join(&c.Storage.LocalPath)
 	join(&c.Calling.AudioDir)
+	join(&c.Backup.Dir)
 	join(&c.TTS.PiperModel)
 	joinIfPath(&c.TTS.PiperBinary)
 	joinIfPath(&c.TTS.OpusencBinary)

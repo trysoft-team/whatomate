@@ -64,6 +64,13 @@ s3_region = ""
 s3_key = ""
 s3_secret = ""
 
+[backup]
+# Folder for backups made from Settings → Backup & Restore. A relative path
+# is resolved like the other paths (against the data folder).
+dir = "backups"
+# Largest backup file the page accepts for upload, in MB.
+max_upload_mb = 10240
+
 [whatsapp]
 webhook_verify_token = "random-string-change-this"
 api_version = "v24.0"

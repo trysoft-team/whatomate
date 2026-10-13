@@ -259,6 +259,17 @@ Controls media storage (template samples, uploaded files, call recordings).
 - `type = "local"` — files under `local_path` (default `./uploads`). Suitable for single-host deployments. The directory must be writable by the process and persisted (Docker volume). Call recordings land in `local_path/recordings/{org-id}/{call-log-id}.ogg`.
 - `type = "s3"` — fill in `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`. Call recordings are uploaded to the bucket.
 
+### `[backup]`
+
+Controls backups made from **Settings → Backup & Restore**.
+
+| Field | Notes |
+|---|---|
+| `dir` | Folder where backups are kept. Default `backups`. A relative path resolves like the other paths above. |
+| `max_upload_mb` | Largest backup file the page accepts for upload, in MB. Default `10240`. |
+
+In Docker, point `dir` at a mounted volume so backups survive the container.
+
 ### `[whatsapp]`
 
 App-level keys used for **Embedded Signup** and Meta Cloud API calls. These are global (not per-org) and **do live in `config.toml`**. Per-organization account access tokens are stored separately via **Settings → Accounts**, not here.

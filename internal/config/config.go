@@ -31,6 +31,7 @@ type Config struct {
 	TTS          TTSConfig          `koanf:"tts"`
 	Google       GoogleConfig       `koanf:"google"`
 	Retention    RetentionConfig    `koanf:"retention"`
+	Backup       BackupConfig       `koanf:"backup"`
 }
 
 // RetentionConfig controls how long log-style tables are kept.
@@ -196,6 +197,13 @@ type StorageConfig struct {
 	S3Region  string `koanf:"s3_region"`
 	S3Key     string `koanf:"s3_key"`
 	S3Secret  string `koanf:"s3_secret"`
+}
+
+// BackupConfig controls where backups are kept and how large an uploaded
+// backup may be.
+type BackupConfig struct {
+	Dir         string `koanf:"dir"`
+	MaxUploadMB int    `koanf:"max_upload_mb"`
 }
 
 type DefaultAdminConfig struct {
@@ -375,5 +383,11 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Calling.TransferTimeoutSecs == 0 {
 		cfg.Calling.TransferTimeoutSecs = 120
+	}
+	if cfg.Backup.Dir == "" {
+		cfg.Backup.Dir = "backups"
+	}
+	if cfg.Backup.MaxUploadMB == 0 {
+		cfg.Backup.MaxUploadMB = 10240
 	}
 }
