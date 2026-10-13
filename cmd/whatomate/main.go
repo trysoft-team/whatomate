@@ -47,6 +47,8 @@ func main() {
 		runServer(os.Args[2:])
 	case "worker":
 		runWorker(os.Args[2:])
+	case "config":
+		runConfig(os.Args[2:])
 	case "version":
 		fmt.Printf("Whatomate %s (built %s)\n", Version, BuildTime)
 	case "help", "-h", "--help":
@@ -66,18 +68,27 @@ Usage:
 
 Commands:
   server    Start the API server (with optional embedded workers)
-  worker    Start background workers only (no API server)
-  version   Show version information
+	worker    Start background workers only (no API server)
+	config    "config path" shows which config file would be used
+	version   Show version information
   help      Show this help message
 
 Server Options:
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see below)
   -migrate          Run database migrations on startup
   -workers int      Number of embedded workers (0 to disable) (default 1)
 
 Worker Options:
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see below)
   -workers int      Number of workers to run (default 1)
+
+Config file search (first found wins):
+  -config, then $WHATOMATE_CONFIG, then ./config.toml, then
+  Linux:   ~/.config/whatomate/config.toml, /etc/whatomate/config.toml
+  macOS:   ~/Library/Application Support/whatomate/config.toml,
+           ~/.config/whatomate/config.toml,
+           /opt/homebrew/etc/whatomate/config.toml, /usr/local/etc/whatomate/config.toml
+  Windows: %AppData%\whatomate\config.toml, %ProgramData%\whatomate\config.toml
 
 Examples:
   whatomate server                     # API + 1 embedded worker
@@ -98,7 +109,7 @@ Deployment Scenarios:
 
 func runServer(args []string) {
 	serverFlags := flag.NewFlagSet("server", flag.ExitOnError)
-	configPath := serverFlags.String("config", "config.toml", "Path to config file")
+	configPath := serverFlags.String("config", "", "Path to config file (default: search standard locations)")
 	migrate := serverFlags.Bool("migrate", false, "Run database migrations")
 	numWorkers := serverFlags.Int("workers", 1, "Number of workers to run (0 to disable embedded workers)")
 	_ = serverFlags.Parse(args)
@@ -114,11 +125,7 @@ func runServer(args []string) {
 
 	lo.Info("Starting Whatomate server...", "version", Version)
 
-	// Load configuration
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		lo.Fatal("Failed to load config", "error", err)
-	}
+	cfg := loadConfig(*configPath, lo)
 
 	// Validate JWT secret
 	if cfg.App.Environment == "production" && len(cfg.JWT.Secret) < 32 {
@@ -421,7 +428,7 @@ func runServer(args []string) {
 
 func runWorker(args []string) {
 	workerFlags := flag.NewFlagSet("worker", flag.ExitOnError)
-	configPath := workerFlags.String("config", "config.toml", "Path to config file")
+	configPath := workerFlags.String("config", "", "Path to config file (default: search standard locations)")
 	workerCount := workerFlags.Int("workers", 1, "Number of workers to run")
 	_ = workerFlags.Parse(args)
 
@@ -436,11 +443,7 @@ func runWorker(args []string) {
 
 	lo.Info("Starting Whatomate worker...", "version", Version)
 
-	// Load configuration
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		lo.Fatal("Failed to load config", "error", err)
-	}
+	cfg := loadConfig(*configPath, lo)
 
 	// Set log level based on environment
 	if cfg.App.Environment == "production" {
@@ -528,6 +531,47 @@ func runWorker(args []string) {
 		}
 	}
 	lo.Info("Workers stopped")
+}
+
+// loadConfig finds and loads the config file, anchoring relative paths in a
+// config from the user or system folder to its base folder.
+func loadConfig(flagPath string, lo logf.Logger) *config.Config {
+	src, err := config.Locate(flagPath)
+	if err != nil {
+		lo.Fatal("Failed to find config", "error", err)
+	}
+	cfg, err := config.Load(src.Path)
+	if err != nil {
+		lo.Fatal("Failed to load config", "path", src.Path, "error", err)
+	}
+	if src.BaseDir != "" {
+		if err := os.MkdirAll(src.BaseDir, 0o750); err != nil {
+			lo.Fatal("Failed to create data folder", "path", src.BaseDir, "error", err)
+		}
+		cfg.ResolvePaths(src.BaseDir)
+	}
+	lo.Info("Loaded config", "path", src.Path, "data_dir", src.BaseDir)
+	return cfg
+}
+
+// runConfig handles "whatomate config path [-config file]".
+func runConfig(args []string) {
+	if len(args) == 0 || args[0] != "path" {
+		fmt.Println("Usage: whatomate config path [-config file]")
+		os.Exit(1)
+	}
+	fs := flag.NewFlagSet("config path", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file")
+	_ = fs.Parse(args[1:])
+	src, err := config.Locate(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(src.Path)
+	if src.BaseDir != "" {
+		fmt.Println("relative paths resolve against:", src.BaseDir)
+	}
 }
 
 // warnLeftoverRows logs built-in store rows that Redis mode leaves unprocessed.

@@ -5,7 +5,23 @@ description: Complete configuration reference for Whatomate
 
 import { Aside } from '@astrojs/starlight/components';
 
-Whatomate uses a TOML configuration file for all settings. By default, it looks for `config.toml` in the current directory; pass `-config /path/to/config.toml` to override.
+Whatomate uses a TOML configuration file for all settings. You don't need to pass its path each time: `whatomate server` and `whatomate worker` search the standard locations below and use the first file they find.
+
+1. `-config /path/to/config.toml`, if given.
+2. The file named by the `WHATOMATE_CONFIG` environment variable.
+3. `config.toml` in the current directory.
+4. Your user config folder:
+   - Linux: `~/.config/whatomate/config.toml` (or `$XDG_CONFIG_HOME/whatomate/config.toml`)
+   - macOS: `~/Library/Application Support/whatomate/config.toml`, then `~/.config/whatomate/config.toml`
+   - Windows: `%AppData%\whatomate\config.toml`
+5. The system config folder:
+   - Linux: `/etc/whatomate/config.toml`
+   - macOS (Homebrew): `/opt/homebrew/etc/whatomate/config.toml` or `/usr/local/etc/whatomate/config.toml`
+   - Windows: `%ProgramData%\whatomate\config.toml`
+
+If none exists, whatomate stops and lists every path it checked. Run `whatomate config path` to see which file would be used.
+
+Relative paths in the config (the SQLite `path`, `[storage] local_path`, `[calling] audio_dir`, the Piper model) resolve against the current directory for options 1–3. For a config found in your user folder they resolve against that folder; for a system config they resolve against the data folder: `/var/lib/whatomate` on Linux, `$(brew --prefix)/var/whatomate` on macOS, `%ProgramData%\whatomate` on Windows. Whatomate creates that folder if it is missing. Absolute paths are always used as written.
 
 A complete commented example lives in [`config.example.toml`](https://github.com/trysoft-team/whatomate/blob/main/config.example.toml) at the repository root — copy it to `config.toml` and edit. The reference below documents every section.
 

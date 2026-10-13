@@ -176,15 +176,16 @@ homebrew_casks:
       config.toml to use one.
 
       Create a config from the example shipped with this cask:
-        cp "#{staged_path}/config.example.toml" ./config.toml
+        mkdir -p "#{HOMEBREW_PREFIX}/etc/whatomate"
+        cp "#{staged_path}/config.example.toml" "#{HOMEBREW_PREFIX}/etc/whatomate/config.toml"
 
-      In config.toml, set [database] driver to the database you already have:
-        "sqlite"   one file, no server needed (set path)
+      In that file, set [database] driver to the database you already have:
+        "sqlite"   one file, no server needed (stored in #{HOMEBREW_PREFIX}/var/whatomate)
         "postgres" PostgreSQL
         "mysql"    MySQL 8.0.19+ or MariaDB 10.6+
 
-      Then start the server:
-        whatomate server -config ./config.toml -migrate
+      Then start the server (it finds the config on its own):
+        whatomate server -migrate
       {{- if not (isEnvSet "MACOS_SIGN_P12") }}
 
       This build is not notarized. If macOS blocks it, run:
