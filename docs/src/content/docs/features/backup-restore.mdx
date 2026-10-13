@@ -35,7 +35,7 @@ On **Settings → Backup & Restore**:
 - **Back up now** starts a backup. It runs in the background and the page shows its progress. Untick *Include uploaded files* for a smaller, database-only backup. Only one backup or restore runs at a time.
 - The **Backups** list shows each file with its date, size, the database it was made on (*Made on*) and whether it includes files. Backups taken automatically before a restore are marked **Before restore**. A file that cannot be read shows why.
 - **Download** saves a backup to your computer, so you can keep a copy off the server.
-- **Upload backup** adds a backup made on this or another server. Large files are sent in pieces; the largest file accepted is set by `[backup] max_upload_mb` (default `10240`, i.e. 10 GB). The file is checked when the upload finishes and is refused if it is damaged or was made by a newer version of whatomate.
+- **Upload backup** adds a backup made on this or another server. Large files are sent in pieces; the largest file accepted is set by `[backup] max_upload_mb` (default `10240`, i.e. 10 GB). The file is checked when the upload finishes and is refused if it is not a readable whatomate backup or was made by a newer version of whatomate. Its data is checked in full again before a restore.
 - **Delete** removes a backup file from the server.
 
 ## Restoring
@@ -99,7 +99,7 @@ whatomate restore -yes /path/to/backup.zip
 | `whatomate backup` | `-config <file>`, `-no-files` (leave out media and audio), `-o <file>` (write here instead of the backup folder) |
 | `whatomate restore <file>` | `-config <file>`, `-yes` (don't ask to type `RESTORE`) |
 
-`whatomate backup` can run while the server is running. **Stop the server before `whatomate restore`**; it refuses to run while a server using the same backup folder is up. Like the web app, it takes a safety backup first and prints its name.
+`whatomate backup` can run while the server is running. **Stop the server and any separate `whatomate worker` processes before `whatomate restore`**; it refuses to run while a server using the same backup folder is up, but it cannot detect separate workers. Like the web app, it takes a safety backup first and prints its name.
 
 ## Docker
 
