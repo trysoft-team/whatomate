@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
-import { Archive, Download, History, Loader2, RotateCcw, Trash2, Upload } from 'lucide-vue-next'
+import { Archive, Download, History, Loader2, RotateCcw, Trash2, Upload, XCircle } from 'lucide-vue-next'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
@@ -11,7 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { PageHeader, DeleteConfirmDialog, IconButton } from '@/components/shared'
 import { backupsService, type BackupInfo, type BackupJob } from '@/services/api'
-import { formatBytes, jobPercent, uploadInChunks } from '@/lib/backup'
+import { formatBytes, jobPercent, lastRestoreFailure, uploadInChunks } from '@/lib/backup'
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDateTime } from '@/lib/utils'
 import RestoreBackupDialog from './RestoreBackupDialog.vue'
@@ -33,6 +34,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 
 const backupRunning = computed(() => !!job.value?.running && job.value.kind === 'backup')
 const busy = computed(() => !!job.value?.running || uploadPercent.value !== null)
+const restoreFailure = computed(() => lastRestoreFailure(job.value))
 
 async function load() {
   try {
@@ -135,6 +137,15 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
     <ScrollArea class="flex-1">
       <div class="space-y-6 p-6">
+        <Alert v-if="restoreFailure" variant="destructive" data-testid="last-restore-failed">
+          <XCircle class="h-4 w-4" />
+          <AlertTitle>{{ $t('backup.lastRestoreFailed') }}</AlertTitle>
+          <AlertDescription class="space-y-1">
+            <p class="break-words">{{ restoreFailure.error }}</p>
+            <p v-if="restoreFailure.safety">{{ $t('backup.lastRestoreSafety', { name: restoreFailure.safety }) }}</p>
+          </AlertDescription>
+        </Alert>
+
         <Card>
           <CardHeader>
             <CardTitle>{{ $t('backup.createTitle') }}</CardTitle>

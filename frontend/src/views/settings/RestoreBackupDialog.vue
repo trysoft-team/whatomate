@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { backupsService, type BackupSummary, type MaintenanceStatus } from '@/services/api'
-import { RESTORE_WORD, canConfirmRestore, formatBytes, jobPercent } from '@/lib/backup'
+import { RESTORE_WORD, canConfirmRestore, formatBytes, jobPercent, nextRestoreStage, type RestoreStage } from '@/lib/backup'
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDateTime } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
@@ -19,7 +19,7 @@ const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 
-type Stage = 'loading' | 'confirm' | 'running' | 'done' | 'partial' | 'failed'
+type Stage = 'loading' | 'confirm' | RestoreStage
 const stage = ref<Stage>('loading')
 const summary = ref<BackupSummary | null>(null)
 const error = ref('')
@@ -27,6 +27,7 @@ const typed = ref('')
 const starting = ref(false)
 const status = ref<MaintenanceStatus['restore'] | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
+let missing = 0
 
 const rows = computed(() => summary.value?.manifest.tables.reduce((n, tb) => n + tb.rows, 0) ?? 0)
 const files = computed(() => {
@@ -58,35 +59,28 @@ watch(() => [props.open, props.name], async ([open]) => {
 }, { immediate: true })
 
 async function poll() {
+  let r: MaintenanceStatus['restore']
   try {
-    const res = await backupsService.maintenance()
-    const r = res.data.data.restore
-    if (!r) return
-    status.value = r
-    if (!r.finished) return
-    stopPolling()
-    if (r.failed && r.db_replaced) {
-      stage.value = 'partial'
-      try {
-        const job = await backupsService.job()
-        error.value = job.data.data.error ?? ''
-      } catch {
-        // Best effort: the session may already be gone after the restore.
-      }
-    } else if (r.failed) {
-      stage.value = 'failed'
-      try {
-        const job = await backupsService.job()
-        error.value = job.data.data.error || t('backup.restoreDialog.failedBody')
-      } catch {
-        error.value = t('backup.restoreDialog.failedBody')
-      }
-    } else {
-      stage.value = 'done'
-    }
+    r = (await backupsService.maintenance()).data.data.restore
   } catch {
-    // The server is busy restoring; keep polling.
+    return // The server is busy restoring; keep polling.
   }
+  const next = nextRestoreStage(r, missing)
+  missing = next.missing
+  if (r) status.value = r
+  if (next.stage === 'running') return
+  stopPolling()
+  // A partial restore signed everyone out, so /admin/backup-job would bounce
+  // to the login page; the backup page shows its error after signing in.
+  if (next.stage === 'failed') {
+    try {
+      const job = await backupsService.job()
+      error.value = job.data.data.error || t('backup.restoreDialog.failedBody')
+    } catch {
+      error.value = t('backup.restoreDialog.failedBody')
+    }
+  }
+  stage.value = next.stage
 }
 
 async function start() {
@@ -95,6 +89,7 @@ async function start() {
   try {
     await backupsService.restore(props.name)
     stage.value = 'running'
+    missing = 0
     timer = setInterval(poll, 1000)
   } catch (e) {
     error.value = getErrorMessage(e, t('backup.restoreDialog.failedTitle'))
@@ -116,7 +111,7 @@ function close(open: boolean) {
     signIn()
     return
   }
-  if (!open && stage.value === 'failed') emit('finished')
+  if (!open && (stage.value === 'failed' || stage.value === 'lost')) emit('finished')
   emit('update:open', open)
 }
 
@@ -172,8 +167,12 @@ onBeforeUnmount(stopPolling)
         <div class="space-y-1">
           <p class="font-medium">{{ $t('backup.restoreDialog.partialTitle') }}</p>
           <p class="text-white/60 light:text-gray-600">{{ $t('backup.restoreDialog.partialBody') }}</p>
-          <p v-if="error" class="break-words text-white/50 light:text-gray-500">{{ error }}</p>
         </div>
+      </div>
+
+      <div v-else-if="stage === 'lost'" class="flex gap-3 py-2 text-sm" data-testid="restore-lost">
+        <XCircle class="h-5 w-5 shrink-0 text-red-400" />
+        <div><p class="font-medium">{{ $t('backup.restoreDialog.lostTitle') }}</p><p class="text-white/60 light:text-gray-600">{{ $t('backup.restoreDialog.lostBody') }}</p></div>
       </div>
 
       <div v-else class="flex gap-3 py-2 text-sm">

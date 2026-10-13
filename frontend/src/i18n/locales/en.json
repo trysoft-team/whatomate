@@ -975,6 +975,8 @@
     "started": "Backup started",
     "finished": "Backup finished: {name}",
     "failed": "Backup failed: {error}",
+    "lastRestoreFailed": "The last restore did not finish",
+    "lastRestoreSafety": "The state from before the restore is in the Before restore backup {name}.",
     "phase": {
       "tables": "Saving tables",
       "files": "Saving files",
@@ -1007,7 +1009,9 @@
       "failedTitle": "Restore failed",
       "failedBody": "Nothing was changed.",
       "partialTitle": "Restore partly finished",
-      "partialBody": "The data was restored, but some uploaded files could not be put back; the folder that failed still has the files from before the restore. Sign in with an account from the backup."
+      "partialBody": "The data was restored, but some uploaded files could not be put back; the folder that failed still has the files from before the restore. Sign in with an account from the backup; this page then shows the details.",
+      "lostTitle": "Restore status lost",
+      "lostBody": "The server restarted during the restore. Check the server log; if needed, restore the Before restore backup."
     }
   },
   "tags": {

@@ -1,5 +1,43 @@
 import { describe, expect, it, vi } from 'vitest'
-import { canConfirmRestore, formatBytes, jobPercent, uploadInChunks, type UploadApi } from './backup'
+import { canConfirmRestore, formatBytes, jobPercent, lastRestoreFailure, nextRestoreStage, uploadInChunks, type UploadApi } from './backup'
+
+describe('nextRestoreStage', () => {
+  const st = (over: Partial<{ finished: boolean; failed: boolean; db_replaced: boolean }> = {}) => ({
+    running: !over.finished, phase: 'load', done: 0, total: 0, finished: false, failed: false, db_replaced: false, ...over,
+  })
+
+  it('keeps running while the restore runs', () => {
+    expect(nextRestoreStage(st(), 2)).toEqual({ stage: 'running', missing: 0 })
+  })
+
+  it('reports the outcome when finished', () => {
+    expect(nextRestoreStage(st({ finished: true }), 0).stage).toBe('done')
+    expect(nextRestoreStage(st({ finished: true, failed: true }), 0).stage).toBe('failed')
+    expect(nextRestoreStage(st({ finished: true, failed: true, db_replaced: true }), 0).stage).toBe('partial')
+  })
+
+  it('gives up after three polls without a restore', () => {
+    expect(nextRestoreStage(undefined, 0)).toEqual({ stage: 'running', missing: 1 })
+    expect(nextRestoreStage(null, 1)).toEqual({ stage: 'running', missing: 2 })
+    expect(nextRestoreStage(undefined, 2)).toEqual({ stage: 'lost', missing: 3 })
+  })
+})
+
+describe('lastRestoreFailure', () => {
+  const job = { kind: 'restore' as const, running: false, phase: 'failed', done: 0, total: 0, started_at: '' }
+
+  it('returns the error and safety backup of a failed restore', () => {
+    expect(lastRestoreFailure({ ...job, error: 'boom', safety_name: 's.zip' })).toEqual({ error: 'boom', safety: 's.zip' })
+    expect(lastRestoreFailure({ ...job, error: 'boom' })).toEqual({ error: 'boom', safety: '' })
+  })
+
+  it('ignores backups, running jobs and successes', () => {
+    expect(lastRestoreFailure(null)).toBeNull()
+    expect(lastRestoreFailure({ ...job })).toBeNull()
+    expect(lastRestoreFailure({ ...job, error: 'x', running: true })).toBeNull()
+    expect(lastRestoreFailure({ ...job, kind: 'backup', error: 'x' })).toBeNull()
+  })
+})
 
 describe('canConfirmRestore', () => {
   it('needs exactly RESTORE', () => {

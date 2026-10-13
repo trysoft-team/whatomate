@@ -1,4 +1,35 @@
+import type { BackupJob, MaintenanceStatus } from '@/services/api'
+
 export const RESTORE_WORD = 'RESTORE'
+
+/** Polls in a row without restore progress before the dialog gives up. */
+export const LOST_AFTER_POLLS = 3
+
+export type RestoreStage = 'running' | 'done' | 'partial' | 'failed' | 'lost'
+
+/**
+ * Decides the dialog stage from one /maintenance answer. A server that
+ * restarted mid-restore no longer reports one; after LOST_AFTER_POLLS such
+ * answers the restore counts as lost.
+ */
+export function nextRestoreStage(
+  r: MaintenanceStatus['restore'] | null | undefined,
+  missing: number,
+): { stage: RestoreStage; missing: number } {
+  if (!r) {
+    const n = missing + 1
+    return { stage: n >= LOST_AFTER_POLLS ? 'lost' : 'running', missing: n }
+  }
+  if (!r.finished) return { stage: 'running', missing: 0 }
+  if (r.failed) return { stage: r.db_replaced ? 'partial' : 'failed', missing: 0 }
+  return { stage: 'done', missing: 0 }
+}
+
+/** The error and safety backup of the last restore, if it failed. */
+export function lastRestoreFailure(job: BackupJob | null | undefined): { error: string; safety: string } | null {
+  if (!job || job.kind !== 'restore' || job.running || !job.error) return null
+  return { error: job.error, safety: job.safety_name ?? '' }
+}
 
 export function canConfirmRestore(text: string): boolean {
   return text.trim() === RESTORE_WORD
