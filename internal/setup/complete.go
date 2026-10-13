@@ -122,7 +122,11 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 	if len(req.Admin.Password) < 8 {
 		return fasthttp.StatusBadRequest, errors.New("password must be at least 8 characters")
 	}
-	if fileExists(cand.Path) {
+	if len(req.Admin.Password) > 72 {
+		return fasthttp.StatusBadRequest, errors.New("password must be at most 72 bytes")
+	}
+	// A directory counts too: the config file could never be written there.
+	if _, err := os.Lstat(cand.Path); err == nil {
 		return fasthttp.StatusConflict, configExists(cand.Path)
 	}
 
@@ -149,20 +153,27 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 		return fasthttp.StatusInternalServerError, err
 	}
 	admin := config.DefaultAdminConfig{Email: addr.Address, Password: req.Admin.Password, FullName: fullName, OrganizationName: org}
-	if err := database.RunMigrationWithProgress(db, &admin); err != nil {
-		return fasthttp.StatusInternalServerError, fmt.Errorf("set up the database: %w", err)
-	}
+	migrateErr := s.migrate(db, &admin)
 	if adminID == uuid.Nil {
+		// The database had no users, so a user with this email is the one this
+		// attempt created. Recording it even when a later step failed lets a
+		// retry reuse this database.
 		var user models.User
-		if err := db.Where("email = ?", admin.Email).First(&user).Error; err != nil {
+		if err := db.Where("email = ?", admin.Email).First(&user).Error; err == nil {
+			adminID = user.ID
+		} else if migrateErr == nil {
 			return fasthttp.StatusInternalServerError, fmt.Errorf("find admin user: %w", err)
 		}
-		adminID = user.ID
+	}
+	if adminID != uuid.Nil {
+		s.seeded = &seededAdmin{target: target, userID: adminID}
+	}
+	if migrateErr != nil {
+		return fasthttp.StatusInternalServerError, fmt.Errorf("set up the database: %w", migrateErr)
 	}
 	if err := applyAdmin(db, adminID, admin); err != nil {
 		return fasthttp.StatusInternalServerError, err
 	}
-	s.seeded = &seededAdmin{target: target, userID: adminID}
 
 	jwtSecret, err := newSecret(48)
 	if err != nil {
@@ -180,7 +191,7 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 		return fasthttp.StatusInternalServerError, fmt.Errorf("create %s: %w", cand.DataDir, err)
 	}
 	body := Render(Values{
-		Environment: environmentFor(https), Port: req.Port, AllowedOrigins: origin,
+		Environment: environmentFor(https), Port: req.Port, AllowedOrigins: allowedOrigins(origin, https, s.urls(req.Port)),
 		Database: stored, JWTSecret: jwtSecret, EncryptionKey: encKey,
 	}, time.Now())
 	if s.beforeWrite != nil {

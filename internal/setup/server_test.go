@@ -2,8 +2,11 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,7 +42,11 @@ func newEnv(t *testing.T) env {
 	}
 	// The system location is "not writable" for this test: its root is a file.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-root"), []byte("x"), 0o600))
-	return env{s: newServer(o, 4747), dir: dir, configPath: filepath.Join(userDir, "config.toml"), dbPath: filepath.Join(userDir, "whatomate.db")}
+	s := newServer(o, 4747)
+	s.urls = func(port int) []string {
+		return []string{fmt.Sprintf("http://localhost:%d", port), fmt.Sprintf("http://192.168.1.5:%d", port)}
+	}
+	return env{s: s, dir: dir, configPath: filepath.Join(userDir, "config.toml"), dbPath: filepath.Join(userDir, "whatomate.db")}
 }
 
 func call(t *testing.T, s *server, method, path string, body any) (int, map[string]any) {
@@ -49,12 +56,19 @@ func call(t *testing.T, s *server, method, path string, body any) (int, map[stri
 
 func callAs(t *testing.T, s *server, method, path, contentType string, body any) (int, map[string]any) {
 	t.Helper()
+	return callWith(t, s, method, path, map[string]string{"Content-Type": contentType}, body)
+}
+
+func callWith(t *testing.T, s *server, method, path string, headers map[string]string, body any) (int, map[string]any) {
+	t.Helper()
 	var ctx fasthttp.RequestCtx
 	ctx.Request.Header.SetMethod(method)
 	ctx.Request.SetRequestURI(path)
 	ctx.Request.Header.SetHost("localhost:4747")
-	if contentType != "" {
-		ctx.Request.Header.SetContentType(contentType)
+	for k, v := range headers {
+		if v != "" {
+			ctx.Request.Header.Set(k, v)
+		}
 	}
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -139,7 +153,7 @@ func TestComplete_SQLiteWritesConfigAndAdmin(t *testing.T) {
 	assert.Equal(t, "whatomate.db", cfg.Database.Path, "relative to the data folder")
 	assert.Equal(t, 4747, cfg.Server.Port)
 	assert.Equal(t, "development", cfg.App.Environment)
-	assert.Equal(t, "http://localhost:4747", cfg.Server.AllowedOrigins)
+	assert.Equal(t, "http://localhost:4747,http://192.168.1.5:4747", cfg.Server.AllowedOrigins, "every address teammates may use")
 	assert.GreaterOrEqual(t, len(cfg.JWT.Secret), 32)
 	assert.NotEmpty(t, cfg.App.EncryptionKey)
 	raw, _ := os.ReadFile(e.configPath)
@@ -179,6 +193,56 @@ func TestComplete_RefusesExistingConfig(t *testing.T) {
 	assert.Contains(t, out["message"], "already exists")
 	raw, _ := os.ReadFile(e.configPath)
 	assert.Equal(t, "[app]\n", string(raw))
+}
+
+func TestComplete_HTTPSKeepsOnlyBrowserOrigin(t *testing.T) {
+	e := newEnv(t)
+	headers := map[string]string{"Content-Type": "application/json", "Origin": "https://chat.example.com", "X-Forwarded-Proto": "https"}
+	code, out := callWith(t, e.s, "POST", "/api/setup/complete", headers, completeBody(e))
+	require.Equal(t, 200, code, out)
+	assert.Equal(t, "https://chat.example.com", data(out)["url"])
+	cfg, err := config.Load(e.configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "production", cfg.App.Environment)
+	assert.Equal(t, "https://chat.example.com", cfg.Server.AllowedOrigins)
+}
+
+func TestComplete_RefusesDirectoryAtFixedPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	require.NoError(t, os.Mkdir(cfgPath, 0o750))
+	s := newServer(Options{
+		Version: "test", Log: logf.New(logf.Opts{}),
+		Target:  config.SetupTarget{Fixed: cfgPath},
+		Checker: &Checker{PortFree: func(int) bool { return true }},
+	}, 4747)
+	dbPath := filepath.Join(dir, "whatomate.db")
+	body := completeBody(env{configPath: cfgPath, dbPath: dbPath})
+	code, out := call(t, s, "POST", "/api/setup/complete", body)
+	assert.Equal(t, 409, code)
+	assert.Contains(t, out["message"], "already exists")
+	assert.NoFileExists(t, dbPath, "nothing is migrated")
+}
+
+func TestComplete_RetryAfterLateMigrationFailure(t *testing.T) {
+	e := newEnv(t)
+	e.s.migrate = func(db *gorm.DB, a *config.DefaultAdminConfig) error {
+		if err := database.RunMigrationWithProgress(db, a); err != nil {
+			return err
+		}
+		return errors.New("seed widgets: disk full")
+	}
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	require.Equal(t, 500, code, out)
+	assert.NoFileExists(t, e.configPath)
+
+	e.s.migrate = database.RunMigrationWithProgress
+	code, out = call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	require.Equal(t, 200, code, out)
+	var users []models.User
+	require.NoError(t, openSQLite(t, e.dbPath).Find(&users).Error)
+	require.Len(t, users, 1)
+	assert.Equal(t, "ana@example.com", users[0].Email)
 }
 
 func TestComplete_RejectsDatabaseWithUsers(t *testing.T) {
@@ -322,6 +386,10 @@ func TestComplete_ValidatesInput(t *testing.T) {
 		"short password": func(b map[string]any) {
 			b["admin"] = map[string]any{"full_name": "A", "email": "a@b.co", "password": "short"}
 		},
+		"password over 72 bytes": func(b map[string]any) {
+			// 37 characters, 74 bytes: bcrypt reads at most 72 bytes.
+			b["admin"] = map[string]any{"full_name": "A", "email": "a@b.co", "password": strings.Repeat("é", 37)}
+		},
 		"no full name": func(b map[string]any) {
 			b["admin"] = map[string]any{"full_name": "", "email": "a@b.co", "password": "longenough"}
 		},
@@ -335,6 +403,16 @@ func TestComplete_ValidatesInput(t *testing.T) {
 		assert.Equal(t, 400, code, name)
 	}
 	assert.NoFileExists(t, e.configPath)
+	assert.NoFileExists(t, e.dbPath, "validation runs before any database work")
+}
+
+func TestComplete_LongPasswordMessage(t *testing.T) {
+	e := newEnv(t)
+	body := completeBody(e)
+	body["admin"] = map[string]any{"full_name": "A", "email": "a@b.co", "password": strings.Repeat("x", 73)}
+	code, out := call(t, e.s, "POST", "/api/setup/complete", body)
+	assert.Equal(t, 400, code)
+	assert.Equal(t, "password must be at most 72 bytes", out["message"])
 }
 
 func TestUnknownAPIIs404(t *testing.T) {

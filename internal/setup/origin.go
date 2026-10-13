@@ -2,6 +2,8 @@ package setup
 
 import (
 	"net"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -9,8 +11,9 @@ import (
 )
 
 // browserOrigin returns the origin the browser used for ctx and whether it
-// was HTTPS. Without proxy headers, a chosen port other than listenPort
-// replaces the origin's port.
+// was HTTPS: the Origin header when it is a plain http(s) origin, else the
+// Host and X-Forwarded-* headers. Without proxy headers, a chosen port other
+// than listenPort replaces the origin's port.
 func browserOrigin(ctx *fasthttp.RequestCtx, port, listenPort int) (string, bool) {
 	scheme := "http"
 	if ctx.IsTLS() {
@@ -23,6 +26,9 @@ func browserOrigin(ctx *fasthttp.RequestCtx, port, listenPort int) (string, bool
 	host := string(ctx.Request.Header.Host())
 	if h := firstValue(ctx.Request.Header.Peek("X-Forwarded-Host")); h != "" {
 		host, proxied = h, true
+	}
+	if u, err := url.Parse(string(ctx.Request.Header.Peek("Origin"))); err == nil && isOrigin(u) {
+		scheme, host = strings.ToLower(u.Scheme), u.Host
 	}
 	hostname, hostPort := splitHost(host)
 	if !proxied && port != listenPort {
@@ -39,6 +45,29 @@ func browserOrigin(ctx *fasthttp.RequestCtx, port, listenPort int) (string, bool
 		hostname = "[" + hostname + "]"
 	}
 	return scheme + "://" + hostname, https
+}
+
+// isOrigin reports whether u is scheme://host[:port] with an http(s) scheme.
+func isOrigin(u *url.URL) bool {
+	scheme := strings.ToLower(u.Scheme)
+	return (scheme == "http" || scheme == "https") && u.Host != "" && u.User == nil &&
+		u.Path == "" && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery
+}
+
+// allowedOrigins is the allowed_origins value setup writes. Over HTTPS it is
+// the browser origin alone; over plain HTTP it adds every listen URL, so
+// teammates on another address of this machine get live updates too.
+func allowedOrigins(origin string, https bool, urls []string) string {
+	if https {
+		return origin
+	}
+	out := []string{origin}
+	for _, u := range urls {
+		if !slices.Contains(out, u) {
+			out = append(out, u)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func firstValue(v []byte) string {

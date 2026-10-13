@@ -16,7 +16,7 @@ import (
 )
 
 func TestMySQLDSN(t *testing.T) {
-	dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "db", Port: 3306, User: "u", Password: "p@ss:w/rd?&", Name: "app", SSLMode: "disable"}, "")
+	dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "db", Port: 3306, User: "u", Password: "p@ss:w/rd?&", Name: "app", SSLMode: "disable"}, "", 0)
 	require.NoError(t, err)
 	c, err := mysqldrv.ParseDSN(dsn)
 	require.NoError(t, err)
@@ -40,7 +40,7 @@ func TestMySQLDSN_ReadCommitted(t *testing.T) {
 		mariaDB    bool
 		set, unset string
 	}{{false, "transaction_isolation", "tx_isolation"}, {true, "tx_isolation", "transaction_isolation"}} {
-		dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "db", Port: 3306}, mysqlIsolationVar(tc.mariaDB))
+		dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "db", Port: 3306}, mysqlIsolationVar(tc.mariaDB), 0)
 		require.NoError(t, err)
 		c, err := mysqldrv.ParseDSN(dsn)
 		require.NoError(t, err)
@@ -51,22 +51,37 @@ func TestMySQLDSN_ReadCommitted(t *testing.T) {
 }
 
 func TestMySQLDSN_IPv6Host(t *testing.T) {
-	dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "::1", Port: 3307}, "")
+	dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "::1", Port: 3307}, "", 0)
 	require.NoError(t, err)
 	c, err := mysqldrv.ParseDSN(dsn)
 	require.NoError(t, err)
 	assert.Equal(t, "[::1]:3307", c.Addr)
 }
 
+func TestMySQLDSN_DialTimeout(t *testing.T) {
+	cfg := &config.DatabaseConfig{Host: "db", Port: 3306}
+	dsn, err := mysqlDSN(cfg, "", 0)
+	require.NoError(t, err)
+	c, err := mysqldrv.ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.Zero(t, c.Timeout, "the app's connections keep the driver default")
+
+	dsn, err = mysqlDSN(cfg, "", probeTimeout)
+	require.NoError(t, err)
+	c, err = mysqldrv.ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Second, c.Timeout)
+}
+
 func TestMySQLDSN_SSLModes(t *testing.T) {
 	for mode, want := range map[string]string{"": "false", "disable": "false", "require": "skip-verify", "verify-ca": "true", "verify-full": "true", "preferred": "preferred"} {
-		dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "h", Port: 3306, SSLMode: mode}, "")
+		dsn, err := mysqlDSN(&config.DatabaseConfig{Host: "h", Port: 3306, SSLMode: mode}, "", 0)
 		require.NoError(t, err, mode)
 		c, err := mysqldrv.ParseDSN(dsn)
 		require.NoError(t, err, mode)
 		assert.Equal(t, want, c.TLSConfig, mode)
 	}
-	_, err := mysqlDSN(&config.DatabaseConfig{SSLMode: "bogus"}, "")
+	_, err := mysqlDSN(&config.DatabaseConfig{SSLMode: "bogus"}, "", 0)
 	assert.EqualError(t, err, `unsupported ssl_mode "bogus" for mysql`)
 }
 

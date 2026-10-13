@@ -344,8 +344,12 @@ func runServer(args []string) {
 			lo.Info("Server listening", "address", handoff.Addr().String())
 			err = server.Serve(handoff)
 		} else {
+			ln, lerr := listenApp(addr, cfgPath)
+			if lerr != nil {
+				lo.Fatal("Server failed", "error", lerr)
+			}
 			lo.Info("Server listening", "address", addr)
-			err = server.ListenAndServe(addr)
+			err = server.Serve(ln)
 		}
 		if err != nil {
 			lo.Fatal("Server failed", "error", err)
@@ -570,6 +574,16 @@ func runSetup(flagPath string, lo logf.Logger) net.Listener {
 		lo.Fatal("Setup failed", "error", err)
 	}
 	return res.Listener
+}
+
+// listenApp binds addr as fasthttp's ListenAndServe does; the error names the
+// config file to edit.
+func listenApp(addr, cfgPath string) (net.Listener, error) {
+	ln, err := net.Listen("tcp4", addr)
+	if err != nil {
+		return nil, fmt.Errorf("cannot listen on %s: %w; change [server] port in %s or stop the program using that port", addr, err, cfgPath)
+	}
+	return ln, nil
 }
 
 // loadConfig finds and loads the config file, anchoring relative paths in a

@@ -45,13 +45,14 @@ var mysqlColumnSuffixes = map[string]string{
 var columnCollation = regexp.MustCompile(`(?i)\bCOLLATE\s+(\w+)`)
 
 // openMySQL rejects unsupported servers and databases, then returns a
-// dialector on a pool whose connections run at READ COMMITTED.
-func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
-	mariaDB, err := probeMySQL(cfg)
+// dialector on a pool whose connections run at READ COMMITTED. A non-zero
+// dialTimeout bounds each connection's dial.
+func openMySQL(cfg *config.DatabaseConfig, dialTimeout time.Duration) (gorm.Dialector, error) {
+	mariaDB, err := probeMySQL(cfg, dialTimeout)
 	if err != nil {
 		return nil, err
 	}
-	dsn, err := mysqlDSN(cfg, mysqlIsolationVar(mariaDB))
+	dsn, err := mysqlDSN(cfg, mysqlIsolationVar(mariaDB), dialTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +83,8 @@ func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 
 // probeMySQL checks the server and database on a throwaway connection and
 // reports whether the server is MariaDB.
-func probeMySQL(cfg *config.DatabaseConfig) (mariaDB bool, err error) {
-	dsn, err := mysqlDSN(cfg, "")
+func probeMySQL(cfg *config.DatabaseConfig, dialTimeout time.Duration) (mariaDB bool, err error) {
+	dsn, err := mysqlDSN(cfg, "", dialTimeout)
 	if err != nil {
 		return false, err
 	}
@@ -117,8 +118,9 @@ func mysqlIsolationVar(mariaDB bool) string {
 }
 
 // mysqlDSN builds the connection DSN; if isolationVar is set, every new
-// connection sets it to READ-COMMITTED.
-func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string) (string, error) {
+// connection sets it to READ-COMMITTED. Zero dialTimeout keeps the driver's
+// default.
+func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string, dialTimeout time.Duration) (string, error) {
 	tls, err := mysqlTLS(cfg.SSLMode)
 	if err != nil {
 		return "", err
@@ -130,6 +132,7 @@ func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string) (string, error) {
 	c.ParseTime, c.Loc = true, time.UTC
 	c.ClientFoundRows = true // RowsAffected counts matched rows, as on PostgreSQL
 	c.TLSConfig = tls
+	c.Timeout = dialTimeout
 	c.Params = map[string]string{"time_zone": "'+00:00'", "sql_mode": mysqlSQLMode}
 	if isolationVar != "" {
 		c.Params[isolationVar] = "'READ-COMMITTED'"

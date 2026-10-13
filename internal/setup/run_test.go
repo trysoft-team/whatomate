@@ -126,6 +126,18 @@ func TestRun_PortChangeLeavesRedirect(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("http://localhost:%d", newPort), out.Data.URL)
 }
 
+func TestListen_SkipsPortTakenOnLoopback(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = busy.Close() }()
+	taken := busy.Addr().(*net.TCPAddr).Port
+
+	ln, err := listen(taken)
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }()
+	assert.NotEqual(t, taken, ln.Addr().(*net.TCPAddr).Port, "another program's loopback listener keeps the port")
+}
+
 func TestRun_CancelStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	st := startRun(t, ctx, t.TempDir())

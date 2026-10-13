@@ -2,11 +2,13 @@ package database
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/config"
+	"gorm.io/driver/postgres"
 )
 
 func TestPostgresDSN_RoundTripsValues(t *testing.T) {
@@ -27,6 +29,23 @@ func TestPostgresDSN_RoundTripsValues(t *testing.T) {
 		assert.Equal(t, "o'brien app", pc.User, "%q", password)
 		assert.Nil(t, pc.TLSConfig, "sslmode=disable for %q", password)
 	}
+}
+
+func TestProbeDialector_PostgresConnectTimeout(t *testing.T) {
+	cfg := &config.DatabaseConfig{Driver: config.DriverPostgres, Host: "db", Port: 5432, User: "u", Password: "p w", Name: "app", SSLMode: "disable"}
+	d, err := probeDialector(cfg)
+	require.NoError(t, err)
+	pg, ok := d.(*postgres.Dialector)
+	require.True(t, ok)
+	pc, err := pgconn.ParseConfig(pg.DSN)
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Second, pc.ConnectTimeout)
+	assert.Equal(t, "p w", pc.Password)
+	assert.Equal(t, "app", pc.Database)
+
+	app, err := pgconn.ParseConfig(postgresDSN(cfg, cfg.Name))
+	require.NoError(t, err)
+	assert.Zero(t, app.ConnectTimeout, "the app's connection is unchanged")
 }
 
 func TestPostgresDSN_EmptySSLModeMeansPrefer(t *testing.T) {

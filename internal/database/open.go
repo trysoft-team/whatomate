@@ -50,7 +50,7 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 			types:     sqliteTypes,
 		}, nil
 	case config.DriverMySQL:
-		return openMySQL(cfg)
+		return openMySQL(cfg, 0)
 	}
 	return nil, fmt.Errorf("database driver %q is not supported yet", cfg.Driver)
 }

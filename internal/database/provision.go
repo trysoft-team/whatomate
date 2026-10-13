@@ -11,6 +11,8 @@ import (
 	mysqldrv "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/trysoft/whatomate/internal/config"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 var databaseName = regexp.MustCompile(`^[A-Za-z0-9_]{1,63}$`)
@@ -18,10 +20,18 @@ var databaseName = regexp.MustCompile(`^[A-Za-z0-9_]{1,63}$`)
 // ValidDatabaseName reports whether CreateDatabase accepts name.
 func ValidDatabaseName(name string) bool { return databaseName.MatchString(name) }
 
+// probeTimeout bounds how long Probe waits to connect, so an unreachable
+// server fails the wizard's test instead of hanging it.
+const probeTimeout = 10 * time.Second
+
 // Probe connects with cfg. It returns exists=false and no error when the
 // server accepts the login but the database does not exist yet.
 func Probe(cfg *config.DatabaseConfig) (exists bool, err error) {
-	db, err := Open(cfg, false)
+	dialector, err := probeDialector(cfg)
+	var db *gorm.DB
+	if err == nil {
+		db, err = open(dialector, cfg, false)
+	}
 	if err != nil {
 		if isUnknownDatabase(err) {
 			return false, nil
@@ -32,6 +42,17 @@ func Probe(cfg *config.DatabaseConfig) (exists bool, err error) {
 		_ = sqlDB.Close()
 	}
 	return true, nil
+}
+
+// probeDialector is OpenDialector with a connect timeout of probeTimeout.
+func probeDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
+	switch cfg.Driver {
+	case "", config.DriverPostgres:
+		return postgres.Open(postgresDSN(cfg, cfg.Name) + fmt.Sprintf(" connect_timeout=%d", int(probeTimeout/time.Second))), nil
+	case config.DriverMySQL:
+		return openMySQL(cfg, probeTimeout)
+	}
+	return OpenDialector(cfg)
 }
 
 func isUnknownDatabase(err error) bool {
@@ -66,7 +87,7 @@ func CreateDatabase(cfg *config.DatabaseConfig) error {
 		server := *cfg
 		server.Name = ""
 		var err error
-		if dsn, err = mysqlDSN(&server, ""); err != nil {
+		if dsn, err = mysqlDSN(&server, "", 0); err != nil {
 			return err
 		}
 		driver = "mysql"

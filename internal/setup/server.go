@@ -15,8 +15,10 @@ import (
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/frontend"
+	"github.com/trysoft/whatomate/internal/netutil"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/logf"
+	"gorm.io/gorm"
 )
 
 // Options configures Run.
@@ -88,8 +90,12 @@ func Run(ctx context.Context, o Options) (Result, error) {
 }
 
 func listen(port int) (net.Listener, error) {
-	if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err == nil {
-		return ln, nil
+	// PortFree also sees another program's listener on a single address,
+	// which a wildcard bind can share on macOS/BSD.
+	if netutil.PortFree(port) {
+		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err == nil {
+			return ln, nil
+		}
 	}
 	return net.Listen("tcp", ":0")
 }
@@ -133,6 +139,10 @@ type server struct {
 
 	// beforeWrite runs just before the config file is written; tests use it.
 	beforeWrite func()
+	// migrate prepares the database; tests replace it to fail part-way.
+	migrate func(*gorm.DB, *config.DefaultAdminConfig) error
+	// urls lists the addresses the app answers on for a port.
+	urls func(port int) []string
 }
 
 func newServer(o Options, listenPort int) *server {
@@ -140,7 +150,10 @@ func newServer(o Options, listenPort int) *server {
 	if frontend.IsEmbedded() {
 		fe = frontend.Handler("")
 	}
-	return &server{o: o, listenPort: listenPort, frontend: fe, done: make(chan finished, 1)}
+	return &server{
+		o: o, listenPort: listenPort, frontend: fe, done: make(chan finished, 1),
+		migrate: database.RunMigrationWithProgress, urls: listenURLs,
+	}
 }
 
 func notEmbedded(ctx *fasthttp.RequestCtx) {
