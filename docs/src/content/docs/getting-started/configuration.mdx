@@ -173,8 +173,8 @@ The `max_open_conns` / `max_idle_conns` / `conn_max_lifetime` knobs map directly
 
 Optional. When `host` is empty (the default), whatomate keeps caches and rate
 limits in memory and stores logins, OAuth and passkey state, WhatsApp Flow
-state, chatbot delays and the campaign queue in the main database. No Redis
-server is needed.
+state, sticky call routing, chatbot delays and the campaign queue in the main
+database. No Redis server is needed.
 
 The built-in store uses tables created by migrations, so start the server once
 with `-migrate` after upgrading; without them whatomate stops at startup and
@@ -196,6 +196,8 @@ the campaign again to re-queue its pending recipients.
 | `password` | Redis password. |
 | `db` | Redis database number. Default `0`. |
 | `tls` | `true` for TLS connections, e.g. managed services like Upstash, Redis Cloud or AWS ElastiCache Serverless. |
+
+CSRF protection does **not** use Redis or the database — it is a stateless double-submit cookie check (`whm_csrf` cookie vs. `X-CSRF-Token` header).
 
 ### `[jwt]`
 

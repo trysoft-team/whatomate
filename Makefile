@@ -60,7 +60,8 @@ test:
 		$(GOTEST) -v ./...; \
 	fi
 
-# Run the test suite against a temporary SQLite database (needs Redis).
+# Run the test suite against a temporary SQLite database. Redis-mode tests
+# run when TEST_REDIS_URL reaches a server and are skipped otherwise.
 test-sqlite:
 	TEST_DB_DRIVER=sqlite TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
 
