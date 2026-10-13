@@ -3026,13 +3026,25 @@
     "loadFailed": "Couldn't reach the setup server. Check that whatomate is still running, then reload this page.",
     "reload": "Reload",
     "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin" },
+    "stepHints": {
+      "welcome": "What setup will do",
+      "checks": "Port, config file and requirements",
+      "database": "Where whatomate keeps its data",
+      "admin": "Your organization and first admin"
+    },
+    "stepOf": "Step {n} of {total}",
     "back": "Back",
     "next": "Next",
     "welcome": {
       "title": "Welcome to whatomate",
       "body": "No configuration was found, so let's set this server up. You'll check the system, choose a database and create the first admin account. It takes a couple of minutes.",
       "version": "Version {version}",
-      "start": "Start setup"
+      "start": "Start setup",
+      "tiles": {
+        "checks": "Make sure this machine meets the requirements.",
+        "database": "Use SQLite with no setup, or connect PostgreSQL or MySQL.",
+        "admin": "Create your organization and the first admin account."
+      }
     },
     "checks": {
       "title": "System check",
@@ -3044,6 +3056,8 @@
       "locationHint": "Where whatomate saves its configuration. Data is stored in {dir}.",
       "scope": { "user": "This user", "system": "System-wide", "fixed": "Chosen at startup" },
       "notWritable": "not writable",
+      "checking": "Checking this machine…",
+      "summary": { "pass": "Passed: {n}", "warn": "Warnings: {n}", "fail": "Problems: {n}" },
       "items": {
         "system": "System",
         "folders": "Folders writable",
@@ -3059,6 +3073,12 @@
       "title": "Database",
       "subtitle": "SQLite needs nothing else installed. Use PostgreSQL or MySQL if you already run one.",
       "drivers": { "sqlite": "SQLite", "postgres": "PostgreSQL", "mysql": "MySQL / MariaDB" },
+      "driverHints": {
+        "sqlite": "No setup, stored on this machine.",
+        "postgres": "Connect to a PostgreSQL server you run.",
+        "mysql": "Connect to MySQL 8 or MariaDB."
+      },
+      "recommended": "Recommended",
       "path": "Database file",
       "host": "Host",
       "port": "Port",
@@ -3083,6 +3103,10 @@
       "password": "Password",
       "confirm": "Confirm password",
       "strength": { "tooShort": "Too short", "weak": "Weak", "fair": "Fair", "strong": "Strong" },
+      "orgSection": "Organization",
+      "accountSection": "Your account",
+      "showPassword": "Show passwords",
+      "hidePassword": "Hide passwords",
       "finish": "Finish setup",
       "errors": {
         "organization": "Enter an organization name.",
@@ -3095,6 +3119,7 @@
       }
     },
     "finish": {
+      "title": "Finishing setup",
       "saving": "Setting up the database, admin account and config file…",
       "slow": "This can take a minute.",
       "starting": "Starting whatomate…",
