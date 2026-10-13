@@ -3,16 +3,27 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 // ConfigEnvVar names the environment variable that points at a config file.
 const ConfigEnvVar = "WHATOMATE_CONFIG"
 
 const configFileName = "config.toml"
+
+// ErrNotFound matches (errors.Is) the error Locate returns when no config
+// file exists, as opposed to one that exists but can't be read.
+var ErrNotFound = errors.New("config file not found")
+
+type notFoundError struct{ msg string }
+
+func (e *notFoundError) Error() string        { return e.msg }
+func (e *notFoundError) Is(target error) bool { return target == ErrNotFound }
 
 // Source is the config file Locate chose.
 type Source struct {
@@ -48,15 +59,23 @@ func Locate(flagPath string) (Source, error) {
 
 func locate(flagPath string, e locateEnv) (Source, error) {
 	if flagPath != "" {
-		if !isFile(flagPath) {
-			return Source{}, fmt.Errorf("config file %s not found", flagPath)
+		ok, err := isFile(flagPath)
+		if err != nil {
+			return Source{}, err
+		}
+		if !ok {
+			return Source{}, &notFoundError{fmt.Sprintf("config file %s not found", flagPath)}
 		}
 		return Source{Path: flagPath}, nil
 	}
 	if p := e.getenv(ConfigEnvVar); p != "" {
 		p = e.abs(p)
-		if !isFile(p) {
-			return Source{}, fmt.Errorf("config file %s (from %s) not found", p, ConfigEnvVar)
+		ok, err := isFile(p)
+		if err != nil {
+			return Source{}, err
+		}
+		if !ok {
+			return Source{}, &notFoundError{fmt.Sprintf("config file %s (from %s) not found", p, ConfigEnvVar)}
 		}
 		return Source{Path: p}, nil
 	}
@@ -64,14 +83,60 @@ func locate(flagPath string, e locateEnv) (Source, error) {
 	cands := append([]candidate{{path: filepath.Join(e.cwd, configFileName)}}, e.userCandidates()...)
 	cands = append(cands, e.systemCandidates()...)
 	searched := make([]string, 0, len(cands))
+	var unchecked error
 	for _, c := range cands {
-		if isFile(c.path) {
+		ok, err := isFile(c.path)
+		if ok {
 			return Source{Path: c.path, BaseDir: c.base}, nil
+		}
+		if err != nil && unchecked == nil {
+			unchecked = err
 		}
 		searched = append(searched, c.path)
 	}
-	return Source{}, errors.New("no config file found; looked in:\n  " + strings.Join(searched, "\n  ") +
-		"\npass -config <path>, set " + ConfigEnvVar + ", or create one of these files from config.example.toml")
+	// A path that couldn't be checked may hold a config, so this isn't ErrNotFound.
+	if unchecked != nil {
+		return Source{}, unchecked
+	}
+	return Source{}, &notFoundError{"no config file found; looked in:\n  " + strings.Join(searched, "\n  ") +
+		"\npass -config <path>, set " + ConfigEnvVar + ", or create one of these files from config.example.toml"}
+}
+
+// SetupTarget lists where first-run setup may write a config file.
+type SetupTarget struct {
+	// Fixed is the file named by -config or WHATOMATE_CONFIG; setup writes
+	// exactly there and relative paths stay relative to the working directory.
+	Fixed string
+	// User and System are the per-user and system locations, used when Fixed
+	// is empty. BaseDir is each one's data folder.
+	User, System []Source
+}
+
+// Target returns where setup may write the config file for flagPath.
+func Target(flagPath string) SetupTarget {
+	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
+	return target(flagPath, locateEnv{goos: runtime.GOOS, getenv: os.Getenv, cwd: cwd, home: home})
+}
+
+func target(flagPath string, e locateEnv) SetupTarget {
+	if flagPath != "" {
+		if !filepath.IsAbs(flagPath) {
+			flagPath = filepath.Join(e.cwd, flagPath)
+		}
+		return SetupTarget{Fixed: flagPath}
+	}
+	if p := e.getenv(ConfigEnvVar); p != "" {
+		return SetupTarget{Fixed: e.abs(p)}
+	}
+	toSources := func(cs []candidate) []Source {
+		out := make([]Source, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, Source{Path: c.path, BaseDir: c.base})
+		}
+		return out
+	}
+	return SetupTarget{User: toSources(e.userCandidates()), System: toSources(e.systemCandidates())}
 }
 
 func (e locateEnv) userCandidates() []candidate {
@@ -135,9 +200,17 @@ func (e locateEnv) abs(p string) string {
 	return filepath.Join(e.cwd, p)
 }
 
-func isFile(p string) bool {
+// isFile reports whether p is a file. It returns an error only when p's
+// existence can't be checked (e.g. permission denied).
+func isFile(p string) (bool, error) {
 	fi, err := os.Stat(p)
-	return err == nil && !fi.IsDir()
+	switch {
+	case err == nil:
+		return !fi.IsDir(), nil
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return false, nil
+	}
+	return false, fmt.Errorf("checking config file: %w", err)
 }
 
 // ResolvePaths makes relative file paths in the config relative to base.

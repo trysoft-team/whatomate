@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,6 +131,76 @@ func TestLocate_NothingFoundListsSearchedPaths(t *testing.T) {
 	assert.Contains(t, msg, filepath.Join(root, "home/.config/whatomate/config.toml"))
 	assert.Contains(t, msg, filepath.Join(root, "etc/whatomate/config.toml"))
 	assert.Contains(t, msg, "-config")
+}
+
+func TestLocate_NotFoundErrorsMatchErrNotFound(t *testing.T) {
+	e, root := fakeEnv(t, "linux", nil)
+	_, err := locate("", e)
+	assert.True(t, errors.Is(err, ErrNotFound), "nothing found")
+
+	_, err = locate(filepath.Join(root, "missing.toml"), e)
+	assert.True(t, errors.Is(err, ErrNotFound), "missing -config file")
+
+	e2, _ := fakeEnv(t, "linux", map[string]string{"WHATOMATE_CONFIG": "/nope.toml"})
+	_, err = locate("", e2)
+	assert.True(t, errors.Is(err, ErrNotFound), "missing WHATOMATE_CONFIG file")
+}
+
+func TestLocate_InaccessibleIsNotErrNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	e, root := fakeEnv(t, "linux", nil, "locked/config.toml")
+	locked := filepath.Join(root, "locked")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	_, err := locate(filepath.Join(locked, "config.toml"), e)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "-config file that can't be checked")
+
+	e2 := e
+	e2.getenv = func(k string) string { return map[string]string{"WHATOMATE_CONFIG": "/locked/config.toml"}[k] }
+	_, err = locate("", e2)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "WHATOMATE_CONFIG file that can't be checked")
+
+	e.cwd = locked
+	_, err = locate("", e)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "search found nothing but couldn't check a path")
+
+	user := filepath.Join(root, "home/.config/whatomate/config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(user), 0o755))
+	require.NoError(t, os.WriteFile(user, []byte("[app]\n"), 0o600))
+	src, err := locate("", e)
+	require.NoError(t, err, "a later candidate still wins over one that can't be checked")
+	assert.Equal(t, user, src.Path)
+}
+
+func TestTarget_FlagIsFixed(t *testing.T) {
+	e, root := fakeEnv(t, "linux", nil)
+	assert.Equal(t, SetupTarget{Fixed: filepath.Join(root, "custom.toml")}, target(filepath.Join(root, "custom.toml"), e))
+	assert.Equal(t, filepath.Join(root, "cwd", "rel.toml"), target("rel.toml", e).Fixed)
+}
+
+func TestTarget_EnvIsFixed(t *testing.T) {
+	e, root := fakeEnv(t, "linux", map[string]string{"WHATOMATE_CONFIG": "/env.toml"})
+	assert.Equal(t, filepath.Join(root, "env.toml"), target("", e).Fixed)
+}
+
+func TestTarget_LinuxUserAndSystem(t *testing.T) {
+	e, root := fakeEnv(t, "linux", nil)
+	tg := target("", e)
+	assert.Empty(t, tg.Fixed)
+	assert.Equal(t, []Source{{
+		Path:    filepath.Join(root, "home/.config/whatomate/config.toml"),
+		BaseDir: filepath.Join(root, "home/.config/whatomate"),
+	}}, tg.User)
+	assert.Equal(t, []Source{{
+		Path:    filepath.Join(root, "etc/whatomate/config.toml"),
+		BaseDir: filepath.Join(root, "var/lib/whatomate"),
+	}}, tg.System)
 }
 
 func TestResolvePaths(t *testing.T) {
