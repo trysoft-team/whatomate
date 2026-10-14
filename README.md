@@ -68,15 +68,67 @@ Modern, open-source WhatsApp Business Platform. One binary, a setup wizard in th
 
 ### 1. Install
 
-**Homebrew (macOS and Linux)**
+Release archives for Linux, macOS, Windows and FreeBSD are on the [releases page](https://github.com/trysoft-team/whatomate/releases/latest).
+
+#### Homebrew (macOS and Linux)
 
 ```bash
 brew install trysoft-team/tap/whatomate
 ```
 
-**Binary** — download the [latest release](https://github.com/trysoft-team/whatomate/releases/latest) for Linux (`amd64`, `arm64`, `armv7`), macOS (universal), Windows (`amd64`, `arm64`) or FreeBSD, and extract it.
+#### Linux
 
-**From source** — needs Go 1.25+ and Node.js 20.19+:
+Pick the archive for your CPU: `linux_amd64` (most servers and PCs), `linux_arm64` (64-bit ARM) or `linux_armv7` (32-bit Raspberry Pi).
+
+```bash
+VERSION=1.0.0
+curl -LO https://github.com/trysoft-team/whatomate/releases/download/v${VERSION}/whatomate_${VERSION}_linux_amd64.tar.gz
+tar -xzf whatomate_${VERSION}_linux_amd64.tar.gz
+sudo install -m 755 whatomate /usr/local/bin/whatomate
+whatomate version
+
+# Optional, for WhatsApp calling and spoken IVR greetings (Debian/Ubuntu)
+sudo apt install ffmpeg opus-tools espeak-ng
+```
+
+To keep it running after you log out and start it at boot, create `/etc/systemd/system/whatomate.service`:
+
+```ini
+[Unit]
+Description=Whatomate
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/whatomate server
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now whatomate
+journalctl -u whatomate -f   # the setup link appears here on the first run
+```
+
+#### Windows
+
+1. Download `whatomate_<version>_windows_amd64.zip` (or `windows_arm64` on ARM PCs) from the [releases page](https://github.com/trysoft-team/whatomate/releases/latest).
+2. Extract it to a folder, for example `C:\whatomate`.
+3. Open PowerShell in that folder and run:
+
+   ```powershell
+   .\whatomate.exe
+   ```
+
+   If Windows SmartScreen says it protected your PC, choose **More info → Run anyway**.
+
+For WhatsApp calling, install `ffmpeg` (`winget install Gyan.FFmpeg`) and [opus-tools](https://opus-codec.org/downloads/), and make sure both are on your `PATH`. The setup wizard saves the config to `%AppData%\whatomate\config.toml`.
+
+#### From source
+
+Needs Go 1.25+ and Node.js 20.19+:
 
 ```bash
 git clone https://github.com/trysoft-team/whatomate.git
@@ -99,6 +151,28 @@ The wizard writes the config file and starts whatomate on the same port. Then co
 
 > [!TIP]
 > Voice features use `ffmpeg` and `opus-tools`; text-to-speech also uses Piper and `espeak-ng`. Homebrew installs `ffmpeg` and `opus-tools` for you.
+
+### 3. Open port 4747
+
+To reach whatomate from other computers (or to open the setup wizard on a remote server), allow TCP port 4747 through the firewall, then open the setup link from the log with the server's address in place of `localhost`.
+
+```bash
+# Ubuntu / Debian (ufw)
+sudo ufw allow 4747/tcp
+
+# Fedora / RHEL / CentOS (firewalld)
+sudo firewall-cmd --permanent --add-port=4747/tcp
+sudo firewall-cmd --reload
+```
+
+```powershell
+# Windows (PowerShell as Administrator)
+New-NetFirewallRule -DisplayName "Whatomate" -Direction Inbound -Protocol TCP -LocalPort 4747 -Action Allow
+```
+
+On macOS, allow incoming connections when the system asks. On a cloud server (AWS, Azure, GCP, DigitalOcean, ...), also allow inbound TCP 4747 in the provider's security group or firewall. If you changed the port in setup or in `config.toml`, open that port instead.
+
+For WhatsApp webhooks and calls, Meta needs a public HTTPS address; put whatomate behind a reverse proxy with TLS (for example Caddy or nginx) rather than exposing port 4747 to the internet. Calls also need the UDP ports described in the [calling docs](https://trysoft-team.github.io/whatomate/features/calling/#firewall--network).
 
 ### Docker
 
