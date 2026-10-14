@@ -3095,6 +3095,14 @@
     "title": "Set up whatomate",
     "loadFailed": "Couldn't reach the setup server. Check that whatomate is still running, then reload this page.",
     "reload": "Reload",
+    "key": {
+      "title": "Open the setup link from the server",
+      "body": "For safety, setup only works through the full link printed in whatomate's log when it started. The link contains a one-time key. Open that link, or paste it or the key below.",
+      "label": "Setup link or key",
+      "placeholder": "http://…/#token=…",
+      "rejected": "That key was not accepted. Copy the link again from the log: it changes every time whatomate starts.",
+      "continue": "Continue"
+    },
     "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin", "restore": "Restore" },
     "stepHints": {
       "welcome": "What setup will do",

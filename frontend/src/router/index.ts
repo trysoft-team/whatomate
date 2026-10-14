@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { setupNeeded, setupRedirect } from '@/lib/setupState'
+import { captureSetupToken } from '@/lib/setup'
 
 // Permission-based route meta type
 declare module 'vue-router' {
@@ -14,6 +15,10 @@ declare module 'vue-router' {
 // Get base path from server-injected config or fallback to Vite's BASE_URL
 const basePath = (window as any).__BASE_PATH__ ?? import.meta.env.BASE_URL ?? '/'
 const normalizedBasePath = basePath.endsWith('/') ? basePath : basePath + '/'
+
+// The router keeps the address it starts with, so take the setup key out first.
+const setupAddress = captureSetupToken(window.location, sessionStorage)
+if (setupAddress !== null) window.history.replaceState(window.history.state, '', setupAddress)
 
 const router = createRouter({
   history: createWebHistory(normalizedBasePath),

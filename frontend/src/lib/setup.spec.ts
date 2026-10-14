@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
-  adminErrors, afterSetup, databaseReady, defaultDatabasePort, defaultSQLitePath,
-  hasFailedCheck, keyState, passwordStrength, restorePhaseIndex, restoreReady, stepsFor, validPort, type AdminForm,
+  adminErrors, afterSetup, captureSetupToken, clearSetupToken, databaseReady, defaultDatabasePort, defaultSQLitePath,
+  hasFailedCheck, keyState, onSetupTokenRejected, parseSetupToken, passwordStrength, restorePhaseIndex, restoreReady,
+  saveSetupToken, setupTokenRejected, stepsFor, storedSetupToken, tokenFromHash, validPort, type AdminForm,
 } from './setup'
 import type { SetupBackupSummary } from '@/services/api'
 
@@ -109,6 +110,69 @@ describe('keyState and restoreReady', () => {
   })
   it('is not ready without a summary', () => {
     expect(restoreReady(null, '')).toBe(false)
+  })
+})
+
+function memoryStore() {
+  const m = new Map<string, string>()
+  return {
+    getItem: (k: string) => m.get(k) ?? null,
+    setItem: (k: string, v: string) => { m.set(k, v) },
+    removeItem: (k: string) => { m.delete(k) },
+  }
+}
+
+describe('setup token', () => {
+  it('reads the key from the URL fragment', () => {
+    expect(tokenFromHash('#token=abc_DEF-123')).toBe('abc_DEF-123')
+    expect(tokenFromHash('#x=1&token=abc')).toBe('abc')
+    expect(tokenFromHash('')).toBe('')
+    expect(tokenFromHash('#abc')).toBe('')
+    expect(tokenFromHash('#access_token=abc')).toBe('')
+    expect(tokenFromHash('#token=<script>')).toBe('')
+  })
+
+  it('accepts a pasted link or bare key', () => {
+    expect(parseSetupToken('  http://192.168.1.5:4747/#token=abc123  ')).toBe('abc123')
+    expect(parseSetupToken('abc123')).toBe('abc123')
+    expect(parseSetupToken('token=abc123')).toBe('abc123')
+    expect(parseSetupToken('http://192.168.1.5:4747/')).toBe('')
+    expect(parseSetupToken('http://192.168.1.5:4747/#')).toBe('')
+    expect(parseSetupToken('')).toBe('')
+  })
+
+  it('moves the key from the address into storage', () => {
+    const store = memoryStore()
+    expect(captureSetupToken({ pathname: '/', search: '', hash: '#token=abc' }, store)).toBe('/')
+    expect(storedSetupToken(store)).toBe('abc')
+    expect(captureSetupToken({ pathname: '/setup', search: '?a=1', hash: '#token=xyz' }, store)).toBe('/setup?a=1')
+    expect(storedSetupToken(store)).toBe('xyz')
+  })
+
+  it('leaves the address and storage alone without a key', () => {
+    const store = memoryStore()
+    saveSetupToken('kept', store)
+    expect(captureSetupToken({ pathname: '/login', search: '', hash: '#section' }, store)).toBeNull()
+    expect(storedSetupToken(store)).toBe('kept')
+    clearSetupToken(store)
+    expect(storedSetupToken(store)).toBe('')
+  })
+
+  it('clears the key and notifies when the server refuses it', () => {
+    vi.stubGlobal('sessionStorage', memoryStore())
+    try {
+      saveSetupToken('stale')
+      const seen = vi.fn()
+      onSetupTokenRejected(seen)
+      setupTokenRejected()
+      expect(seen).toHaveBeenCalledOnce()
+      expect(storedSetupToken()).toBe('')
+      onSetupTokenRejected(null)
+      setupTokenRejected()
+      expect(seen).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

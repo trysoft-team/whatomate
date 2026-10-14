@@ -220,7 +220,11 @@ whatomate
 ```
 
 With no config file, whatomate opens a setup wizard in your browser at
-http://localhost:4747 (on a server without a desktop, open the URL it prints).
+http://localhost:4747. The address it opens, and the ones it prints in its
+log, end in `#token=…`: a one-time key that only this run of whatomate
+accepts. When you reach the wizard another way (on a server without a
+desktop, or from another machine), open the **full** URL from the log,
+including the key; without it the wizard asks for the link or key.
 The wizard:
 
 1. checks the system (folders, disk, memory, port, internet, clock, audio tools);
@@ -229,13 +233,13 @@ The wizard:
    [Restore from a backup](#restore-from-a-backup));
 4. writes the config file and starts whatomate on the same port.
 
-Then log in with the admin account you created in the setup wizard.
+Then log in with the admin account you created in the setup wizard, or, after
+a restore, with an account from the backup.
 
 :::caution
-Until setup is finished, anyone who can reach the setup port (4747 by default)
-can complete it.
-Run the first setup on a private network or behind a firewall, then expose
-whatomate.
+Until setup is finished, anyone who has the setup link with its key can
+complete it. Keep the link private (it is in whatomate's log), run the first
+setup on a private network or behind a firewall, then expose whatomate.
 :::
 
 To set up again, delete the config file (`whatomate config path` shows where
@@ -272,7 +276,8 @@ it restores a backup made in
    files back and saving settings.
 
 The database must have no users: use an empty one (one left behind by an
-unfinished **Start fresh** attempt of this wizard is also accepted). No admin
+unfinished **Start fresh** attempt of this wizard, or by a restore into the
+same database that stopped before it finished, is also accepted). No admin
 account is created and no safety backup is taken. When the restore finishes,
 sign in with an account **from the backup**.
 

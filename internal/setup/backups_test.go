@@ -46,6 +46,7 @@ func putChunk(t *testing.T, s *server, id string, offset int, body []byte) (int,
 	ctx.Request.SetRequestURI("/api/setup/backup-uploads/" + id + "?offset=" + itoa(offset))
 	ctx.Request.Header.SetHost("localhost:4747")
 	ctx.Request.Header.SetContentType("application/octet-stream")
+	ctx.Request.Header.Set(tokenHeader, s.token)
 	ctx.Request.SetBody(body)
 	s.handle(&ctx)
 	var out map[string]any

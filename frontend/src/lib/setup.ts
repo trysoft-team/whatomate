@@ -99,6 +99,60 @@ export function restoreReady(summary: SetupBackupSummary | null, key: string): b
   return !!summary && keyState(summary, key) !== 'mismatch'
 }
 
+const SETUP_TOKEN_KEY = 'whatomate_setup_token'
+const TOKEN_CHARS = /^[A-Za-z0-9_-]+$/
+
+type TokenStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+
+/** tokenFromHash reads the setup key from a URL fragment such as "#token=…". */
+export function tokenFromHash(hash: string): string {
+  const m = /(?:^|[#&])token=([^&]*)/.exec(hash)
+  return m && TOKEN_CHARS.test(m[1]) ? m[1] : ''
+}
+
+/** parseSetupToken accepts the full link from the server log or the bare key. */
+export function parseSetupToken(input: string): string {
+  const s = input.trim()
+  if (s.includes('#')) return tokenFromHash(s.slice(s.indexOf('#')))
+  return TOKEN_CHARS.test(s) ? s : tokenFromHash(s)
+}
+
+/**
+ * captureSetupToken moves the key from the address bar into store, so it
+ * isn't left in history or bookmarks. It returns the address to show instead,
+ * or null when the hash holds no key.
+ */
+export function captureSetupToken(loc: { pathname: string; search: string; hash: string }, store: TokenStore): string | null {
+  const token = tokenFromHash(loc.hash)
+  if (!token) return null
+  store.setItem(SETUP_TOKEN_KEY, token)
+  return loc.pathname + loc.search
+}
+
+export function storedSetupToken(store: TokenStore = sessionStorage): string {
+  return store.getItem(SETUP_TOKEN_KEY) ?? ''
+}
+
+export function saveSetupToken(token: string, store: TokenStore = sessionStorage): void {
+  store.setItem(SETUP_TOKEN_KEY, token)
+}
+
+export function clearSetupToken(store: TokenStore = sessionStorage): void {
+  store.removeItem(SETUP_TOKEN_KEY)
+}
+
+let onTokenRejected: (() => void) | null = null
+
+/** onSetupTokenRejected registers what to do when the setup server refuses the key. */
+export function onSetupTokenRejected(fn: (() => void) | null): void {
+  onTokenRejected = fn
+}
+
+export function setupTokenRejected(): void {
+  clearSetupToken()
+  onTokenRejected?.()
+}
+
 export const RESTORE_PHASES = ['prepare', 'verify', 'load', 'links', 'swap', 'config'] as const
 
 export function restorePhaseIndex(phase: string): number {

@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,19 +22,39 @@ import (
 )
 
 type started struct {
-	url string
-	res chan Result
-	err chan error
+	// url is the wizard's address without the token; opened is the URL
+	// passed to OpenBrowser.
+	url, opened, token string
+	log                *syncBuffer
+	res                chan Result
+	err                chan error
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 
 func startRun(t *testing.T, ctx context.Context, dir string) started {
 	t.Helper()
 	urls := make(chan string, 1)
-	st := started{res: make(chan Result, 1), err: make(chan error, 1)}
+	st := started{log: &syncBuffer{}, res: make(chan Result, 1), err: make(chan error, 1)}
 	userDir := filepath.Join(dir, "user")
 	go func() {
 		res, err := Run(ctx, Options{
-			Version: "test", Port: 0, Log: logf.New(logf.Opts{}),
+			Version: "test", Port: 0, Log: logf.New(logf.Opts{Writer: st.log}),
 			Target:      config.SetupTarget{User: []config.Source{{Path: filepath.Join(userDir, "config.toml"), BaseDir: userDir}}},
 			OpenBrowser: func(u string) error { urls <- u; return nil },
 			MovedGrace:  3 * time.Second,
@@ -41,18 +63,25 @@ func startRun(t *testing.T, ctx context.Context, dir string) started {
 		st.err <- err
 	}()
 	select {
-	case st.url = <-urls:
+	case st.opened = <-urls:
 	case <-time.After(5 * time.Second):
 		t.Fatal("setup did not start")
 	}
+	var ok bool
+	st.url, st.token, ok = strings.Cut(st.opened, "/#token=")
+	require.True(t, ok, "the opened URL carries the token in its fragment")
 	return st
 }
 
-func postJSON(t *testing.T, url string, body any) *http.Response {
+func (st started) postJSON(t *testing.T, path string, body any) *http.Response {
 	t.Helper()
 	b, err := json.Marshal(body)
 	require.NoError(t, err)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	req, err := http.NewRequest("POST", st.url+path, bytes.NewReader(b))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(tokenHeader, st.token)
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	return resp
 }
@@ -83,7 +112,7 @@ func TestRun_SamePortHandsOverListener(t *testing.T) {
 	_, err := fmt.Sscanf(st.url, "http://localhost:%d", &port)
 	require.NoError(t, err)
 
-	resp := postJSON(t, st.url+"/api/setup/complete", runBody(dir, st.url, port))
+	resp := st.postJSON(t, "/api/setup/complete", runBody(dir, st.url, port))
 	require.Equal(t, 200, resp.StatusCode)
 	_ = resp.Body.Close()
 
@@ -102,12 +131,43 @@ func TestRun_SamePortHandsOverListener(t *testing.T) {
 	assert.Equal(t, "app", string(b), "the app serves on the setup socket")
 }
 
+func TestRun_WizardURLCarriesToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	dir := t.TempDir()
+	st := startRun(t, ctx, dir)
+	assert.Regexp(t, `^http://localhost:\d+$`, st.url)
+	assert.Regexp(t, `^[A-Za-z0-9_-]{32}$`, st.token, "192 random bits, URL-safe")
+	assert.Contains(t, st.log.String(), st.opened, "the logged URL carries the token")
+
+	get, err := http.Get(st.url + "/api/setup/backups?config_path=" + filepath.Join(dir, "user", "config.toml"))
+	require.NoError(t, err)
+	_ = get.Body.Close()
+	assert.Equal(t, 401, get.StatusCode)
+	resp := st.postJSON(t, "/api/setup/database/test", map[string]any{"driver": "sqlite", "path": filepath.Join(dir, "user", "w.db")})
+	_ = resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	other := startRun(t, ctx, t.TempDir())
+	assert.NotEqual(t, st.token, other.token, "a new token every run")
+
+	resp = st.postJSON(t, "/api/setup/complete", runBody(dir, st.url, freePort(t)))
+	_ = resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	require.NoError(t, <-st.err)
+	for _, line := range strings.Split(st.log.String(), "\n") {
+		if strings.Contains(line, st.token) {
+			assert.Contains(t, line, "setup wizard", "the token appears only in the wizard URL lines")
+		}
+	}
+}
+
 func TestRun_PortChangeLeavesRedirect(t *testing.T) {
 	dir := t.TempDir()
 	st := startRun(t, context.Background(), dir)
 	newPort := freePort(t)
 
-	resp := postJSON(t, st.url+"/api/setup/complete", runBody(dir, st.url, newPort))
+	resp := st.postJSON(t, "/api/setup/complete", runBody(dir, st.url, newPort))
 	require.Equal(t, 200, resp.StatusCode)
 	_ = resp.Body.Close()
 
@@ -145,7 +205,7 @@ func TestRun_AcceptsLargeUploadChunk(t *testing.T) {
 	st := startRun(t, ctx, dir)
 	configPath := filepath.Join(dir, "user", "config.toml")
 	body := map[string]any{"config_path": configPath, "name": "big.zip", "size": 8 << 20}
-	resp := postJSON(t, st.url+"/api/setup/backup-uploads", body)
+	resp := st.postJSON(t, "/api/setup/backup-uploads", body)
 	require.Equal(t, 200, resp.StatusCode)
 	var out struct{ Data struct{ ID string } }
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
@@ -154,6 +214,7 @@ func TestRun_AcceptsLargeUploadChunk(t *testing.T) {
 	req, err := http.NewRequest("PUT", st.url+"/api/setup/backup-uploads/"+out.Data.ID+"?offset=0", bytes.NewReader(make([]byte, 8<<20)))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(tokenHeader, st.token)
 	put, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = put.Body.Close()

@@ -133,19 +133,56 @@ answer only while setup is running.
   starts.
 - **Database has users / config already exists / port taken:** the same
   errors as the fresh finish, before anything starts.
-- **Server stopped mid-restore:** no config exists, so the next start opens
-  the wizard again. The database may hold a partial schema but no rows from
-  the failed transaction; it has no users, so it is accepted again.
+- **Server stopped mid-restore, or the config fails to write:** no config
+  exists, so the wizard runs again (or stays up). The data may already be
+  committed, so the database can hold the backup's users. Before the job
+  starts, the wizard writes `<data folder>/.setup-restore-pending` (mode
+  0600) holding only the database's identity (driver, host, port and name,
+  or the SQLite path; no password). A restore into a database with users is
+  accepted when that marker names the same database: the restore empties the
+  tables first. The marker is removed once a config file is written (by a
+  restore or a fresh finish); a failed load leaves it. The fresh finish never
+  accepts a database with users because of the marker.
 
 ## Security
 
-The wizard is unauthenticated until a config file exists, by design. Restore
-adds no new class of risk: anyone who can reach the wizard can already
-finish setup with their own admin. The existing follow-up `whatomate-unk`
-(allowlist the Host header against DNS rebinding) covers both paths. A typed
-path lets the operator read any `.zip` the process can read, but only as a
-backup: it must pass `backup.Inspect`, and nothing from it is returned except
-the manifest summary.
+Restore makes the setup port worth attacking. Without a key, anyone who could
+reach it (it listens on every interface) could list the server's backups, or
+name any `.zip` path, and restore it into a database they control: every row,
+including users, tokens and encrypted secrets, would be copied to them, and
+the config would be written pointing at their database. So the whole wizard
+needs a **one-time setup token**:
+
+- `Run` makes a random token (24 bytes from `crypto/rand`, base64url) when it
+  starts and keeps it only in memory; a new run gets a new token.
+- The token rides in the URL **fragment** of every wizard URL it logs and of
+  the one it opens in the browser (`http://localhost:4747/#token=…`).
+  Browsers never send the fragment, so the token stays out of request logs,
+  proxies and `Referer` headers. These startup log lines are the only place
+  it is printed.
+- The page moves the token from the address bar into `sessionStorage`
+  (`history.replaceState`) before the router starts, and sends it as
+  `X-Setup-Token` on every `/api/setup/*` call, chunk `PUT`s included.
+- The server compares the header in constant time (`crypto/subtle`) on every
+  `/api/setup/*` route and answers 401 without it. The page and its assets
+  stay public. A custom header also makes every setup call a CORS
+  non-simple request, which another website cannot send from the operator's
+  browser.
+- `GET /api/setup/status` still answers without the token, with only
+  `{needed: true, version, token_required: true}` (no config locations or
+  paths), so the page can ask for the link; after the hand-off it answers
+  `{needed: false, url}` as before, which the page's hand-off polling needs.
+- Without a valid token (or after a 401) the page explains that the full link
+  from the server's log is needed, and takes the link or the bare key.
+- The old setup port's redirect after a port change needs no token: it only
+  points at the app.
+
+Anyone who has the link can still finish setup, so the docs say to keep it
+private and run the first setup on a private network. A typed path lets the
+operator read any `.zip` the process can read, but only as a backup: it must
+pass `backup.Inspect`, and nothing from it is returned except the manifest
+summary. The follow-up `whatomate-unk` (allowlist the Host header against DNS
+rebinding) still applies.
 
 ## Frontend
 

@@ -72,7 +72,7 @@ To move, for example from SQLite to PostgreSQL:
 
 1. On the old server, make a backup (with files) and download it.
 2. Copy `encryption_key` from the old server's `config.toml`.
-3. Start whatomate on the new server with no config file, so the [setup wizard](/whatomate/getting-started/quickstart/#restore-from-a-backup) opens.
+3. Start whatomate on the new server with no config file, so the [setup wizard](/whatomate/getting-started/quickstart/#restore-from-a-backup) opens. From another machine, open the full URL it prints in its log: it ends in a one-time key (`#token=…`).
 4. Choose **Restore from a backup** and pick the new database. It must have no users.
 5. Under **Upload a backup**, upload the backup file.
 6. Paste the old `encryption_key` into **Old encryption key**; it should show "Matches the backup".

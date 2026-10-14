@@ -20,6 +20,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const testToken = "test-setup-token"
+
 type env struct {
 	s          *server
 	dir        string
@@ -42,7 +44,7 @@ func newEnv(t *testing.T) env {
 	}
 	// The system location is "not writable" for this test: its root is a file.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-root"), []byte("x"), 0o600))
-	s := newServer(o, 4747)
+	s := newServer(o, 4747, testToken)
 	s.urls = func(port int) []string {
 		return []string{fmt.Sprintf("http://localhost:%d", port), fmt.Sprintf("http://192.168.1.5:%d", port)}
 	}
@@ -59,13 +61,19 @@ func callAs(t *testing.T, s *server, method, path, contentType string, body any)
 	return callWith(t, s, method, path, map[string]string{"Content-Type": contentType}, body)
 }
 
+// callWith sends the setup token unless headers set tokenHeader ("" sends
+// none).
 func callWith(t *testing.T, s *server, method, path string, headers map[string]string, body any) (int, map[string]any) {
 	t.Helper()
 	var ctx fasthttp.RequestCtx
 	ctx.Request.Header.SetMethod(method)
 	ctx.Request.SetRequestURI(path)
 	ctx.Request.Header.SetHost("localhost:4747")
+	all := map[string]string{tokenHeader: s.token}
 	for k, v := range headers {
+		all[k] = v
+	}
+	for k, v := range all {
 		if v != "" {
 			ctx.Request.Header.Set(k, v)
 		}
@@ -117,6 +125,56 @@ func TestStatus_BeforeSetup(t *testing.T) {
 	assert.Equal(t, float64(4747), d["listen_port"])
 	assert.Equal(t, e.configPath, d["config_path"], "system not writable, so the user folder is chosen")
 	assert.Len(t, d["candidates"], 2)
+}
+
+func TestToken_RequiredOnSetupAPI(t *testing.T) {
+	e := newEnv(t)
+	src := filepath.Join(e.dir, "x.zip")
+	routes := []struct {
+		method, path string
+		body         any
+	}{
+		{"GET", "/api/setup/checks?port=4747&config_path=" + e.configPath, nil},
+		{"POST", "/api/setup/database/test", map[string]any{"driver": "sqlite", "path": e.dbPath}},
+		{"POST", "/api/setup/complete", completeBody(e)},
+		{"GET", "/api/setup/backups?config_path=" + e.configPath, nil},
+		{"POST", "/api/setup/backup-uploads", map[string]any{"config_path": e.configPath, "name": "x.zip", "size": 5}},
+		{"PUT", "/api/setup/backup-uploads/abc?offset=0", nil},
+		{"POST", "/api/setup/backup/inspect", map[string]any{"config_path": e.configPath, "backup": map[string]any{"path": src}}},
+		{"POST", "/api/setup/restore", restoreBody(e, map[string]any{"path": src}, "")},
+		{"GET", "/api/setup/restore", nil},
+	}
+	for _, token := range []string{"", "wrong-token", testToken + "x"} {
+		for _, r := range routes {
+			headers := map[string]string{"Content-Type": "application/json", tokenHeader: token}
+			code, out := callWith(t, e.s, r.method, r.path, headers, r.body)
+			assert.Equal(t, 401, code, "%s %s with token %q", r.method, r.path, token)
+			assert.Equal(t, "error", out["status"])
+			assert.Contains(t, out["message"], "setup key")
+		}
+	}
+	assert.NoFileExists(t, e.configPath)
+	assert.NoFileExists(t, e.dbPath)
+
+	code, _ := callWith(t, e.s, "GET", "/", map[string]string{tokenHeader: ""}, nil)
+	assert.NotEqual(t, 401, code, "the page itself is public")
+}
+
+func TestStatus_WithoutTokenIsMinimal(t *testing.T) {
+	e := newEnv(t)
+	for _, token := range []string{"", "wrong-token"} {
+		code, out := callWith(t, e.s, "GET", "/api/setup/status", map[string]string{tokenHeader: token}, nil)
+		require.Equal(t, 200, code)
+		assert.Equal(t, map[string]any{"needed": true, "ready": false, "token_required": true, "version": "test"}, data(out))
+	}
+
+	_, out := call(t, e.s, "GET", "/api/setup/status", nil)
+	assert.Nil(t, data(out)["token_required"], "the right token sees the full status")
+	assert.NotEmpty(t, data(out)["candidates"])
+
+	e.s.finishSetup(finished{port: 4747, url: "http://localhost:4747"})
+	_, out = callWith(t, e.s, "GET", "/api/setup/status", map[string]string{tokenHeader: ""}, nil)
+	assert.Equal(t, map[string]any{"needed": false, "ready": false, "url": "http://localhost:4747"}, data(out), "the hand-off needs no token")
 }
 
 func TestChecks_RejectsUnknownLocation(t *testing.T) {
@@ -215,7 +273,7 @@ func TestComplete_RefusesDirectoryAtFixedPath(t *testing.T) {
 		Version: "test", Log: logf.New(logf.Opts{}),
 		Target:  config.SetupTarget{Fixed: cfgPath},
 		Checker: &Checker{PortFree: func(int) bool { return true }},
-	}, 4747)
+	}, 4747, testToken)
 	dbPath := filepath.Join(dir, "whatomate.db")
 	body := completeBody(env{configPath: cfgPath, dbPath: dbPath})
 	code, out := call(t, s, "POST", "/api/setup/complete", body)

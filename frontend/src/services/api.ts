@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import { setupTokenRejected, storedSetupToken } from '@/lib/setup'
 
 // Get base path from server-injected config or fallback
 const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
@@ -54,6 +55,12 @@ api.interceptors.request.use(
     if (selectedOrgId) {
       config.headers['X-Organization-ID'] = selectedOrgId
     }
+    if (config.url?.startsWith('/setup/')) {
+      const setupToken = storedSetupToken()
+      if (setupToken) {
+        config.headers['X-Setup-Token'] = setupToken
+      }
+    }
     return config
   },
   (error: AxiosError) => {
@@ -102,6 +109,12 @@ api.interceptors.response.use(
 
     // Skip token refresh logic for auth endpoints
     const isAuthEndpoint = originalRequest?.url?.startsWith('/auth/')
+
+    // The setup server has no sessions: a 401 means the setup key is missing or wrong
+    if (originalRequest?.url?.startsWith('/setup/')) {
+      if (error.response?.status === 401) setupTokenRejected()
+      return Promise.reject(error)
+    }
 
     // Handle 401 errors - try to refresh token (but not for auth endpoints)
     if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
@@ -1565,6 +1578,7 @@ export interface SetupStatus {
   config_path?: string
   config_path_fixed?: boolean
   candidates?: SetupCandidate[]
+  token_required?: boolean
 }
 
 export type CheckStatus = 'pass' | 'warn' | 'fail'

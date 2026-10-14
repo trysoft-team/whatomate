@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -56,13 +57,17 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	if o.MovedGrace == 0 {
 		o.MovedGrace = 2 * time.Minute
 	}
+	token, err := newSecret(24)
+	if err != nil {
+		return Result{}, err
+	}
 	raw, err := listen(o.Port)
 	if err != nil {
 		return Result{}, err
 	}
 	port := raw.Addr().(*net.TCPAddr).Port
 	shared := Share(raw)
-	s := newServer(o, port)
+	s := newServer(o, port, token)
 	srv := &fasthttp.Server{
 		Handler: s.handle, Name: "Whatomate setup",
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
@@ -78,11 +83,11 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	go func() { _ = srv.Serve(shared.View(false)) }()
 
 	urls := listenURLs(port)
-	o.Log.Info("No config file found. Open the setup wizard to finish installing", "url", urls[0])
+	o.Log.Info("No config file found. Open the setup wizard to finish installing", "url", wizardURL(urls[0], token))
 	for _, u := range urls[1:] {
-		o.Log.Info("The setup wizard is also reachable at", "url", u)
+		o.Log.Info("The setup wizard is also reachable at", "url", wizardURL(u, token))
 	}
-	if err := o.OpenBrowser(urls[0]); err != nil {
+	if err := o.OpenBrowser(wizardURL(urls[0], token)); err != nil {
 		o.Log.Debug("Could not open a browser", "error", err)
 	}
 
@@ -112,6 +117,8 @@ func listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", ":0")
 }
 
+const tokenHeader = "X-Setup-Token"
+
 type finished struct {
 	port int
 	url  string
@@ -128,6 +135,7 @@ type candidateInfo struct {
 type statusResponse struct {
 	Needed          bool            `json:"needed"`
 	Ready           bool            `json:"ready"`
+	TokenRequired   bool            `json:"token_required,omitempty"`
 	URL             string          `json:"url,omitempty"`
 	Version         string          `json:"version,omitempty"`
 	ListenPort      int             `json:"listen_port,omitempty"`
@@ -139,8 +147,10 @@ type statusResponse struct {
 type server struct {
 	o          Options
 	listenPort int
-	frontend   fasthttp.RequestHandler
-	done       chan finished
+	// token is the one-time key every setup API call must send.
+	token    string
+	frontend fasthttp.RequestHandler
+	done     chan finished
 
 	completeMu sync.Mutex // one complete at a time
 	stateMu    sync.Mutex
@@ -166,13 +176,13 @@ type server struct {
 	urls func(port int) []string
 }
 
-func newServer(o Options, listenPort int) *server {
+func newServer(o Options, listenPort int, token string) *server {
 	fe := fasthttp.RequestHandler(notEmbedded)
 	if frontend.IsEmbedded() {
 		fe = frontend.Handler("")
 	}
 	return &server{
-		o: o, listenPort: listenPort, frontend: fe, done: make(chan finished, 1),
+		o: o, listenPort: listenPort, token: token, frontend: fe, done: make(chan finished, 1),
 		migrate: database.RunMigrationWithProgress, urls: listenURLs,
 		restoreSeen: make(chan struct{}, 1), restoreAckWait: 5 * time.Second,
 	}
@@ -189,16 +199,25 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
+	path := string(ctx.Path())
+	if strings.HasPrefix(path, "/api/setup/") && !s.authorized(ctx) {
+		// The page needs status to tell the operator to open the full link.
+		if path == "/api/setup/status" && ctx.IsGet() {
+			s.status(ctx, false)
+			return
+		}
+		writeError(ctx, fasthttp.StatusUnauthorized, "This page needs the one-time setup key. Open the full link printed in whatomate's log.")
+		return
+	}
 	// Only JSON bodies: other types are CORS "simple requests" any website
 	// can send from the operator's browser without a preflight.
 	if ctx.IsPost() && !isJSON(ctx) {
 		writeError(ctx, fasthttp.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
-	path := string(ctx.Path())
 	switch {
 	case path == "/api/setup/status" && ctx.IsGet():
-		s.status(ctx)
+		s.status(ctx, true)
 	case path == "/api/setup/checks" && ctx.IsGet():
 		s.checks(ctx)
 	case path == "/api/setup/database/test" && ctx.IsPost():
@@ -224,6 +243,18 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 	default:
 		s.frontend(ctx)
 	}
+}
+
+// authorized reports whether the request carries the setup token.
+func (s *server) authorized(ctx *fasthttp.RequestCtx) bool {
+	got := ctx.Request.Header.Peek(tokenHeader)
+	return s.token != "" && subtle.ConstantTimeCompare(got, []byte(s.token)) == 1
+}
+
+// wizardURL puts the token in the fragment, which browsers never send, so it
+// stays out of request logs, proxies and Referer headers.
+func wizardURL(base, token string) string {
+	return base + "/#token=" + token
 }
 
 func isJSON(ctx *fasthttp.RequestCtx) bool {
@@ -294,9 +325,15 @@ func (s *server) lookup(path string) (candidateInfo, bool) {
 	return candidateInfo{}, false
 }
 
-func (s *server) status(ctx *fasthttp.RequestCtx) {
+// status answers without the token too, but then only with what the page
+// needs to ask for the key or follow the hand-off.
+func (s *server) status(ctx *fasthttp.RequestCtx, authorized bool) {
 	if f := s.isFinished(); f != nil {
 		writeData(ctx, statusResponse{URL: f.url})
+		return
+	}
+	if !authorized {
+		writeData(ctx, statusResponse{Needed: true, Version: s.o.Version, TokenRequired: true})
 		return
 	}
 	cands := s.candidates()

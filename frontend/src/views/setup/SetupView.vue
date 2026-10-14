@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { MessageSquare, Loader2, Check, AlertTriangle, XCircle, Circle, RefreshCcw, Sparkles } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { setupService, type SetupDatabase, type SetupRestoreChoice, type SetupRestoreStatus, type SetupStatus } from '@/services/api'
 import {
-  afterSetup, defaultSQLitePath, RESTORE_PHASES, restorePhaseIndex, stepsFor,
+  afterSetup, clearSetupToken, defaultSQLitePath, onSetupTokenRejected, RESTORE_PHASES, restorePhaseIndex,
+  saveSetupToken, stepsFor, storedSetupToken,
   type AdminForm, type SetupMode, type SetupStep,
 } from '@/lib/setup'
+import SetupKey from './SetupKey.vue'
 import SetupChecks from './SetupChecks.vue'
 import SetupDatabaseStep from './SetupDatabase.vue'
 import SetupAdmin from './SetupAdmin.vue'
@@ -29,6 +31,9 @@ const restoreStatus = ref<SetupRestoreStatus | null>(null)
 const phase = ref<'form' | 'saving' | 'restoring' | 'starting'>('form')
 const error = ref('')
 const loadFailed = ref(false)
+const needsKey = ref(false)
+const keyRejected = ref(false)
+const keyChecking = ref(false)
 const startTimedOut = ref(false)
 const signInUrl = ref('')
 const START_TIMEOUT_MS = 2 * 60 * 1000
@@ -81,16 +86,49 @@ watch(dataDir, (dir, old) => {
   }
 })
 
+/** loadStatus reads the wizard's status, or asks for the setup key when the server wants one. */
+async function loadStatus() {
+  const hadKey = !!storedSetupToken()
+  const res = (await setupService.status()).data.data
+  if (res.token_required) {
+    clearSetupToken()
+    needsKey.value = true
+    keyRejected.value = hadKey
+    return
+  }
+  needsKey.value = false
+  keyRejected.value = false
+  if (!status.value) {
+    port.value = res.listen_port ?? 4747
+    configPath.value = res.config_path ?? ''
+  }
+  status.value = res
+}
+
 onMounted(async () => {
+  onSetupTokenRejected(() => {
+    needsKey.value = true
+    keyRejected.value = true
+  })
   try {
-    const res = await setupService.status()
-    status.value = res.data.data
-    port.value = status.value.listen_port ?? 4747
-    configPath.value = status.value.config_path ?? ''
+    await loadStatus()
   } catch {
     loadFailed.value = true
   }
 })
+onBeforeUnmount(() => onSetupTokenRejected(null))
+
+async function submitKey(token: string) {
+  saveSetupToken(token)
+  keyChecking.value = true
+  try {
+    await loadStatus()
+  } catch {
+    loadFailed.value = true
+  } finally {
+    keyChecking.value = false
+  }
+}
 
 function reload() {
   window.location.reload()
@@ -319,6 +357,8 @@ function continueToSignIn() {
           <p class="max-w-sm text-sm text-white/70 light:text-gray-600">{{ t('setup.loadFailed') }}</p>
           <Button variant="outline" @click="reload">{{ t('setup.reload') }}</Button>
         </div>
+
+        <SetupKey v-else-if="needsKey" :rejected="keyRejected" :checking="keyChecking" @submit="submitKey" />
 
         <div v-else-if="!status" class="flex flex-1 items-center justify-center">
           <Loader2 class="h-6 w-6 animate-spin text-white/40 light:text-gray-400" />
