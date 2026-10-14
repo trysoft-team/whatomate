@@ -78,7 +78,23 @@ brew install trysoft-team/tap/whatomate
 
 #### Linux
 
-Pick the archive for your CPU: `linux_amd64` (most servers and PCs), `linux_arm64` (64-bit ARM) or `linux_armv7` (32-bit Raspberry Pi).
+The install script sets up everything on a server in one go:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install.sh | sudo bash
+```
+
+What it does:
+
+- installs the latest release for your CPU (checksum verified) and, if you agree, `ffmpeg`, `opus-tools` and `espeak-ng`;
+- creates a `whatomate` service user and a systemd service that starts at boot;
+- detects **Apache, nginx or Caddy**, asks for your domain and adds a reverse-proxy site (WebSockets included), then offers a free Let's Encrypt certificate (Caddy gets its own);
+- opens the firewall with ufw, firewalld or iptables: TCP 80/443 behind the proxy, otherwise TCP 4747, plus UDP 10000–10100 for calls;
+- prints the setup wizard link.
+
+Run it again to upgrade. Options such as `--domain chat.example.com`, `--proxy nginx`, `--email you@example.com`, `--no-firewall` and `--yes` go after `bash -s --`, e.g. `... | sudo bash -s -- --domain chat.example.com`; see `--help` and the [install script docs](https://trysoft-team.github.io/whatomate/getting-started/quickstart/#linux-install-script). On Virtualmin, the script prints the Apache directives to add under **Web Configuration → Edit Directives** instead of writing a site.
+
+To install by hand instead, pick the archive for your CPU: `linux_amd64` (most servers and PCs), `linux_arm64` (64-bit ARM) or `linux_armv7` (32-bit Raspberry Pi).
 
 ```bash
 VERSION=1.0.0
@@ -154,7 +170,7 @@ The wizard writes the config file and starts whatomate on the same port. Then co
 
 ### 3. Open port 4747
 
-To reach whatomate from other computers (or to open the setup wizard on a remote server), allow TCP port 4747 through the firewall, then open the setup link from the log with the server's address in place of `localhost`.
+To reach whatomate from other computers (or to open the setup wizard on a remote server), allow TCP port 4747 through the firewall, then open the setup link from the log with the server's address in place of `localhost`. The [Linux install script](#linux) does this for you.
 
 **ufw** (Ubuntu / Debian):
 

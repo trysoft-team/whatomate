@@ -608,5 +608,5 @@ There is no separate `worker` service in the bundled file. To scale workers, eit
 - Enable `rate_limit.enabled = true` and set `rate_limit.trust_proxy` to match your reverse proxy.
 - Restrict `server.allowed_origins` to your actual frontend hostnames.
 - For voice calling: set `calling.public_ip` on cloud hosts, ensure UDP `udp_port_min`–`udp_port_max` is open in your security group, configure at least one `[[calling.ice_servers]]` (TURN strongly recommended for traversal across strict NATs).
-- Terminate TLS at a reverse proxy (nginx, Caddy, or a cloud load balancer) — the binary serves HTTP only.
+- Terminate TLS at a reverse proxy (nginx, Caddy, or a cloud load balancer) — the binary serves HTTP only. On Linux, the [install script](/whatomate/getting-started/quickstart/#linux-install-script) sets up Apache, nginx or Caddy for your domain.
 - Run API and workers as separate processes so a stuck campaign send doesn't block API responses.
