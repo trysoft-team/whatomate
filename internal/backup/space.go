@@ -3,13 +3,13 @@ package backup
 import (
 	"fmt"
 
-	"github.com/trysoft/whatomate/internal/setup"
+	"github.com/trysoft/whatomate/internal/diskspace"
 )
 
 // EnsureSpace returns an error when the disk holding dir has less than need
 // bytes free (plus a 64 MB margin). An unreadable disk is not an error.
 func EnsureSpace(dir string, need int64) error {
-	free, err := setup.FreeDisk(dir)
+	free, err := diskspace.Free(dir)
 	if err != nil {
 		return nil
 	}

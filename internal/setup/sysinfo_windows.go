@@ -5,6 +5,7 @@ package setup
 import (
 	"unsafe"
 
+	"github.com/trysoft/whatomate/internal/diskspace"
 	"golang.org/x/sys/windows"
 )
 
@@ -26,14 +27,4 @@ func (hostSystem) TotalMemory() (uint64, error) {
 	return m.TotalPhys, nil
 }
 
-func (hostSystem) FreeDisk(path string) (uint64, error) {
-	p, err := windows.UTF16PtrFromString(nearestExisting(path))
-	if err != nil {
-		return 0, err
-	}
-	var free, total, totalFree uint64
-	if err := windows.GetDiskFreeSpaceEx(p, &free, &total, &totalFree); err != nil {
-		return 0, err
-	}
-	return free, nil
-}
+func (hostSystem) FreeDisk(path string) (uint64, error) { return diskspace.Free(path) }
