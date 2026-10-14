@@ -87,8 +87,8 @@ func openTarget(c config.DatabaseConfig) (*gorm.DB, func(), int, error) {
 }
 
 // writeConfig writes the config file for tg. A blank encryptionKey gets a
-// new one.
-func (s *server) writeConfig(tg target, origin string, https bool, encryptionKey string) (int, error) {
+// new one. Over plain HTTP it turns off Secure cookies so login works.
+func (s *server) writeConfig(tg target, https bool, encryptionKey string) (int, error) {
 	jwtSecret, err := newSecret(48)
 	if err != nil {
 		return fasthttp.StatusInternalServerError, err
@@ -106,9 +106,13 @@ func (s *server) writeConfig(tg target, origin string, https bool, encryptionKey
 	if err := os.MkdirAll(tg.cand.DataDir, 0o750); err != nil {
 		return fasthttp.StatusInternalServerError, fmt.Errorf("create %s: %w", tg.cand.DataDir, err)
 	}
+	uploads, audio, err := s.fileDirs(tg.cand)
+	if err != nil {
+		return fasthttp.StatusInternalServerError, err
+	}
 	body := Render(Values{
-		Environment: environmentFor(https), Port: tg.port, AllowedOrigins: allowedOrigins(origin, https, s.urls(tg.port)),
-		Database: stored, JWTSecret: jwtSecret, EncryptionKey: encKey,
+		Port: tg.port, Database: stored, InsecureCookies: !https,
+		JWTSecret: jwtSecret, EncryptionKey: encKey, UploadsDir: uploads, AudioDir: audio,
 	}, time.Now())
 	if s.beforeWrite != nil {
 		s.beforeWrite()
@@ -148,3 +152,37 @@ func appBase(cand candidateInfo) string {
 func backupDir(cand candidateInfo) string { return filepath.Join(appBase(cand), "backups") }
 func mediaDir(cand candidateInfo) string  { return filepath.Join(appBase(cand), "uploads") }
 func audioDir(cand candidateInfo) string  { return filepath.Join(appBase(cand), "audio") }
+
+// DefaultSharedDataDir is where installs on goos keep uploads and call
+// audio: /var/whatomate on Linux, and the config location's data folder
+// (empty) elsewhere.
+func DefaultSharedDataDir(goos string) string {
+	if goos == "linux" {
+		return "/var/whatomate"
+	}
+	return ""
+}
+
+// fileDirs returns the uploads and call audio folders for cand, creating
+// them: under Options.SharedDataDir when set and writable, else under the
+// app's base folder.
+func (s *server) fileDirs(cand candidateInfo) (uploads, audio string, err error) {
+	if root := s.o.SharedDataDir; root != "" {
+		uploads, audio = filepath.Join(root, "uploads"), filepath.Join(root, "audio")
+		if Writable(root) && mkdirs(uploads, audio) == nil {
+			return uploads, audio, nil
+		}
+		s.o.Log.Warn("Can't use the shared data folder; using the app's data folder", "path", root)
+	}
+	uploads, audio = mediaDir(cand), audioDir(cand)
+	return uploads, audio, mkdirs(uploads, audio)
+}
+
+func mkdirs(dirs ...string) error {
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			return fmt.Errorf("create %s: %w", d, err)
+		}
+	}
+	return nil
+}

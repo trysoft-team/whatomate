@@ -154,7 +154,7 @@ func (s *server) runRestore(db *gorm.DB, closeDB func(), tg target, path, key st
 			r.FilesFailed, r.Error = true, err.Error()
 		}
 	})
-	if _, err := s.writeConfig(tg, f.url, https, key); err != nil {
+	if _, err := s.writeConfig(tg, https, key); err != nil {
 		fail(err)
 		return
 	}
@@ -176,11 +176,9 @@ func (s *server) restoreInto(db *gorm.DB, tg target, path, key string) error {
 	if err := s.migrate(db, nil); err != nil {
 		return fmt.Errorf("set up the database: %w", err)
 	}
-	media, audio := mediaDir(tg.cand), audioDir(tg.cand)
-	for _, d := range []string{media, audio} {
-		if err := os.MkdirAll(d, 0o750); err != nil {
-			return err
-		}
+	media, audio, err := s.fileDirs(tg.cand)
+	if err != nil {
+		return err
 	}
 	return backup.Restore(context.Background(), db, path, backup.RestoreOptions{
 		EncryptionKey: key,

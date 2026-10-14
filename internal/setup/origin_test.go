@@ -57,18 +57,3 @@ func TestBrowserOrigin(t *testing.T) {
 		assert.Equal(t, c.https, https, c.name)
 	}
 }
-
-func TestAllowedOrigins(t *testing.T) {
-	urls := []string{"http://localhost:4747", "http://192.168.1.5:4747", "http://10.0.0.7:4747"}
-	assert.Equal(t, "http://localhost:4747,http://192.168.1.5:4747,http://10.0.0.7:4747",
-		allowedOrigins("http://localhost:4747", false, urls), "development: browser origin plus every listen URL, once each")
-	assert.Equal(t, "http://myhost.lan:4747,http://localhost:4747,http://192.168.1.5:4747,http://10.0.0.7:4747",
-		allowedOrigins("http://myhost.lan:4747", false, urls), "the browser origin comes first")
-	assert.Equal(t, "https://chat.example.com",
-		allowedOrigins("https://chat.example.com", true, urls), "production: only the browser origin")
-}
-
-func TestEnvironmentFor(t *testing.T) {
-	assert.Equal(t, "production", environmentFor(true))
-	assert.Equal(t, "development", environmentFor(false))
-}

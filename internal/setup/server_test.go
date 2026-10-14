@@ -3,7 +3,6 @@ package setup
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,9 +44,6 @@ func newEnv(t *testing.T) env {
 	// The system location is "not writable" for this test: its root is a file.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-root"), []byte("x"), 0o600))
 	s := newServer(o, 4747, testToken)
-	s.urls = func(port int) []string {
-		return []string{fmt.Sprintf("http://localhost:%d", port), fmt.Sprintf("http://192.168.1.5:%d", port)}
-	}
 	return env{s: s, dir: dir, configPath: filepath.Join(userDir, "config.toml"), dbPath: filepath.Join(userDir, "whatomate.db")}
 }
 
@@ -210,8 +206,14 @@ func TestComplete_SQLiteWritesConfigAndAdmin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "whatomate.db", cfg.Database.Path, "relative to the data folder")
 	assert.Equal(t, 4747, cfg.Server.Port)
-	assert.Equal(t, "development", cfg.App.Environment)
-	assert.Equal(t, "http://localhost:4747,http://192.168.1.5:4747", cfg.Server.AllowedOrigins, "every address teammates may use")
+	assert.Equal(t, "production", cfg.App.Environment)
+	assert.Equal(t, "*", cfg.Server.AllowedOrigins)
+	assert.False(t, cfg.Cookie.Secure, "set up over plain HTTP, so login must work without HTTPS")
+	userDir := filepath.Dir(e.configPath)
+	assert.Equal(t, filepath.Join(userDir, "uploads"), cfg.Storage.LocalPath, "no shared folder: the data folder")
+	assert.Equal(t, filepath.Join(userDir, "audio"), cfg.Calling.AudioDir)
+	assert.DirExists(t, cfg.Storage.LocalPath)
+	assert.DirExists(t, cfg.Calling.AudioDir)
 	assert.GreaterOrEqual(t, len(cfg.JWT.Secret), 32)
 	assert.NotEmpty(t, cfg.App.EncryptionKey)
 	raw, _ := os.ReadFile(e.configPath)
@@ -253,7 +255,7 @@ func TestComplete_RefusesExistingConfig(t *testing.T) {
 	assert.Equal(t, "[app]\n", string(raw))
 }
 
-func TestComplete_HTTPSKeepsOnlyBrowserOrigin(t *testing.T) {
+func TestComplete_HTTPSKeepsSecureCookies(t *testing.T) {
 	e := newEnv(t)
 	headers := map[string]string{"Content-Type": "application/json", "Origin": "https://chat.example.com", "X-Forwarded-Proto": "https"}
 	code, out := callWith(t, e.s, "POST", "/api/setup/complete", headers, completeBody(e))
@@ -262,7 +264,45 @@ func TestComplete_HTTPSKeepsOnlyBrowserOrigin(t *testing.T) {
 	cfg, err := config.Load(e.configPath)
 	require.NoError(t, err)
 	assert.Equal(t, "production", cfg.App.Environment)
-	assert.Equal(t, "https://chat.example.com", cfg.Server.AllowedOrigins)
+	assert.Equal(t, "*", cfg.Server.AllowedOrigins)
+	assert.True(t, cfg.Cookie.Secure)
+	raw, _ := os.ReadFile(e.configPath)
+	assert.NotContains(t, string(raw), "[cookie]")
+}
+
+func TestComplete_UsesSharedDataDir(t *testing.T) {
+	e := newEnv(t)
+	shared := filepath.Join(e.dir, "var", "whatomate")
+	require.NoError(t, os.MkdirAll(filepath.Dir(shared), 0o750))
+	e.s.o.SharedDataDir = shared
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	require.Equal(t, 200, code, out)
+	cfg, err := config.Load(e.configPath)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(shared, "uploads"), cfg.Storage.LocalPath)
+	assert.Equal(t, filepath.Join(shared, "audio"), cfg.Calling.AudioDir)
+	assert.DirExists(t, cfg.Storage.LocalPath)
+	assert.DirExists(t, cfg.Calling.AudioDir)
+}
+
+func TestComplete_FallsBackWhenSharedDataDirUnwritable(t *testing.T) {
+	e := newEnv(t)
+	// The shared folder's parent is a file, so it can't be created.
+	blocker := filepath.Join(e.dir, "blocked")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	e.s.o.SharedDataDir = filepath.Join(blocker, "whatomate")
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	require.Equal(t, 200, code, out)
+	cfg, err := config.Load(e.configPath)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(filepath.Dir(e.configPath), "uploads"), cfg.Storage.LocalPath)
+	assert.Equal(t, filepath.Join(filepath.Dir(e.configPath), "audio"), cfg.Calling.AudioDir)
+}
+
+func TestDefaultSharedDataDir(t *testing.T) {
+	assert.Equal(t, "/var/whatomate", DefaultSharedDataDir("linux"))
+	assert.Empty(t, DefaultSharedDataDir("darwin"))
+	assert.Empty(t, DefaultSharedDataDir("windows"))
 }
 
 func TestComplete_RefusesDirectoryAtFixedPath(t *testing.T) {

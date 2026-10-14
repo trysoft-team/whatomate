@@ -27,7 +27,7 @@ func CreateTestOrganization(t *testing.T, db *gorm.DB) *models.Organization {
 	org := &models.Organization{
 		BaseModel: models.BaseModel{ID: uuid.New()},
 		Name:      "Test Organization " + uuid.New().String()[:8],
-		Slug:      "test-org-" + uuid.New().String()[:8],
+		Slug:      "test-org-" + uuid.New().String(),
 	}
 	require.NoError(t, db.Create(org).Error)
 	return org

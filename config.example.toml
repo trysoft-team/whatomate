@@ -17,7 +17,7 @@ read_timeout = 30
 write_timeout = 30
 base_path = ""  # Set to "/subpath" if behind nginx proxy pass
 public_url = ""  # Optional override for absolute origin (e.g. "https://app.example.com"). Empty = use request Host like the webhook location URL.
-allowed_origins = ""  # Comma-separated CORS origins (e.g., "https://app.example.com,https://admin.example.com"). Empty = allow all (dev only).
+allowed_origins = ""  # Comma-separated CORS origins (e.g., "https://app.example.com,https://admin.example.com"). "*" = any origin. Empty = allow all (dev only).
 
 [database]
 driver = "postgres"  # postgres | mysql | sqlite (sqlserver coming)
@@ -82,7 +82,7 @@ config_id = ""  # WhatsApp Config ID for frontend login
 # Auth cookie settings (tokens are stored in httpOnly cookies)
 [cookie]
 domain = ""    # Cookie domain (e.g., ".example.com"). Empty = current host only.
-secure = false # Set Secure flag on cookies. Auto-set true when environment=production.
+secure = false # Set Secure flag on cookies. Defaults to true when environment=production and this line is absent.
 
 # Rate limiting for auth endpoints (fixed-window counters)
 [rate_limit]

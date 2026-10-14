@@ -10,33 +10,41 @@ import (
 	"strings"
 	"time"
 
+	"github.com/trysoft/whatomate/internal/calling/defaultaudio"
 	"github.com/trysoft/whatomate/internal/config"
 )
 
+// DefaultSTUN is the STUN server new configs use for call media.
+const DefaultSTUN = "stun:stun.l.google.com:19302"
+
 // Values are the settings setup writes to a new config file.
 type Values struct {
-	Environment    string
-	Port           int
-	AllowedOrigins string
-	Database       config.DatabaseConfig
-	JWTSecret      string
-	EncryptionKey  string
+	Port     int
+	Database config.DatabaseConfig
+	// InsecureCookies writes [cookie] secure = false, so login works over
+	// plain HTTP until HTTPS is set up.
+	InsecureCookies bool
+	JWTSecret       string
+	EncryptionKey   string
+	UploadsDir      string
+	AudioDir        string
 }
 
 // Render returns the TOML config file for v.
 func Render(v Values, now time.Time) []byte {
 	var b strings.Builder
 	kv := func(k, val string) { b.WriteString(k + " = " + val + "\n") }
+	kvc := func(k, val, comment string) { fmt.Fprintf(&b, "%-30s # %s\n", k+" = "+val, comment) }
 	fmt.Fprintf(&b, "# Written by whatomate setup on %s.\n# config.example.toml lists every option.\n", now.Format("2006-01-02"))
 
 	b.WriteString("\n[app]\n")
-	kv("environment", quote(v.Environment))
+	kv("environment", quote("production"))
 	kv("encryption_key", quote(v.EncryptionKey))
 
 	b.WriteString("\n[server]\n")
 	kv("host", quote("0.0.0.0"))
 	kv("port", strconv.Itoa(v.Port))
-	kv("allowed_origins", quote(v.AllowedOrigins))
+	kvc("allowed_origins", quote("*"), "any origin; list origins to restrict")
 
 	d := v.Database
 	b.WriteString("\n[database]\n")
@@ -56,6 +64,28 @@ func Render(v Values, now time.Time) []byte {
 
 	b.WriteString("\n[jwt]\n")
 	kv("secret", quote(v.JWTSecret))
+
+	if v.InsecureCookies {
+		b.WriteString("\n[cookie]\n")
+		kvc("secure", "false", "set true once whatomate is served over HTTPS")
+	}
+
+	b.WriteString("\n[storage]\n")
+	kv("type", quote("local"))
+	kv("local_path", quote(v.UploadsDir))
+
+	b.WriteString("\n[calling]\n")
+	kvc("max_call_duration", "300", "Max call duration in seconds")
+	kv("audio_dir", quote(v.AudioDir))
+	kv("hold_music_file", quote(defaultaudio.HoldMusicFile))
+	kv("ringback_file", quote(defaultaudio.RingbackFile))
+	kvc("transfer_timeout_secs", "120", "How long to wait for an agent to accept a transfer")
+	kvc("recording_enabled", "true", "Record calls to S3 when configured, otherwise local_path")
+	kvc("udp_port_min", "10000", "WebRTC UDP port range start")
+	kvc("udp_port_max", "10100", "WebRTC UDP port range end")
+
+	b.WriteString("\n[[calling.ice_servers]]\n")
+	kv("urls", "["+quote(DefaultSTUN)+"]")
 	return []byte(b.String())
 }
 

@@ -176,6 +176,50 @@ This creates a self-contained binary—no separate frontend server needed. Witho
 
 To build for another system, set `GOOS`/`GOARCH`, for example `GOOS=linux GOARCH=amd64 make build-prod`. `make release-snapshot` builds every release archive into `dist/`.
 
+### Linux install script
+
+On a Linux server, one command installs or upgrades whatomate and gets it ready for the [setup wizard](#first-run):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install.sh | sudo bash
+```
+
+The script:
+
+1. Downloads the latest release for the server's CPU (`amd64`, `arm64` or `armv7`), checks it against `checksums.txt` and installs it to `/usr/local/bin/whatomate`.
+2. Offers to install `ffmpeg`, `opus-tools` and `espeak-ng` for calling and spoken IVR greetings (apt, dnf, yum, zypper, pacman or apk).
+3. Creates a `whatomate` system user and the folders `/etc/whatomate` (config), `/var/lib/whatomate` (data) and `/var/whatomate` (uploads and call audio).
+4. When the server's public IP isn't on any of its network interfaces (AWS, GCP, Azure), offers to set it for call media (`WHATOMATE_CALLING__PUBLIC_IP` in the service).
+5. Writes a systemd service (`whatomate.service`) that runs as the `whatomate` user and starts at boot.
+6. Detects Apache, nginx or Caddy, asks for your domain and adds a site that proxies it to whatomate, WebSockets included. With Apache or nginx it then offers a free Let's Encrypt certificate through certbot; Caddy gets one by itself. If no web server is installed, it offers to install nginx.
+7. Opens the firewall with ufw, firewalld or iptables (whichever is active): TCP 80 and 443 behind the proxy, otherwise TCP 4747, plus UDP 10000–10100 for calls. It never turns a firewall on.
+8. Starts whatomate and prints the setup wizard link, with your domain when the proxy is set up.
+
+Run it again to upgrade: it replaces the binary and restarts the service, and keeps your config and service file.
+
+| Option | Effect |
+|---|---|
+| `--version X.Y.Z` | Install this release instead of the latest |
+| `--domain NAME` | Domain for the reverse proxy, e.g. `chat.example.com` |
+| `--proxy NAME` | `apache`, `nginx`, `caddy` or `none` |
+| `--email ADDRESS` | Email for the Let's Encrypt certificate |
+| `--no-tls` | Don't request a certificate |
+| `--no-firewall` | Don't change firewall rules |
+| `--no-voice` | Don't install ffmpeg, opus-tools and espeak-ng |
+| `-y`, `--yes` | Use the defaults instead of asking |
+
+Pass options after `bash -s --`, for example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install.sh | sudo bash -s -- --domain chat.example.com --email you@example.com
+```
+
+<Aside type="note">
+  Point the domain's DNS A record at the server before running the script, so the certificate can be issued. On a cloud server, also allow the same ports in the provider's firewall or security group.
+
+  **Virtualmin:** Virtualmin manages the Apache sites, so the script doesn't add one. It prints the directives to paste into the domain's **Web Configuration → Edit Directives** (in both the port 80 and 443 sites).
+</Aside>
+
 ### Prebuilt Binaries
 
 Each [GitHub release](https://github.com/trysoft-team/whatomate/releases) includes archives for:
@@ -281,8 +325,9 @@ same database that stopped before it finished, is also accepted). No admin
 account is created and no safety backup is taken. When the restore finishes,
 sign in with an account **from the backup**.
 
-The backed-up files go into the `uploads` and `audio` folders of the data
-folder. If loading the data fails, nothing is kept and no config file is
+The backed-up files go into the `uploads` and `audio` folders: under
+`/var/whatomate` on Linux when that folder can be created, otherwise (and on
+macOS and Windows) in the data folder. If loading the data fails, nothing is kept and no config file is
 written; fix the problem and try again. If the data is restored but some files
 cannot be put back, the data and config are kept: the page says what went
 wrong and offers **Continue to sign in**.

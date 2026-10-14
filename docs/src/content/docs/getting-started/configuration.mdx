@@ -24,11 +24,18 @@ The current directory is not searched: a `config.toml` next to where you run
 If no file is found, `whatomate server` (or plain `whatomate`) starts the
 setup wizard instead of exiting. The wizard writes the config to the system
 folder when it can, otherwise to your user folder, with mode 0600. It
-generates `[jwt] secret` and `[app] encryption_key`, and sets
-`environment = "production"` only when the wizard was opened over HTTPS.
-Over plain HTTP it sets `allowed_origins` to the address you used plus
-`http://localhost:<port>` and each LAN address of the machine; over HTTPS,
-only the address you used.
+generates `[jwt] secret` and `[app] encryption_key`, and always sets
+`environment = "production"` and `allowed_origins = "*"` (any origin; list
+your addresses there to restrict it). When the wizard was opened over plain
+HTTP it also writes `[cookie] secure = false`, so you can sign in at
+`http://<server-ip>:4747`; set it to `true` once whatomate is served over
+HTTPS. It writes `[storage]` (local files) and `[calling]` with the default
+call settings and Google's public STUN server. Uploads and call audio go in
+`/var/whatomate/uploads` and `/var/whatomate/audio` on Linux (when that folder
+can be created; otherwise in the data folder), and in the data folder on macOS
+and Windows. The bundled hold music and ringback tone are written into the
+audio folder when whatomate starts, unless files with those names are
+already there.
 When `-config` or `WHATOMATE_CONFIG` names a file that does not exist yet,
 the wizard writes exactly that file. If that path is a directory (Docker
 creates one when a bind-mounted `config.toml` is missing on the host),
@@ -57,7 +64,7 @@ port = 4747
 read_timeout = 30
 write_timeout = 30
 base_path = ""                # Set to "/subpath" if behind nginx proxy_pass at a sub-path
-allowed_origins = ""          # Comma-separated CORS origins. Empty = allow all (dev only).
+allowed_origins = ""          # Comma-separated CORS origins. "*" = any origin. Empty = allow all (dev only).
 
 [database]
 driver = "postgres"           # postgres | mysql | sqlite (sqlserver coming)
@@ -106,7 +113,7 @@ config_id = ""                # WhatsApp Config ID for frontend login
 
 [cookie]
 domain = ""                   # e.g. ".example.com" to share across subdomains. Empty = current host only.
-secure = false                # Sets the Secure flag. Auto-forced to true when environment=production.
+secure = false                # Sets the Secure flag. Defaults to true when environment=production and this line is absent.
 
 [rate_limit]
 enabled = false               # Master switch
@@ -173,7 +180,7 @@ full_name = "Admin"
 | Field | Required | Notes |
 |---|---|---|
 | `name` | no | Display name. Defaults to `"Whatomate"`. |
-| `environment` | yes | `development` \| `staging` \| `production`. Sets debug behavior, forces `cookie.secure=true` in production. |
+| `environment` | yes | `development` \| `staging` \| `production`. Sets debug behavior; in production `cookie.secure` defaults to `true`. |
 | `debug` | no | Verbose logging. |
 | `encryption_key` | **production** | AES-256 key used to encrypt access tokens, SSO client secrets, and other secrets at rest in the DB. Must be 32+ chars. Lose it and you lose stored credentials. |
 
@@ -188,7 +195,7 @@ full_name = "Admin"
 | `host`, `port` | Default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart. Browser addresses in `allowed_origins` that use the old port (such as `http://localhost:4747`) are moved to the new port. |
 | `read_timeout`, `write_timeout` | Seconds. |
 | `base_path` | Leave empty unless serving at a sub-path (`https://app.example.com/whatomate`) behind a proxy. |
-| `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. **Empty allows all origins** — only safe in development. |
+| `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. `"*"` allows any origin, also in production (the setup wizard writes this). Empty also allows all origins, but production refuses to start with it. |
 
 ### `[database]`
 
@@ -288,7 +295,7 @@ App-level keys used for **Embedded Signup** and Meta Cloud API calls. These are 
 | Field | Notes |
 |---|---|
 | `domain` | Set to `.example.com` to share auth cookies across subdomains. Leave empty for single-host. |
-| `secure` | The `Secure` cookie flag (HTTPS-only). Automatically forced to `true` when `app.environment = "production"`, regardless of this setting. |
+| `secure` | The `Secure` cookie flag (HTTPS-only). When `app.environment = "production"` it defaults to `true`; an explicit `secure = false` (or `WHATOMATE_COOKIE__SECURE=false`) keeps it off so you can sign in over plain HTTP. Browsers then send the login cookies unencrypted, so switch it to `true` once whatomate is behind HTTPS. |
 
 ### `[rate_limit]`
 
@@ -326,7 +333,7 @@ Required only if you use WhatsApp voice calling / IVR.
 |---|---|
 | `max_call_duration` | Hard cap in seconds; calls beyond this are forcibly terminated. Default `300`. |
 | `audio_dir` | Where prompt audio files (`hold_music.opus`, `ringback.opus`, IVR prompts) live. Default `./audio`. |
-| `hold_music_file`, `ringback_file` | Filenames inside `audio_dir`. `hold_music_file` defaults to `hold_music.opus`; `ringback_file` has no default (hold music is used instead). Both can be overridden per organization under **Settings → Calling**. |
+| `hold_music_file`, `ringback_file` | Filenames inside `audio_dir`. `hold_music_file` defaults to `hold_music.opus`; `ringback_file` has no default (hold music is used instead). Both can be overridden per organization under **Settings → Calling**. Whatomate ships `hold_music.opus` and `ringback.opus` and writes them into `audio_dir` at startup if they are missing; replace them with your own files of the same name to change them. |
 | `transfer_timeout_secs` | How long to wait for an agent to accept a transferred call before falling through. Default `120`. |
 | `per_agent_timeout_secs` | Per-agent ring time when routing to a team; if an agent doesn't answer within this window, the next agent is tried. A team's own `per_agent_timeout_secs` wins when set; otherwise this value; otherwise `15`. |
 | `recording_enabled` | Records both directions per call and stores an OGG/Opus file. Uses S3 when `s3_bucket` is set; otherwise writes to `[storage] local_path`. |
@@ -601,5 +608,5 @@ There is no separate `worker` service in the bundled file. To scale workers, eit
 - Enable `rate_limit.enabled = true` and set `rate_limit.trust_proxy` to match your reverse proxy.
 - Restrict `server.allowed_origins` to your actual frontend hostnames.
 - For voice calling: set `calling.public_ip` on cloud hosts, ensure UDP `udp_port_min`–`udp_port_max` is open in your security group, configure at least one `[[calling.ice_servers]]` (TURN strongly recommended for traversal across strict NATs).
-- Terminate TLS at a reverse proxy (nginx, Caddy, or a cloud load balancer) — the binary serves HTTP only.
+- Terminate TLS at a reverse proxy (nginx, Caddy, or a cloud load balancer) — the binary serves HTTP only. On Linux, the [install script](/whatomate/getting-started/quickstart/#linux-install-script) sets up Apache, nginx or Caddy for your domain.
 - Run API and workers as separate processes so a stuck campaign send doesn't block API responses.

@@ -217,7 +217,7 @@ type DefaultAdminConfig struct {
 
 type CookieConfig struct {
 	Domain string `koanf:"domain"` // Cookie domain (e.g., ".example.com"). Empty = current host.
-	Secure bool   `koanf:"secure"` // Set Secure flag. Auto-set true when environment=production.
+	Secure bool   `koanf:"secure"` // Set Secure flag. Defaults to true when environment=production unless set.
 }
 
 type RateLimitConfig struct {
@@ -264,12 +264,14 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Set defaults
-	setDefaults(&cfg)
+	setDefaults(&cfg, k.Exists("cookie.secure"))
 
 	return &cfg, nil
 }
 
-func setDefaults(cfg *Config) {
+// setDefaults fills unset values. cookieSecureSet reports whether
+// cookie.secure was given, so an explicit false survives production.
+func setDefaults(cfg *Config, cookieSecureSet bool) {
 	if cfg.App.Name == "" {
 		cfg.App.Name = "Whatomate"
 	}
@@ -349,7 +351,7 @@ func setDefaults(cfg *Config) {
 		cfg.DefaultAdmin.FullName = "Admin"
 	}
 	// Cookie defaults
-	if cfg.App.Environment == "production" {
+	if cfg.App.Environment == "production" && !cookieSecureSet {
 		cfg.Cookie.Secure = true
 	}
 	// Rate limiting defaults

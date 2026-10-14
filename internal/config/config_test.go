@@ -78,7 +78,16 @@ api_version = "v22.0"
 	assert.Equal(t, "v22.0", cfg.WhatsApp.APIVersion)
 }
 
-func TestLoad_ProductionEnvironmentForcesSecureCookie(t *testing.T) {
+func TestLoad_ProductionDefaultsToSecureCookie(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, `
+[app]
+environment = "production"
+`))
+	require.NoError(t, err)
+	assert.True(t, cfg.Cookie.Secure, "production defaults Cookie.Secure to true")
+}
+
+func TestLoad_ProductionKeepsExplicitInsecureCookie(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, `
 [app]
 environment = "production"
@@ -87,7 +96,14 @@ environment = "production"
 secure = false
 `))
 	require.NoError(t, err)
-	assert.True(t, cfg.Cookie.Secure, "production environment must force Cookie.Secure=true")
+	assert.False(t, cfg.Cookie.Secure, "an explicit secure = false allows login over plain HTTP")
+}
+
+func TestLoad_ProductionInsecureCookieFromEnv(t *testing.T) {
+	t.Setenv("WHATOMATE_COOKIE__SECURE", "false")
+	cfg, err := config.Load(writeConfig(t, "[app]\nenvironment = \"production\"\n"))
+	require.NoError(t, err)
+	assert.False(t, cfg.Cookie.Secure)
 }
 
 func TestLoad_DevelopmentDoesNotForceSecureCookie(t *testing.T) {

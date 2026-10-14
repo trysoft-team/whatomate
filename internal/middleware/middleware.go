@@ -62,11 +62,12 @@ func ParseAllowedOrigins(allowedOrigins string) map[string]bool {
 
 // IsOriginAllowed checks if origin is in the allowed set.
 // If no origins are configured, all origins are allowed (development mode).
+// A "*" entry allows every origin, also in production.
 func IsOriginAllowed(origin string, allowedOrigins map[string]bool) bool {
 	if len(allowedOrigins) == 0 {
 		return true // No whitelist configured = allow all (development)
 	}
-	return allowedOrigins[origin]
+	return allowedOrigins["*"] || allowedOrigins[origin]
 }
 
 // CORS handles Cross-Origin Resource Sharing with origin validation.

@@ -37,6 +37,9 @@ type Options struct {
 	// MovedGrace is how long the setup port redirects after a port change
 	// (default 2 minutes).
 	MovedGrace time.Duration
+	// SharedDataDir, when set and writable, holds uploads and call audio
+	// instead of the config location's data folder. See DefaultSharedDataDir.
+	SharedDataDir string
 }
 
 // Result is how normal startup continues after setup.
@@ -172,8 +175,6 @@ type server struct {
 	beforeWrite func()
 	// migrate prepares the database; tests replace it to fail part-way.
 	migrate func(*gorm.DB, *config.DefaultAdminConfig) error
-	// urls lists the addresses the app answers on for a port.
-	urls func(port int) []string
 }
 
 func newServer(o Options, listenPort int, token string) *server {
@@ -183,7 +184,7 @@ func newServer(o Options, listenPort int, token string) *server {
 	}
 	return &server{
 		o: o, listenPort: listenPort, token: token, frontend: fe, done: make(chan finished, 1),
-		migrate: database.RunMigrationWithProgress, urls: listenURLs,
+		migrate:     database.RunMigrationWithProgress,
 		restoreSeen: make(chan struct{}, 1), restoreAckWait: 5 * time.Second,
 	}
 }
@@ -434,7 +435,7 @@ func (s *server) complete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	origin, https := browserOrigin(ctx, req.Port, s.listenPort)
-	if code, err := s.finish(req, origin, https); err != nil {
+	if code, err := s.finish(req, https); err != nil {
 		writeError(ctx, code, err.Error())
 		return
 	}

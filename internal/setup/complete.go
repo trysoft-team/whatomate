@@ -86,7 +86,7 @@ func validateDatabase(c config.DatabaseConfig) error {
 // finish validates req, prepares the database and admin, and writes the
 // config file last, so any failure leaves no config behind. It returns the
 // HTTP status to use with the error.
-func (s *server) finish(req completeRequest, origin string, https bool) (int, error) {
+func (s *server) finish(req completeRequest, https bool) (int, error) {
 	tg, err := s.parseTarget(req.targetRequest)
 	if err != nil {
 		return fasthttp.StatusBadRequest, err
@@ -148,7 +148,7 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 	if err := applyAdmin(db, adminID, admin); err != nil {
 		return fasthttp.StatusInternalServerError, err
 	}
-	if code, err := s.writeConfig(tg, origin, https, ""); err != nil {
+	if code, err := s.writeConfig(tg, https, ""); err != nil {
 		return code, err
 	}
 	s.clearRestorePending(tg.cand)
