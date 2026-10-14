@@ -33,9 +33,14 @@ func restoreBody(e env, ref map[string]any, key string) map[string]any {
 // the way the page does.
 func waitRestore(t *testing.T, e env) map[string]any {
 	t.Helper()
+	return waitRestoreOn(t, e.s)
+}
+
+func waitRestoreOn(t *testing.T, s *server) map[string]any {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		code, out := call(t, e.s, "GET", "/api/setup/restore", nil)
+		code, out := call(t, s, "GET", "/api/setup/restore", nil)
 		require.Equal(t, 200, code, out)
 		if data(out)["finished"] == true {
 			return data(out)
@@ -138,6 +143,121 @@ func TestRestore_Refusals(t *testing.T) {
 	assert.Equal(t, 409, code, out)
 
 	assert.NoFileExists(t, e.configPath)
+	cand, _ := e.s.lookup(e.configPath)
+	assert.NoFileExists(t, pendingPath(cand), "a refused restore leaves no marker")
+}
+
+// seedUsers gives the database at e.dbPath a user that is not in the backup.
+func seedUsers(t *testing.T, e env) *gorm.DB {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(e.dbPath), 0o750))
+	db := openSQLite(t, e.dbPath)
+	require.NoError(t, database.RunMigrationWithProgress(db, &config.DefaultAdminConfig{
+		Email: "someone@example.com", Password: "password-123", FullName: "Someone", OrganizationName: "Theirs",
+	}))
+	return db
+}
+
+func sqliteTarget(path string) string {
+	return databaseTarget(config.DatabaseConfig{Driver: config.DriverSQLite, Path: path})
+}
+
+func TestRestore_AcceptsDatabaseLeftByStoppedRestore(t *testing.T) {
+	e := newEnv(t)
+	e.s.restoreAckWait = 0
+	src := makeBackup(t, e.dir, oldKey, false)
+	db := seedUsers(t, e)
+	cand, _ := e.s.lookup(e.configPath)
+	// What a restore that stopped after loading the data leaves behind.
+	require.NoError(t, markRestorePending(cand, sqliteTarget(e.dbPath)))
+
+	code, out := call(t, e.s, "POST", "/api/setup/restore", restoreBody(e, map[string]any{"path": src}, oldKey))
+	require.Equal(t, 200, code, out)
+	require.Equal(t, false, waitRestore(t, e)["failed"])
+	<-e.s.done
+
+	assert.FileExists(t, e.configPath)
+	assert.NoFileExists(t, pendingPath(cand), "the marker goes once the config is written")
+	var emails []string
+	require.NoError(t, db.Model(&models.User{}).Pluck("email", &emails).Error)
+	assert.Equal(t, []string{"old@example.com"}, emails, "the tables were emptied before loading")
+}
+
+func TestRestore_RefusesDatabaseWithUsersMarkedForAnotherTarget(t *testing.T) {
+	e := newEnv(t)
+	src := makeBackup(t, e.dir, oldKey, false)
+	seedUsers(t, e)
+	cand, _ := e.s.lookup(e.configPath)
+	require.NoError(t, markRestorePending(cand, sqliteTarget(filepath.Join(e.dir, "other.db"))))
+
+	code, out := call(t, e.s, "POST", "/api/setup/restore", restoreBody(e, map[string]any{"path": src}, oldKey))
+	assert.Equal(t, 409, code, out)
+	assert.Contains(t, out["message"], "already has users")
+	assert.True(t, restorePending(cand, sqliteTarget(filepath.Join(e.dir, "other.db"))), "the refusal leaves the marker alone")
+}
+
+func TestComplete_IgnoresRestoreMarker(t *testing.T) {
+	e := newEnv(t)
+	seedUsers(t, e)
+	cand, _ := e.s.lookup(e.configPath)
+	require.NoError(t, markRestorePending(cand, sqliteTarget(e.dbPath)))
+	code, out := call(t, e.s, "POST", "/api/setup/complete", completeBody(e))
+	assert.Equal(t, 409, code, "a fresh setup never takes a database with users")
+	assert.Contains(t, out["message"], "already has users")
+
+	// An empty database: the fresh setup succeeds and drops the stale marker.
+	body := completeBody(e)
+	body["database"] = map[string]any{"driver": "sqlite", "path": filepath.Join(e.dir, "fresh.db")}
+	code, out = call(t, e.s, "POST", "/api/setup/complete", body)
+	require.Equal(t, 200, code, out)
+	assert.NoFileExists(t, pendingPath(cand))
+}
+
+func TestRestore_RetryAfterFailureAfterDataLoaded(t *testing.T) {
+	e := newEnv(t)
+	e.s.restoreAckWait = 0
+	src := makeBackup(t, e.dir, oldKey, false)
+	cand, _ := e.s.lookup(e.configPath)
+	// The data is committed; then writing the config fails.
+	e.s.beforeWrite = func() { _ = os.WriteFile(e.configPath, []byte("[app]\n"), 0o600) }
+
+	code, out := call(t, e.s, "POST", "/api/setup/restore", restoreBody(e, map[string]any{"path": src}, oldKey))
+	require.Equal(t, 200, code, out)
+	st := waitRestore(t, e)
+	require.Equal(t, true, st["failed"], st)
+	assert.Contains(t, st["error"], "already exists")
+	assert.True(t, restorePending(cand, sqliteTarget(e.dbPath)))
+	if os.PathSeparator == '/' {
+		fi, err := os.Stat(pendingPath(cand))
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+	}
+	marker, err := os.ReadFile(pendingPath(cand))
+	require.NoError(t, err)
+	assert.Equal(t, sqliteTarget(e.dbPath)+"\n", string(marker), "only the database's identity")
+	var n int64
+	require.NoError(t, openSQLite(t, e.dbPath).Model(&models.User{}).Count(&n).Error)
+	require.Equal(t, int64(1), n, "the backup's users are in the database")
+
+	// The same session retries, and so does a restarted setup.
+	require.NoError(t, os.Remove(e.configPath))
+	e.s.beforeWrite = nil
+	for _, s := range []*server{e.s, newServer(e.s.o, 4747, testToken)} {
+		s.restoreAckWait = 0
+		code, out = call(t, s, "POST", "/api/setup/restore", restoreBody(e, map[string]any{"path": src}, oldKey))
+		require.Equal(t, 200, code, out)
+		require.Equal(t, false, waitRestoreOn(t, s)["failed"])
+		<-s.done
+		cfg, err := config.Load(e.configPath)
+		require.NoError(t, err)
+		assert.Equal(t, oldKey, cfg.App.EncryptionKey)
+		assert.NoFileExists(t, pendingPath(cand))
+		if s == e.s {
+			// Make the restarted setup start from the same leftovers.
+			require.NoError(t, os.Remove(e.configPath))
+			require.NoError(t, markRestorePending(cand, sqliteTarget(e.dbPath)))
+		}
+	}
 }
 
 func TestRestore_FailedJobLeavesNoConfigAndCanRetry(t *testing.T) {
@@ -280,7 +400,9 @@ func TestRestore_IntoPostgres(t *testing.T) {
 		t.Skip("TEST_BACKUP_DATABASE_URL not set")
 	}
 	u, err := url.Parse(dsn)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatal("TEST_BACKUP_DATABASE_URL is not a valid URL")
+	}
 	name := strings.TrimPrefix(u.Path, "/")
 	require.True(t, strings.HasPrefix(name, "whatomate_test"), "test database name must start with whatomate_test")
 	port, _ := strconv.Atoi(u.Port())

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -104,13 +105,21 @@ func (s *server) startRestore(ctx *fasthttp.RequestCtx) {
 		writeError(ctx, code, err.Error())
 		return
 	}
-	if _, err := s.reusableAdmin(db, databaseTarget(tg.db)); err != nil {
+	dbTarget := databaseTarget(tg.db)
+	// Users left by an earlier restore into this database that stopped before
+	// the config was written are fine: the restore empties the tables first.
+	if _, err := s.reusableAdmin(db, dbTarget); err != nil && !(errors.Is(err, errHasUsers) && restorePending(tg.cand, dbTarget)) {
 		closeDB()
 		if errors.Is(err, errHasUsers) {
 			writeError(ctx, fasthttp.StatusConflict, err.Error())
 		} else {
 			writeError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		}
+		return
+	}
+	if err := markRestorePending(tg.cand, dbTarget); err != nil {
+		closeDB()
+		writeError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
 	origin, https := browserOrigin(ctx, req.Port, s.listenPort)
@@ -146,6 +155,7 @@ func (s *server) runRestore(db *gorm.DB, closeDB func(), tg target, path, key st
 		fail(err)
 		return
 	}
+	s.clearRestorePending(tg.cand)
 	s.updateRestore(func(r *restoreState) { r.Running, r.Finished = false, true })
 	// Setup's server stops at the hand-off, so give the page a moment to read
 	// the result first.
@@ -176,6 +186,35 @@ func (s *server) restoreInto(db *gorm.DB, tg target, path, key string) error {
 	}, func(p backup.Progress) {
 		s.updateRestore(func(r *restoreState) { r.Phase, r.Table, r.Done, r.Total = p.Phase, p.Table, p.Done, p.Total })
 	})
+}
+
+// pendingName marks a data folder whose database a restore may have filled
+// before the config file was written. It holds only databaseTarget, never a
+// password, and stays until the config is written.
+const pendingName = ".setup-restore-pending"
+
+func pendingPath(cand candidateInfo) string { return filepath.Join(cand.DataDir, pendingName) }
+
+func markRestorePending(cand candidateInfo, target string) error {
+	if err := os.MkdirAll(cand.DataDir, 0o750); err != nil {
+		return fmt.Errorf("create %s: %w", cand.DataDir, err)
+	}
+	if err := os.WriteFile(pendingPath(cand), []byte(target+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", pendingPath(cand), err)
+	}
+	return nil
+}
+
+func (s *server) clearRestorePending(cand candidateInfo) {
+	if err := os.Remove(pendingPath(cand)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.o.Log.Warn("Could not remove the restore marker", "error", err)
+	}
+}
+
+// restorePending reports whether the marker names target.
+func restorePending(cand candidateInfo, target string) bool {
+	b, err := os.ReadFile(pendingPath(cand))
+	return err == nil && strings.TrimSpace(string(b)) == target
 }
 
 func (s *server) restoreStatus(ctx *fasthttp.RequestCtx) {

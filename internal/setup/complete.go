@@ -148,7 +148,11 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 	if err := applyAdmin(db, adminID, admin); err != nil {
 		return fasthttp.StatusInternalServerError, err
 	}
-	return s.writeConfig(tg, origin, https, "")
+	if code, err := s.writeConfig(tg, origin, https, ""); err != nil {
+		return code, err
+	}
+	s.clearRestorePending(tg.cand)
+	return fasthttp.StatusOK, nil
 }
 
 func configExists(path string) error {
