@@ -24,7 +24,7 @@ func fakeLive(t *testing.T, handler func(*websocket.Conn, *http.Request)) string
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		handler(c, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -76,7 +76,7 @@ func TestDialLive_SetupAndConversation(t *testing.T) {
 		Tools: []FunctionDeclaration{{Name: "end_call", Description: "hang up", Parameters: map[string]any{"type": "object"}}},
 	})
 	require.NoError(t, err)
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	require.NoError(t, sess.SendText("hello"))
 	require.NoError(t, sess.SendAudio([]int16{7, 8}))

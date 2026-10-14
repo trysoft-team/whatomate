@@ -55,7 +55,7 @@ func Restore(ctx context.Context, db *gorm.DB, path string, opts RestoreOptions,
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	if err := database.AutoMigrate(db.WithContext(ctx)); err != nil {
 		return fmt.Errorf("update tables: %w", err)
@@ -156,7 +156,7 @@ func loadTable(ctx context.Context, tx *gorm.DB, zr *zip.Reader, t table, te Tab
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	cols := columnsByName(t)
 	batchSize := 30000 / max(1, len(te.Columns))

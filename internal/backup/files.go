@@ -45,7 +45,7 @@ func restoreArea(ctx context.Context, zr *zip.Reader, a FileArea, skip []string,
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 
 	var n int64
 	for _, f := range zr.File {
@@ -176,7 +176,7 @@ func extract(f *zip.File, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
 	if err != nil {
 		return err

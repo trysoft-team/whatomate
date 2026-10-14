@@ -107,16 +107,16 @@ func TestSetServerPort_RefusesWhenOtherValuesWouldChange(t *testing.T) {
 
 func TestSetServerPort_MovesSetupOrigins(t *testing.T) {
 	before := "# Written by whatomate setup on 2026-10-13.\n\n[app]\nenvironment = \"production\"\n\n" +
-		"[server]\nhost = \"0.0.0.0\"\nport = 4747\nallowed_origins = \"http://localhost:4747,http://192.168.1.219:4747\"\n\n" +
+		"[server]\nhost = \"0.0.0.0\"\nport = 4747\nallowed_origins = \"http://localhost:4747,http://192.168.1.5:4747\"\n\n" +
 		"[database]\ndriver = \"sqlite\"\npath = \"whatomate.db\"\n\n[jwt]\nsecret = \"s\"\n"
 	p := writeTemp(t, before)
 	require.NoError(t, SetServerPort(p, 4790))
 	want := strings.Replace(before, "port = 4747\n", "port = 4790\n", 1)
-	want = strings.Replace(want, "\"http://localhost:4747,http://192.168.1.219:4747\"", "\"http://localhost:4790,http://192.168.1.219:4790\"", 1)
+	want = strings.Replace(want, "\"http://localhost:4747,http://192.168.1.5:4747\"", "\"http://localhost:4790,http://192.168.1.5:4790\"", 1)
 	assert.Equal(t, want, read(t, p))
 	cfg, err := Load(p)
 	require.NoError(t, err)
-	assert.Equal(t, "http://localhost:4790,http://192.168.1.219:4790", cfg.Server.AllowedOrigins)
+	assert.Equal(t, "http://localhost:4790,http://192.168.1.5:4790", cfg.Server.AllowedOrigins)
 }
 
 func TestSetServerPort_MovesOnlyOriginsOnOldPort(t *testing.T) {

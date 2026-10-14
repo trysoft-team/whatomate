@@ -2,51 +2,57 @@
 
 # Whatomate
 
-Modern, open-source WhatsApp Business Platform. Single binary app.
+Modern, open-source WhatsApp Business Platform. One binary, a setup wizard in the browser, and the database you already run.
 
 ![Dashboard](docs/public/images/dashboard-light.png#gh-light-mode-only)
 ![Dashboard](docs/public/images/dashboard-dark.png#gh-dark-mode-only)
+
+**Documentation:** [trysoft-team.github.io/whatomate](https://trysoft-team.github.io/whatomate/)
 
 ## Features
 
-- **Multi-tenant Architecture**
-  Support multiple organizations with isolated data and configurations.
+### Conversations
+- **Shared team inbox** — real-time two-way WhatsApp chat over WebSockets, with assignment, tags, notes, contact details and the 24-hour service window shown on every conversation.
+- **AI assist for agents** — suggest a reply, rewrite or translate a draft, quick-reply chips, translate incoming messages, transcribe voice notes and pick a template when the 24-hour window has closed (OpenAI, Anthropic, Google AI or OpenRouter).
+- **Canned responses** — quick replies with `/shortcut` commands, placeholders, interactive buttons and WhatsApp Flows.
+- **Media** — send and view images, video, audio, documents, stickers and locations, with an in-app viewer.
+- **Teams** — route chats and calls to agent teams with per-agent rotation.
 
-- **Granular Roles & Permissions**
-  Customizable roles with fine-grained permissions. Create custom roles, assign specific permissions per resource (users, contacts, templates, etc.), and control access at the action level (read, create, update, delete). Super admins can manage multiple organizations.
+### Automation
+- **Chatbot** — keyword rules, AI replies with your own context, greeting and fallback messages, and a default flow per WhatsApp account.
+- **Visual flow builder** — branching conversation flows with buttons, lists, media, conditions, HTTP calls and variables, plus a playground to try a flow before going live.
+- **WhatsApp Flows** — build, preview, publish and send Meta's native interactive forms.
+- **Custom actions & outbound webhooks** — per-contact buttons that call your systems, and HMAC-signed, retried event deliveries.
 
-- **WhatsApp Cloud API Integration**
-  Connect with Meta's WhatsApp Business API for messaging.
+### Messaging at scale
+- **Templates** — create, edit and resubmit Meta templates, including media headers, dynamic URL buttons, OTP and voice-call buttons, in every Meta-supported language.
+- **Campaigns** — bulk sends to contact lists with recipient validation, progress tracking and retries.
+- **Product catalogs** — sync catalogs and products from Meta Commerce Manager.
 
-- **Real-time Chat**
-  Live messaging with WebSocket support for instant communication.
+### Voice calling
+- **WhatsApp calls** — incoming and outgoing calls in the browser, with hold music, transfers to agents and teams, and call recording.
+- **IVR flow builder** — menus, DTMF input, HTTP callbacks, transfers and text-to-speech greetings.
+- **AI calls** — a Gemini Live voice agent can answer callers inside a call flow, call your functions and hand over to a person.
 
-- **Template Management**
-  Create and manage message templates approved by Meta.
+### Insight and control
+- **Dashboard & analytics** — customizable widgets, agent analytics and Meta Insights.
+- **Multi-tenant** — many organizations on one server, with isolated data and settings.
+- **Roles & permissions** — custom roles with per-resource, per-action permissions.
+- **Sign-in options** — password, passkeys, and SSO with Google, Microsoft, GitHub, Facebook or any OIDC provider.
+- **Audit logs** — who changed what, with field-level differences.
+- **API keys** — full REST API for your own integrations.
+- **Languages** — English, Arabic, Spanish, Portuguese, Hindi and Tamil.
 
-- **Bulk Campaigns**
-  Send campaigns to multiple contacts with retry support for failed messages.
-
-- **Chatbot Automation**
-  Keyword-based auto-replies, conversation flows with branching logic, and AI-powered responses (OpenAI, Anthropic, Google).
-
-- **Canned Responses**
-  Pre-defined quick replies with slash commands (`/shortcut`) and dynamic placeholders.
-
-- **Voice Calling & IVR**
-  Incoming and outgoing WhatsApp calls with IVR menus, DTMF routing, call transfers to agent teams, hold music, and call recording. See [calling docs](https://trysoft-team.github.io/whatomate/features/calling/).
-
-- **Analytics Dashboard**
-  Track messages, engagement, and campaign performance.
-
-- **Use the Database You Already Have**
-  Run on PostgreSQL, MySQL 8.0.19+ / MariaDB 10.6+, or SQLite (one file, no database server). Pick one with `[database] driver` in `config.toml`. See [database setup](https://trysoft-team.github.io/whatomate/getting-started/configuration/#database-setup).
+### Runs anywhere
+- **Your database** — PostgreSQL, MySQL 8.0.19+ / MariaDB 10.6+, or SQLite (one file, no database server).
+- **No Redis needed** — a built-in store handles caching, queues and pub/sub; add Redis when you run several servers.
+- **Setup wizard** — the first run opens a browser wizard that checks the system, sets up the database and the first admin, or restores a backup.
+- **Backup & Restore** — back up the whole server (database and files) to one file and restore it, even onto a different database type.
+- **Single binary** — the web app is embedded; releases for Linux, macOS, Windows and FreeBSD, plus Homebrew.
 
 <details>
-<summary>View more screenshots</summary>
+<summary>More screenshots</summary>
 
-![Dashboard](docs/public/images/dashboard-light.png#gh-light-mode-only)
-![Dashboard](docs/public/images/dashboard-dark.png#gh-dark-mode-only)
 ![Chatbot](docs/public/images/chatbot-light.png#gh-light-mode-only)
 ![Chatbot](docs/public/images/chatbot-dark.png#gh-dark-mode-only)
 ![Agent Analytics](docs/public/images/agent-analytics-light.png#gh-light-mode-only)
@@ -58,109 +64,90 @@ Modern, open-source WhatsApp Business Platform. Single binary app.
 
 </details>
 
-## Installation
+## Getting started
 
-### Docker
+### 1. Install
 
-Prebuilt images are not published yet. Build and run from source with Docker Compose:
-
-```bash
-git clone https://github.com/trysoft-team/whatomate.git
-cd whatomate
-
-# Copy and edit config and env (PostgreSQL credentials, timezone)
-cp config.example.toml config.toml
-cp .env.example .env
-
-# Build the image and start the app and PostgreSQL
-docker compose up -d --build
-```
-
-Go to `http://localhost:4747` and login with `admin@admin.com` / `admin`
-
-> [!NOTE]
-> Upgrading: the default port is now 4747 and Compose publishes `${WHATOMATE_PORT:-4747}`. If your `config.toml` says `port = 8080`, either change it to 4747 or set `WHATOMATE_PORT=8080` in `.env`.
-
-__________________
-
-### Binary
-
-Download the [latest release](https://github.com/trysoft-team/whatomate/releases) for Linux (`amd64`, `arm64`, `armv7`), macOS (one universal binary for Apple Silicon and Intel), Windows or FreeBSD, and extract it.
-
-```bash
-./whatomate
-```
-
-With no config file, whatomate opens a setup wizard at `http://localhost:4747`. It checks the system, asks which database to use (SQLite needs nothing installed, or PostgreSQL / MySQL), creates your organization and admin account, writes the config and starts whatomate. Redis is optional; without it whatomate uses a built-in store. Log in with the admin account you created in the setup wizard.
-
-> [!CAUTION]
-> Until setup is finished, anyone who can reach the setup port (4747 by default) can complete it. Run the first setup on a private network or behind a firewall.
-
-__________________
-
-### Homebrew (macOS and Linux)
+**Homebrew (macOS and Linux)**
 
 ```bash
 brew install trysoft-team/tap/whatomate
-brew upgrade whatomate   # after a new release
 ```
 
-Then run `whatomate` and finish setup in your browser, as for the binary above.
+**Binary** — download the [latest release](https://github.com/trysoft-team/whatomate/releases/latest) for Linux (`amd64`, `arm64`, `armv7`), macOS (universal), Windows (`amd64`, `arm64`) or FreeBSD, and extract it.
 
-__________________
-
-### Build from Source
+**From source** — needs Go 1.25+ and Node.js 20.19+:
 
 ```bash
 git clone https://github.com/trysoft-team/whatomate.git
 cd whatomate
-
-# Production build (single binary with embedded frontend)
-make build-prod
-./whatomate   # opens the setup wizard on first run
+make build-prod   # single binary with the web app embedded
 ```
 
-See [configuration docs](https://trysoft-team.github.io/whatomate/getting-started/configuration/) for detailed setup options.
-
-## CLI Usage
+### 2. Run
 
 ```bash
-./whatomate                     # Same as "server"; runs the setup wizard if there is no config
-./whatomate server              # API + 1 worker (default)
-./whatomate server -workers=0   # API only
-./whatomate worker -workers=4   # Workers only (for scaling)
-./whatomate version             # Show version
+whatomate          # or ./whatomate
 ```
 
-## Developers
+With no config file, whatomate opens the **setup wizard** at `http://localhost:4747`. The server log prints the wizard link, which carries a one-time setup key; open that link.
 
-The backend is written in Go ([Fastglue](https://github.com/zerodha/fastglue)) and the frontend is Vue.js 3 with shadcn-vue.
-- If you are interested in contributing, please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+1. **Start fresh** — pick a database (SQLite needs nothing installed; or enter a PostgreSQL / MySQL server), then create your organization and admin account.
+2. **Or restore from a backup** — upload a backup file or pick one on the server, and sign in with an account from the backup.
 
-Preferred local loop (host Go + Vite; Postgres in Docker):
+The wizard writes the config file and starts whatomate on the same port. Then connect your WhatsApp Business Account under **Settings → Accounts** (see [WhatsApp configuration](https://trysoft-team.github.io/whatomate/getting-started/quickstart/#whatsapp-configuration)).
+
+> [!TIP]
+> Voice features use `ffmpeg` and `opus-tools`; text-to-speech also uses Piper and `espeak-ng`. Homebrew installs `ffmpeg` and `opus-tools` for you.
+
+### Docker
+
+Prebuilt images are not published yet. Build and run from source with Docker Compose (app + PostgreSQL):
 
 ```bash
-# One-time: copy config and point the DB at the host
-cp config.toml config.local.toml
-# In config.local.toml: database.host=localhost, database.port=5433
+git clone https://github.com/trysoft-team/whatomate.git
+cd whatomate
+cp config.example.toml config.toml
+cp .env.example .env          # PostgreSQL credentials and timezone
+docker compose up -d --build
+```
 
-make docker-infra          # Postgres :5433; stops the app container
+Open `http://localhost:4747` and sign in with `admin@admin.com` / `admin`, then change the password.
+
+## Command line
+
+```bash
+whatomate                          # same as "server"; runs the setup wizard if there is no config
+whatomate server                   # API + 1 background worker
+whatomate server -workers=0        # API only
+whatomate worker -workers=4        # background workers only (for scaling out)
+whatomate backup                   # back up the database and files into the backup folder
+whatomate restore <backup.zip>     # restore a backup into the configured database
+whatomate config path              # show which config file is used
+whatomate version
+```
+
+The config file is found with `-config`, then `$WHATOMATE_CONFIG`, then the per-OS locations listed in `whatomate help` (for example `~/.config/whatomate/config.toml`). See the [configuration reference](https://trysoft-team.github.io/whatomate/getting-started/configuration/).
+
+## Development
+
+The backend is Go ([Fastglue](https://github.com/zerodha/fastglue)) and the frontend is Vue 3 with shadcn-vue. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+
+```bash
+# One-time: a local config pointing at the database you develop against
+cp config.example.toml config.local.toml
+# e.g. [database] driver = "sqlite", or PostgreSQL from `make docker-infra` on localhost:5433
+
+make docker-infra          # optional: PostgreSQL on :5433
 make run-migrate           # API on :4747 (uses config.local.toml)
-cd frontend && npm run dev # UI on :3000 (proxies /api → :4747)
-# or: make dev
+cd frontend && npm run dev # UI on :3000, proxies /api to :4747
 ```
 
-Login: `admin@admin.com` / `admin` at http://localhost:3000
+Tests: `make test` (PostgreSQL), `make test-sqlite`, `make test-mysql`; frontend unit tests `cd frontend && npm run test:unit`, end-to-end tests `npm run test` against a running server.
 
 ### Releases
 
-`main` is the development branch; pull requests and pushes to it run the full test suite on PostgreSQL, SQLite, MySQL and MariaDB. Every push to `master` runs the ~1,100 core tests on PostgreSQL (`make test-release`), tags the next version (`v0.2.0`, then `v0.2.1`, ...) and publishes the binaries to [GitHub Releases](https://github.com/trysoft-team/whatomate/releases) and the cask to [trysoft-team/homebrew-tap](https://github.com/trysoft-team/homebrew-tap). To release:
-
-```bash
-git checkout master && git merge --ff-only main && git push origin master
-```
-
-Pushes that only change docs or Markdown don't release. For a minor or major bump, run the **Release** workflow from the Actions tab on `master` and pick the part to bump, or push a `vX.Y.Z` tag yourself. `make release-snapshot` builds the same archives locally into `dist/` without publishing.
+`main` is the development branch: pushes run the full test suite on PostgreSQL, SQLite, MySQL and MariaDB. Every push to `master` runs the core tests (`make test-release`), tags the next patch version and publishes the binaries to [GitHub Releases](https://github.com/trysoft-team/whatomate/releases) and the cask to [trysoft-team/homebrew-tap](https://github.com/trysoft-team/homebrew-tap). For a minor or major version, push a `vX.Y.Z` tag with the `master` commit, or run the **Release** workflow and pick the part to bump. Pushes that only change docs or Markdown don't release. `make release-snapshot` builds the archives locally into `dist/`.
 
 ## License
 

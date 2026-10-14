@@ -24,7 +24,7 @@ func dialRead(t *testing.T, addr net.Addr) string {
 	t.Helper()
 	c, err := net.DialTimeout("tcp", addr.String(), 2*time.Second)
 	require.NoError(t, err)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	require.NoError(t, c.SetReadDeadline(time.Now().Add(3*time.Second)))
 	b, err := io.ReadAll(c)
 	require.NoError(t, err)
@@ -35,7 +35,7 @@ func TestShared_ViewsTakeTurns(t *testing.T) {
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	s := Share(raw)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	first := s.View(false)
 	go serveOnce(first, "first")
@@ -55,7 +55,7 @@ func TestShared_ConnectionWaitsForNextView(t *testing.T) {
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	s := Share(raw)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	require.NoError(t, s.View(false).Close())
 
 	go func() {
@@ -69,7 +69,7 @@ func TestShared_ClosedViewStopsAccepting(t *testing.T) {
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	s := Share(raw)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	v := s.View(false)
 	done := make(chan error, 1)
 	go func() {
@@ -95,7 +95,7 @@ func (l failingListener) Addr() net.Addr            { return &net.TCPAddr{IP: ne
 func TestShared_AcceptErrorReachesViews(t *testing.T) {
 	boom := errors.New("boom")
 	s := Share(failingListener{err: boom})
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	v := s.View(true)
 	_, err := v.Accept()
 	assert.ErrorIs(t, err, boom)

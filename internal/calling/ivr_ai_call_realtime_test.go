@@ -26,7 +26,7 @@ func fakeGeminiLive(t *testing.T, script func(c *websocket.Conn)) {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		_, _, _ = c.ReadMessage() // setup
 		_ = c.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
 		_, _, _ = c.ReadMessage() // kickoff text

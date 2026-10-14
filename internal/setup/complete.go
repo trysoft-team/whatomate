@@ -159,7 +159,7 @@ func configExists(path string) error {
 	return fmt.Errorf("%s already exists; restart whatomate to use it", path)
 }
 
-var errHasUsers = errors.New("This database already has users. Choose an empty database.")
+var errHasUsers = errors.New("This database already has users. Choose an empty database.") //nolint:staticcheck // shown to the user as-is
 
 // seededAdmin is an admin user setup created, and the database it is in.
 type seededAdmin struct {

@@ -66,7 +66,7 @@ func TestCreate_FilesSkipSymlinksAndSkipDirs(t *testing.T) {
 
 	zr, err := zip.OpenReader(filepath.Join(backups, info.Name))
 	require.NoError(t, err)
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	var names []string
 	for _, f := range zr.File {
 		if strings.HasPrefix(f.Name, "files/") {
@@ -95,7 +95,7 @@ func TestCreate_FollowsSymlinkedAreaRoot(t *testing.T) {
 
 	zr, err := zip.OpenReader(filepath.Join(backups, info.Name))
 	require.NoError(t, err)
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	var names []string
 	for _, f := range zr.File {
 		if strings.HasPrefix(f.Name, "files/") {
@@ -179,7 +179,7 @@ func fileEntries(t *testing.T, p string) []string {
 	t.Helper()
 	zr, err := zip.OpenReader(p)
 	require.NoError(t, err)
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	var names []string
 	for _, f := range zr.File {
 		if strings.HasPrefix(f.Name, "files/") {

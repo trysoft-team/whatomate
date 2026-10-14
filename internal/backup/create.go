@@ -236,7 +236,7 @@ func writeTable(ctx context.Context, db *gorm.DB, zw *zip.Writer, t table, progr
 	if err != nil {
 		return entry, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		item := reflect.New(t.Schema.ModelType)
 		if err := db.ScanRows(rows, item.Interface()); err != nil {

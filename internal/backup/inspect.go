@@ -105,7 +105,7 @@ func Verify(p string, progress ProgressFunc) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	m, err := readManifest(&zr.Reader)
 	if err != nil {
 		return err
@@ -149,7 +149,7 @@ func hashLines(f *zip.File) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	h := sha256.New()
 	br := bufio.NewReader(io.TeeReader(rc, h))
 	var rows int64

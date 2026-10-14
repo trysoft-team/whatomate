@@ -108,14 +108,17 @@ func (s *server) startRestore(ctx *fasthttp.RequestCtx) {
 	dbTarget := databaseTarget(tg.db)
 	// Users left by an earlier restore into this database that stopped before
 	// the config was written are fine: the restore empties the tables first.
-	if _, err := s.reusableAdmin(db, dbTarget); err != nil && !(errors.Is(err, errHasUsers) && restorePending(tg.cand, dbTarget)) {
-		closeDB()
-		if errors.Is(err, errHasUsers) {
-			writeError(ctx, fasthttp.StatusConflict, err.Error())
-		} else {
-			writeError(ctx, fasthttp.StatusInternalServerError, err.Error())
+	if _, err := s.reusableAdmin(db, dbTarget); err != nil {
+		hasUsers := errors.Is(err, errHasUsers)
+		if !hasUsers || !restorePending(tg.cand, dbTarget) {
+			closeDB()
+			if hasUsers {
+				writeError(ctx, fasthttp.StatusConflict, err.Error())
+			} else {
+				writeError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			}
+			return
 		}
-		return
 	}
 	if err := markRestorePending(tg.cand, dbTarget); err != nil {
 		closeDB()

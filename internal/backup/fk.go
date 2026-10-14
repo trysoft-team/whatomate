@@ -71,7 +71,7 @@ func scanForeignKeys(db *gorm.DB, query string) ([]foreignKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read foreign keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []foreignKey
 	for rows.Next() {
 		var fk foreignKey

@@ -58,7 +58,7 @@ func ReadManifest(path string) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	return readManifest(&zr.Reader)
 }
 
@@ -71,7 +71,7 @@ func readManifest(zr *zip.Reader) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var m Manifest
 	if err := json.NewDecoder(rc).Decode(&m); err != nil {
 		return nil, fmt.Errorf("%w: manifest: %v", ErrCorrupt, err)

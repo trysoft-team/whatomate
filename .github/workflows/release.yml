@@ -90,9 +90,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A branch push and a tag push for the same commit both run this workflow;
+      # whichever runs second finds the release already published and stops.
       - name: Pick the release tag
         id: version
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUMP: ${{ inputs.bump || 'patch' }}
           # First version on a repository with no vX.Y.Z tags yet.
           INITIAL_VERSION: ${{ vars.INITIAL_VERSION || 'v0.2.0' }}
@@ -119,6 +122,12 @@ jobs:
             fi
             git tag "$tag"
             git push origin "refs/tags/$tag"
+          else
+            published=$(gh release view "$tag" --json isDraft --jq 'select(.isDraft == false) | "yes"' 2>/dev/null || true)
+            if [ "$published" = "yes" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "$tag is already released; nothing to do."
+            fi
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -128,19 +137,21 @@ jobs:
       # With no earlier release the changelog would list every commit in the
       # history, which is longer than GitHub allows for release notes.
       - name: Write first-release notes
-        if: steps.version.outputs.previous == ''
+        if: steps.version.outputs.skip != 'true' && steps.version.outputs.previous == ''
         run: |
           printf 'First release of Whatomate from %s.\n\nSee the README for installation, including Homebrew.\n' \
             "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/release-notes.md"
           echo "RELEASE_NOTES_FLAG=--release-notes=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_ENV"
 
       - name: Set up Go
+        if: steps.version.outputs.skip != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.25"
           cache: true
 
       - name: Set up Node.js
+        if: steps.version.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -148,6 +159,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Run GoReleaser
+        if: steps.version.outputs.skip != 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"

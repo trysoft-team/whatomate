@@ -87,7 +87,7 @@ func TestServerSettings_RejectsBadPorts(t *testing.T) {
 	app, _, orgID, adminID := serverSettingsApp(t)
 	busy, err := net.Listen("tcp", ":0")
 	require.NoError(t, err)
-	defer busy.Close()
+	defer func() { _ = busy.Close() }()
 
 	for _, port := range []int{0, 70000, busy.Addr().(*net.TCPAddr).Port} {
 		put := testutil.NewJSONRequest(t, map[string]any{"port": port})

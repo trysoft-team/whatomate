@@ -189,7 +189,7 @@ func TestPubSub_MemoryBroker(t *testing.T) {
 	sub := queue.NewSubscriber(b, testutil.NopLogger())
 	got := make(chan *queue.CampaignStatsUpdate, 1)
 	require.NoError(t, sub.SubscribeCampaignStats(context.Background(), func(u *queue.CampaignStatsUpdate) { got <- u }))
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 	require.NoError(t, pub.PublishCampaignStats(context.Background(), &queue.CampaignStatsUpdate{CampaignID: "c1", SentCount: 3}))
 	select {
 	case u := <-got:
