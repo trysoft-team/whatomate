@@ -225,7 +225,8 @@ The wizard:
 
 1. checks the system (folders, disk, memory, port, internet, clock, audio tools);
 2. asks which database to use: SQLite (nothing to install), PostgreSQL or MySQL;
-3. creates your organization and admin account;
+3. creates your organization and admin account (or restores a backup, see
+   [Restore from a backup](#restore-from-a-backup));
 4. writes the config file and starts whatomate on the same port.
 
 Then log in with the admin account you created in the setup wizard.
@@ -241,6 +242,45 @@ To set up again, delete the config file (`whatomate config path` shows where
 it is) and start whatomate. The wizard only uses an empty database, so also
 delete the SQLite file (or drop the PostgreSQL/MySQL database), or choose a
 new one.
+
+### Restore from a backup
+
+To move an existing whatomate to this server, choose **Restore from a backup**
+on the Welcome page instead of **Start fresh**. The wizard checks the system
+and asks for the database as usual, but instead of creating an admin account
+it restores a backup made in
+[Settings → Backup & Restore](/whatomate/features/backup-restore/):
+
+1. Pick the backup:
+   - **Upload a backup** sends a `.zip` from your computer (up to 10240 MB).
+     It is kept in the `backups` folder of the data folder (shown on the
+     System check step), so it later shows up in Settings → Backup & Restore.
+   - **On this server** lists the `.zip` backups already in that `backups`
+     folder, or takes the full path to any backup `.zip` on the server.
+2. Check the summary: when and with which whatomate version the backup was
+   made, the database it came from and the one it is going into, how many rows
+   and tables it holds, and its files.
+3. Optionally paste the old server's `encryption_key` (from its `config.toml`)
+   into **Old encryption key**. The wizard checks it against the backup and
+   shows "Matches the backup"; a key that does not match blocks the restore.
+   If you leave it blank, the restore still works and a new key is generated,
+   but saved WhatsApp access tokens, AI provider keys and SSO client secrets
+   must be entered again after signing in. A backup without encrypted secrets
+   needs no key.
+4. Press **Restore and finish**. The page shows the progress: preparing the
+   database, checking the backup, loading data, linking records, putting
+   files back and saving settings.
+
+The database must have no users: use an empty one (one left behind by an
+unfinished **Start fresh** attempt of this wizard is also accepted). No admin
+account is created and no safety backup is taken. When the restore finishes,
+sign in with an account **from the backup**.
+
+The backed-up files go into the `uploads` and `audio` folders of the data
+folder. If loading the data fails, nothing is kept and no config file is
+written; fix the problem and try again. If the data is restored but some files
+cannot be put back, the data and config are kept: the page says what went
+wrong and offers **Continue to sign in**.
 
 ## 3rd Party Hosting
 

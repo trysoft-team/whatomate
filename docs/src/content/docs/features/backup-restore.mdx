@@ -72,12 +72,16 @@ To move, for example from SQLite to PostgreSQL:
 
 1. On the old server, make a backup (with files) and download it.
 2. Copy `encryption_key` from the old server's `config.toml`.
-3. Install whatomate against the new, empty database with the [setup wizard](/whatomate/getting-started/quickstart/#first-run). The organization and admin you create there are only temporary.
-4. Before signing in, put the old `encryption_key` into the new `config.toml` and restart whatomate.
-5. Sign in, open **Settings → Backup & Restore**, upload the backup and restore it.
-6. Sign in with your account from the old server.
+3. Start whatomate on the new server with no config file, so the [setup wizard](/whatomate/getting-started/quickstart/#restore-from-a-backup) opens.
+4. Choose **Restore from a backup** and pick the new database. It must have no users.
+5. Under **Upload a backup**, upload the backup file.
+6. Paste the old `encryption_key` into **Old encryption key**; it should show "Matches the backup".
+7. Press **Restore and finish**.
+8. Sign in with your account from the old server.
 
-If the new server uses a different `encryption_key`, the restore still works, but saved WhatsApp access tokens, AI provider keys and SSO client secrets will not decrypt. Re-enter them in Settings after the restore.
+On a server that is already installed, you can still upload the backup and restore it from **Settings → Backup & Restore** as described above.
+
+If the old `encryption_key` is left blank in the wizard (a new key is generated), or an installed server uses a different key, the restore still works, but saved WhatsApp access tokens, AI provider keys and SSO client secrets will not decrypt. Re-enter them in Settings after the restore.
 
 ## Command line
 
