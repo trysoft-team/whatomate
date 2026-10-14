@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   adminErrors, afterSetup, databaseReady, defaultDatabasePort, defaultSQLitePath,
-  hasFailedCheck, passwordStrength, validPort, type AdminForm,
+  hasFailedCheck, keyState, passwordStrength, restorePhaseIndex, restoreReady, stepsFor, validPort, type AdminForm,
 } from './setup'
+import type { SetupBackupSummary } from '@/services/api'
 
 const goodAdmin: AdminForm = {
   organization: 'Acme', fullName: 'Ana', email: 'ana@example.com', password: 'longenough', confirm: 'longenough',
@@ -72,5 +73,50 @@ describe('setup logic', () => {
     expect(afterSetup({ needed: false, ready: true, url: here }, here)).toEqual({ kind: 'login' })
     expect(afterSetup({ needed: false, ready: true, url: 'http://localhost:9000' }, here))
       .toEqual({ kind: 'moved', url: 'http://localhost:9000' })
+  })
+})
+
+function summary(fingerprint: string, matches: boolean): SetupBackupSummary {
+  return {
+    name: 'b.zip', size: 1, target_driver: 'sqlite', key_matches: matches, key_given: true,
+    manifest: {
+      format: 1, app_version: 'v1', kind: 'manual', created_at: '2026-01-01T00:00:00Z', source_driver: 'sqlite',
+      key_fingerprint: fingerprint, include_files: false, tables: [],
+    },
+  }
+}
+
+describe('stepsFor', () => {
+  it('swaps the last step', () => {
+    expect(stepsFor('fresh')).toEqual(['welcome', 'checks', 'database', 'admin'])
+    expect(stepsFor('restore')).toEqual(['welcome', 'checks', 'database', 'restore'])
+  })
+})
+
+describe('keyState and restoreReady', () => {
+  it('needs no key when the backup has none', () => {
+    expect(keyState(summary('', true), '')).toBe('not-needed')
+    expect(restoreReady(summary('', true), 'anything')).toBe(true)
+  })
+  it('allows a blank key with a warning', () => {
+    expect(keyState(summary('abc', false), '  ')).toBe('blank')
+    expect(restoreReady(summary('abc', false), '')).toBe(true)
+  })
+  it('blocks a key that does not match', () => {
+    expect(keyState(summary('abc', false), 'wrong')).toBe('mismatch')
+    expect(restoreReady(summary('abc', false), 'wrong')).toBe(false)
+    expect(keyState(summary('abc', true), 'right')).toBe('match')
+  })
+  it('is not ready without a summary', () => {
+    expect(restoreReady(null, '')).toBe(false)
+  })
+})
+
+describe('restorePhaseIndex', () => {
+  it('orders the phases', () => {
+    expect(restorePhaseIndex('prepare')).toBe(0)
+    expect(restorePhaseIndex('load')).toBe(2)
+    expect(restorePhaseIndex('config')).toBe(5)
+    expect(restorePhaseIndex('')).toBe(0)
   })
 })

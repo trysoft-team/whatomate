@@ -1,7 +1,15 @@
-import type { SetupCheck, SetupDatabase, SetupDatabaseResult, SetupDriver, SetupStatus } from '@/services/api'
+import type {
+  SetupBackupSummary, SetupCheck, SetupDatabase, SetupDatabaseResult, SetupDriver, SetupStatus,
+} from '@/services/api'
 
 export const SETUP_STEPS = ['welcome', 'checks', 'database', 'admin'] as const
-export type SetupStep = (typeof SETUP_STEPS)[number]
+export const RESTORE_STEPS = ['welcome', 'checks', 'database', 'restore'] as const
+export type SetupStep = (typeof SETUP_STEPS)[number] | (typeof RESTORE_STEPS)[number]
+export type SetupMode = 'fresh' | 'restore'
+
+export function stepsFor(mode: SetupMode): readonly SetupStep[] {
+  return mode === 'restore' ? RESTORE_STEPS : SETUP_STEPS
+}
 
 export function hasFailedCheck(checks: SetupCheck[]): boolean {
   return checks.some(c => c.status === 'fail')
@@ -76,4 +84,23 @@ export function afterSetup(status: SetupStatus, currentOrigin: string): AfterSet
     if (origin !== currentOrigin) return { kind: 'moved', url: origin }
   }
   return { kind: 'login' }
+}
+
+export type KeyState = 'not-needed' | 'blank' | 'match' | 'mismatch'
+
+/** keyState: summary must come from inspecting with this key. */
+export function keyState(summary: SetupBackupSummary, key: string): KeyState {
+  if (!summary.manifest.key_fingerprint) return 'not-needed'
+  if (!key.trim()) return 'blank'
+  return summary.key_matches ? 'match' : 'mismatch'
+}
+
+export function restoreReady(summary: SetupBackupSummary | null, key: string): boolean {
+  return !!summary && keyState(summary, key) !== 'mismatch'
+}
+
+export const RESTORE_PHASES = ['prepare', 'verify', 'load', 'links', 'swap', 'config'] as const
+
+export function restorePhaseIndex(phase: string): number {
+  return Math.max(0, RESTORE_PHASES.indexOf(phase as (typeof RESTORE_PHASES)[number]))
 }

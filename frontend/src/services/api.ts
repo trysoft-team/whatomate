@@ -1602,6 +1602,45 @@ export interface SetupCompleteRequest {
   admin: { full_name: string; email: string; password: string }
 }
 
+export interface SetupBackupRef {
+  name?: string
+  path?: string
+}
+
+export interface SetupBackupSummary {
+  name: string
+  size: number
+  manifest: BackupManifest
+  target_driver: string
+  key_matches: boolean
+  key_given: boolean
+}
+
+export interface SetupRestoreChoice {
+  backup: SetupBackupRef | null
+  encryptionKey: string
+}
+
+export interface SetupRestoreRequest {
+  config_path: string
+  port: number
+  database: SetupDatabase
+  backup: SetupBackupRef
+  encryption_key: string
+}
+
+export interface SetupRestoreStatus {
+  running: boolean
+  phase: string
+  table?: string
+  done: number
+  total: number
+  finished: boolean
+  failed: boolean
+  files_failed: boolean
+  error?: string
+}
+
 export const setupService = {
   status: () => api.get<{ data: SetupStatus }>('/setup/status'),
   checks: (params: { port: number; config_path: string }) =>
@@ -1610,6 +1649,23 @@ export const setupService = {
   createDatabase: (db: SetupDatabase) => api.post<{ data: SetupDatabaseResult }>('/setup/database/create', db),
   complete: (req: SetupCompleteRequest) =>
     api.post<{ data: { url: string } }>('/setup/complete', req, { timeout: 600000 }),
+  backups: (configPath: string) =>
+    api.get<{ data: { dir: string; backups: BackupInfo[] } }>('/setup/backups', { params: { config_path: configPath } }),
+  startUpload: (configPath: string, name: string, size: number) =>
+    api.post<{ data: { id: string; received: number; chunk_max: number } }>('/setup/backup-uploads', { config_path: configPath, name, size }),
+  putChunk: (id: string, offset: number, chunk: Blob) =>
+    api.put<{ data: { received: number } }>(`/setup/backup-uploads/${id}`, chunk, {
+      params: { offset },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      timeout: 120000,
+    }),
+  // The setup server takes only JSON POST bodies, so send an empty object.
+  finishUpload: (id: string) => api.post<{ data: BackupInfo }>(`/setup/backup-uploads/${id}/finish`, {}, { timeout: 120000 }),
+  cancelUpload: (id: string) => api.delete(`/setup/backup-uploads/${id}`),
+  inspectBackup: (req: { config_path: string; database: SetupDatabase; backup: SetupBackupRef; encryption_key: string }) =>
+    api.post<{ data: SetupBackupSummary }>('/setup/backup/inspect', req, { timeout: 60000 }),
+  restore: (req: SetupRestoreRequest) => api.post<{ data: { started: boolean } }>('/setup/restore', req, { timeout: 120000 }),
+  restoreStatus: () => api.get<{ data: SetupRestoreStatus }>('/setup/restore'),
 }
 
 export interface ServerSettings {

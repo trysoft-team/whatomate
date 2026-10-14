@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { MessageSquare, Loader2, Check, ShieldCheck, Database, UserRound, AlertTriangle, XCircle, Circle } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import { setupService, type SetupDatabase, type SetupStatus } from '@/services/api'
-import { afterSetup, defaultSQLitePath, SETUP_STEPS, type AdminForm, type SetupStep } from '@/lib/setup'
+import { afterSetup, defaultSQLitePath, SETUP_STEPS, stepsFor, type AdminForm, type SetupStep } from '@/lib/setup'
 import SetupChecks from './SetupChecks.vue'
 import SetupDatabaseStep from './SetupDatabase.vue'
 import SetupAdmin from './SetupAdmin.vue'
@@ -26,7 +26,7 @@ const START_TIMEOUT_MS = 2 * 60 * 1000
 
 const candidates = computed(() => status.value?.candidates ?? [])
 const dataDir = computed(() => candidates.value.find(c => c.path === configPath.value)?.data_dir ?? '')
-const stepIndex = computed(() => SETUP_STEPS.indexOf(step.value))
+const stepIndex = computed(() => stepsFor('fresh').indexOf(step.value))
 const plainHttp = window.location.protocol === 'http:'
 
 const finishing = computed(() => phase.value !== 'form')
