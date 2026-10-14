@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/assignment"
+	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/maintenance"
@@ -56,8 +57,9 @@ type App struct {
 	// Version is the running build's version, written into backups.
 	Version string
 
-	backupJob backupJobs
-	uploads   uploadStore
+	backupJob   backupJobs
+	uploads     backup.Uploads
+	uploadsInit sync.Once
 	// wg tracks background goroutines for graceful shutdown
 	wg sync.WaitGroup
 }

@@ -85,6 +85,18 @@ func TestInspect_Summary(t *testing.T) {
 	require.NoError(t, Verify(path, nil))
 }
 
+func TestInspectFile_NeedsNoDatabase(t *testing.T) {
+	p, _ := makeBackup(t)
+	sum, err := InspectFile(p, "postgres", "key-a")
+	require.NoError(t, err)
+	assert.Equal(t, "postgres", sum.TargetDriver)
+	assert.True(t, sum.KeyMatches)
+
+	sum, err = InspectFile(p, "mysql", "other")
+	require.NoError(t, err)
+	assert.False(t, sum.KeyMatches)
+}
+
 func TestInspect_RefusesNewerBackups(t *testing.T) {
 	path, db := makeBackup(t)
 	for name, change := range map[string]func(m *Manifest){

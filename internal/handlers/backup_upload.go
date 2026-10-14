@@ -1,56 +1,48 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
-	"sync"
 
-	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 )
 
-// uploadChunkMax keeps each chunk well under the server's 15 MB body limit.
-const uploadChunkMax = 8 << 20
-
-const defaultMaxUploadMB = 10240
-
-type backupUpload struct {
-	mu       sync.Mutex
-	name     string
-	path     string
-	size     int64
-	received int64
+// backupUploads returns the upload engine, checking disk space through
+// ensureSpace so tests can replace it.
+func (a *App) backupUploads() *backup.Uploads {
+	a.uploadsInit.Do(func() {
+		a.uploads.Space = func(dir string, need int64) error { return ensureSpace(dir, need) }
+	})
+	return &a.uploads
 }
 
-type uploadStore struct {
-	mu    sync.Mutex
-	items map[string]*backupUpload
-}
-
-func (s *uploadStore) get(id string) *backupUpload {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.items[id]
-}
-
-func (s *uploadStore) put(id string, u *backupUpload) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.items == nil {
-		s.items = map[string]*backupUpload{}
+func sendUploadError(r *fastglue.Request, err error) error {
+	var off *backup.OffsetError
+	var big *backup.TooLargeError
+	var inc *backup.IncompleteError
+	var sp *backup.SpaceError
+	switch {
+	case errors.Is(err, backup.ErrUploadNotFound):
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Upload not found", nil, "")
+	case errors.Is(err, backup.ErrNotBackupFile):
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Choose a whatomate backup (.zip)", nil, "")
+	case errors.Is(err, backup.ErrBadChunk):
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Bad chunk size", nil, "")
+	case errors.As(err, &off):
+		return r.SendErrorEnvelope(fasthttp.StatusConflict, fmt.Sprintf("Expected offset %d", off.Received), map[string]int64{"received": off.Received}, "")
+	case errors.As(err, &big):
+		return r.SendErrorEnvelope(fasthttp.StatusRequestEntityTooLarge,
+			fmt.Sprintf("The backup is larger than the %d MB upload limit ([backup] max_upload_mb)", big.LimitMB), nil, "")
+	case errors.As(err, &inc):
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, fmt.Sprintf("Received %d of %d bytes", inc.Received, inc.Size), nil, "")
+	case errors.As(err, &sp):
+		return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, sp.Err.Error(), nil, "")
 	}
-	s.items[id] = u
-}
-
-func (s *uploadStore) remove(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.items, id)
+	return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
 }
 
 // StartBackupUpload begins a chunked upload of a backup file.
@@ -65,32 +57,11 @@ func (a *App) StartBackupUpload(r *fastglue.Request) error {
 	if err := a.decodeRequest(r, &req); err != nil {
 		return nil
 	}
-	if !strings.HasSuffix(strings.ToLower(req.Name), ".zip") || req.Size <= 0 {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Choose a whatomate backup (.zip)", nil, "")
-	}
-	maxMB := a.Config.Backup.MaxUploadMB
-	if maxMB <= 0 {
-		maxMB = defaultMaxUploadMB
-	}
-	if limit := int64(maxMB) << 20; req.Size > limit {
-		return r.SendErrorEnvelope(fasthttp.StatusRequestEntityTooLarge,
-			fmt.Sprintf("The backup is larger than the %d MB upload limit ([backup] max_upload_mb)", maxMB), nil, "")
-	}
-	if err := os.MkdirAll(a.Config.Backup.Dir, 0o750); err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
-	}
-	if err := ensureSpace(a.Config.Backup.Dir, req.Size); err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusInsufficientStorage, err.Error(), nil, "")
-	}
-	id := uuid.NewString()
-	p := filepath.Join(a.Config.Backup.Dir, backup.UploadPrefix+id+".part")
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	id, err := a.backupUploads().Start(a.Config.Backup.Dir, req.Name, req.Size, a.Config.Backup.MaxUploadMB)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
+		return sendUploadError(r, err)
 	}
-	_ = f.Close()
-	a.uploads.put(id, &backupUpload{name: req.Name, path: p, size: req.Size})
-	return r.SendEnvelope(map[string]any{"id": id, "received": 0, "chunk_max": uploadChunkMax})
+	return r.SendEnvelope(map[string]any{"id": id, "received": 0, "chunk_max": backup.ChunkMax})
 }
 
 // PutBackupUploadChunk appends one chunk at ?offset=N.
@@ -99,31 +70,15 @@ func (a *App) PutBackupUploadChunk(r *fastglue.Request) error {
 		return nil
 	}
 	id, _ := r.RequestCtx.UserValue("id").(string)
-	u := a.uploads.get(id)
-	if u == nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Upload not found", nil, "")
-	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
 	offset, err := strconv.ParseInt(string(r.RequestCtx.QueryArgs().Peek("offset")), 10, 64)
-	if err != nil || offset != u.received {
-		return r.SendErrorEnvelope(fasthttp.StatusConflict, fmt.Sprintf("Expected offset %d", u.received), map[string]int64{"received": u.received}, "")
-	}
-	body := r.RequestCtx.PostBody()
-	if len(body) == 0 || len(body) > uploadChunkMax || u.received+int64(len(body)) > u.size {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Bad chunk size", nil, "")
-	}
-	f, err := os.OpenFile(u.path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
+		offset = -1
 	}
-	n, err := f.Write(body)
-	_ = f.Close()
-	u.received += int64(n)
+	n, err := a.backupUploads().Put(id, offset, r.RequestCtx.PostBody())
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
+		return sendUploadError(r, err)
 	}
-	return r.SendEnvelope(map[string]int64{"received": u.received})
+	return r.SendEnvelope(map[string]int64{"received": n})
 }
 
 // FinishBackupUpload checks the uploaded file and adds it to the list.
@@ -132,20 +87,9 @@ func (a *App) FinishBackupUpload(r *fastglue.Request) error {
 		return nil
 	}
 	id, _ := r.RequestCtx.UserValue("id").(string)
-	u := a.uploads.get(id)
-	if u == nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Upload not found", nil, "")
-	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.received != u.size {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, fmt.Sprintf("Received %d of %d bytes", u.received, u.size), nil, "")
-	}
-	a.uploads.remove(id)
-	final := filepath.Join(a.Config.Backup.Dir, backup.UploadName(a.Config.Backup.Dir, u.name))
-	if err := os.Rename(u.path, final); err != nil {
-		_ = os.Remove(u.path)
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, err.Error(), nil, "")
+	final, err := a.backupUploads().Finish(id)
+	if err != nil {
+		return sendUploadError(r, err)
 	}
 	sum, err := backup.Inspect(final, a.DB, a.Config.App.EncryptionKey)
 	if err != nil {
@@ -162,11 +106,6 @@ func (a *App) CancelBackupUpload(r *fastglue.Request) error {
 		return nil
 	}
 	id, _ := r.RequestCtx.UserValue("id").(string)
-	if u := a.uploads.get(id); u != nil {
-		u.mu.Lock()
-		_ = os.Remove(u.path)
-		u.mu.Unlock()
-		a.uploads.remove(id)
-	}
+	a.backupUploads().Cancel(id)
 	return r.SendEnvelope(map[string]string{"cancelled": id})
 }

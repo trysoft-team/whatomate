@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var (
@@ -72,6 +74,27 @@ func Inspect(p string, db *gorm.DB, encryptionKey string) (Summary, error) {
 		Name: filepath.Base(p), Size: st.Size(), Manifest: *m, TargetDriver: db.Name(),
 		KeyMatches: m.KeyFingerprint == "" || m.KeyFingerprint == KeyFingerprint(encryptionKey),
 	}, nil
+}
+
+// InspectFile is Inspect without a live database, for a restore target of
+// targetDriver that may not exist yet. Table and column names do not depend
+// on the driver.
+func InspectFile(p, targetDriver, encryptionKey string) (Summary, error) {
+	db, err := gorm.Open(sqlite.Open("file::memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		return Summary{}, err
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}()
+	sum, err := Inspect(p, db, encryptionKey)
+	if err != nil {
+		return Summary{}, err
+	}
+	sum.TargetDriver = targetDriver
+	return sum, nil
 }
 
 // Verify reads the whole backup: every table's checksum and row count, every
