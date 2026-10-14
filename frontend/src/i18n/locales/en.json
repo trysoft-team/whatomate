@@ -3095,26 +3095,26 @@
     "title": "Set up whatomate",
     "loadFailed": "Couldn't reach the setup server. Check that whatomate is still running, then reload this page.",
     "reload": "Reload",
-    "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin" },
+    "steps": { "welcome": "Welcome", "checks": "System check", "database": "Database", "admin": "Admin", "restore": "Restore" },
     "stepHints": {
       "welcome": "What setup will do",
       "checks": "Port, config file and requirements",
       "database": "Where whatomate keeps its data",
-      "admin": "Your organization and first admin"
+      "admin": "Your organization and first admin",
+      "restore": "Bring back a backup"
     },
     "stepOf": "Step {n} of {total}",
     "back": "Back",
     "next": "Next",
     "welcome": {
       "title": "Welcome to whatomate",
-      "body": "No configuration was found, so let's set this server up. You'll check the system, choose a database and create the first admin account. It takes a couple of minutes.",
+      "body": "No configuration was found, so let's set this server up. Start fresh with a new admin account, or restore a backup from another server.",
       "version": "Version {version}",
-      "start": "Start setup",
-      "tiles": {
-        "checks": "Make sure this machine meets the requirements.",
-        "database": "Use SQLite with no setup, or connect PostgreSQL or MySQL.",
-        "admin": "Create your organization and the first admin account."
-      }
+      "modes": {
+        "fresh": { "title": "Start fresh", "body": "Check the system, choose a database and create the first admin account." },
+        "restore": { "title": "Restore from a backup", "body": "Move an existing whatomate here: choose a database and restore a backup made in Settings → Backup & Restore." }
+      },
+      "continue": "Continue"
     },
     "checks": {
       "title": "System check",
@@ -3188,6 +3188,33 @@
         "confirm": "Passwords don't match."
       }
     },
+    "restore": {
+      "title": "Restore a backup",
+      "subtitle": "Everything in the backup is loaded into the database you chose. You then sign in with an account from the backup.",
+      "tabUpload": "Upload a backup",
+      "tabServer": "On this server",
+      "chooseFile": "Choose a backup file (.zip)",
+      "uploading": "Uploading {percent}%",
+      "folder": "Backups in {dir}",
+      "none": "No backups in this folder yet",
+      "pathLabel": "Or enter the full path to a backup",
+      "pathPlaceholder": "/path/to/whatomate-backup.zip",
+      "usePath": "Use this file",
+      "checking": "Checking the backup…",
+      "made": "Made {date} with whatomate {version}",
+      "move": "{from} → {to}",
+      "rows": "{rows} rows in {tables} tables",
+      "files": "Includes {count} files ({size})",
+      "noFiles": "Database only",
+      "keyLabel": "Old encryption key (optional)",
+      "keyHint": "The encryption_key from the old server's config.toml. Saved WhatsApp tokens, AI keys and SSO secrets only work with it.",
+      "keyMatch": "Matches the backup",
+      "keyMismatch": "Does not match this backup",
+      "keyBlank": "Without the old key, saved WhatsApp tokens, AI provider keys and SSO secrets will not work and must be entered again after signing in.",
+      "keyNotNeeded": "This backup has no encrypted secrets; no key is needed.",
+      "signInNote": "After the restore, sign in with an account from the backup.",
+      "finish": "Restore and finish"
+    },
     "finish": {
       "title": "Finishing setup",
       "saving": "Setting up the database, admin account and config file…",
@@ -3195,7 +3222,17 @@
       "starting": "Starting whatomate…",
       "httpNote": "You opened setup over plain HTTP, so whatomate runs in development mode (cookies work without HTTPS). Put it behind HTTPS and set environment = \"production\" before going live.",
       "failed": "Setup failed. Check the details and try again.",
-      "timeout": "whatomate is taking longer than expected to start. Check the terminal or log for errors."
+      "timeout": "whatomate is taking longer than expected to start. Check the terminal or log for errors.",
+      "restoreTitle": "Restoring the backup",
+      "restorePhases": {
+        "prepare": "Preparing the database",
+        "verify": "Checking the backup",
+        "load": "Loading data",
+        "links": "Linking records",
+        "swap": "Putting files back",
+        "config": "Saving settings"
+      },
+      "filesFailed": "The data was restored, but some files could not be put back: {error}"
     }
   }
 }

@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, Loader2, Check, ShieldCheck, Database, UserRound, AlertTriangle, XCircle, Circle } from 'lucide-vue-next'
+import { MessageSquare, Loader2, Check, AlertTriangle, XCircle, Circle, RefreshCcw, Sparkles } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
-import { setupService, type SetupDatabase, type SetupStatus } from '@/services/api'
-import { afterSetup, defaultSQLitePath, SETUP_STEPS, stepsFor, type AdminForm, type SetupStep } from '@/lib/setup'
+import { setupService, type SetupDatabase, type SetupRestoreChoice, type SetupRestoreStatus, type SetupStatus } from '@/services/api'
+import {
+  afterSetup, defaultSQLitePath, RESTORE_PHASES, restorePhaseIndex, stepsFor,
+  type AdminForm, type SetupMode, type SetupStep,
+} from '@/lib/setup'
 import SetupChecks from './SetupChecks.vue'
 import SetupDatabaseStep from './SetupDatabase.vue'
 import SetupAdmin from './SetupAdmin.vue'
+import SetupRestore from './SetupRestore.vue'
 import SetupFooter from './SetupFooter.vue'
 
 const { t } = useI18n()
@@ -18,7 +22,11 @@ const port = ref(4747)
 const configPath = ref('')
 const database = ref<SetupDatabase>({ driver: 'sqlite', path: '' })
 const admin = ref<AdminForm>({ organization: '', fullName: '', email: '', password: '', confirm: '' })
-const phase = ref<'form' | 'saving' | 'starting'>('form')
+const mode = ref<SetupMode>('fresh')
+const steps = computed(() => stepsFor(mode.value))
+const restoreChoice = ref<SetupRestoreChoice>({ backup: null, encryptionKey: '' })
+const restoreStatus = ref<SetupRestoreStatus | null>(null)
+const phase = ref<'form' | 'saving' | 'restoring' | 'starting'>('form')
 const error = ref('')
 const loadFailed = ref(false)
 const startTimedOut = ref(false)
@@ -26,7 +34,7 @@ const START_TIMEOUT_MS = 2 * 60 * 1000
 
 const candidates = computed(() => status.value?.candidates ?? [])
 const dataDir = computed(() => candidates.value.find(c => c.path === configPath.value)?.data_dir ?? '')
-const stepIndex = computed(() => stepsFor('fresh').indexOf(step.value))
+const stepIndex = computed(() => steps.value.indexOf(step.value))
 const plainHttp = window.location.protocol === 'http:'
 
 const finishing = computed(() => phase.value !== 'form')
@@ -34,20 +42,27 @@ const stepState = (i: number) =>
   finishing.value || i < stepIndex.value ? 'done' : i === stepIndex.value ? 'current' : 'upcoming'
 const stepSubtitle = computed(() => t(step.value === 'welcome' ? 'setup.welcome.body' : `setup.${step.value}.subtitle`))
 
-const welcomeTiles = [
-  { key: 'checks', icon: ShieldCheck },
-  { key: 'database', icon: Database },
-  { key: 'admin', icon: UserRound },
-] as const
-
 type PhaseState = 'pending' | 'running' | 'done' | 'failed'
-const phases = computed<{ label: string; state: PhaseState }[]>(() => [
-  { label: t('setup.finish.saving'), state: phase.value === 'saving' ? 'running' : 'done' },
-  {
+const phases = computed<{ label: string; state: PhaseState }[]>(() => {
+  const starting = {
     label: t('setup.finish.starting'),
-    state: phase.value === 'saving' ? 'pending' : startTimedOut.value ? 'failed' : 'running',
-  },
-])
+    state: (phase.value === 'starting' ? (startTimedOut.value ? 'failed' : 'running') : 'pending') as PhaseState,
+  }
+  if (mode.value === 'restore') {
+    const current = phase.value === 'restoring' ? restorePhaseIndex(restoreStatus.value?.phase ?? '') : RESTORE_PHASES.length
+    return [
+      ...RESTORE_PHASES.map((p, i) => ({
+        label: t(`setup.finish.restorePhases.${p}`),
+        state: (i < current ? 'done' : i === current ? 'running' : 'pending') as PhaseState,
+      })),
+      starting,
+    ]
+  }
+  return [
+    { label: t('setup.finish.saving'), state: phase.value === 'saving' ? 'running' : 'done' },
+    { ...starting, state: phase.value === 'saving' ? 'pending' : starting.state },
+  ]
+})
 const phaseIcon = { pending: Circle, running: Loader2, done: Check, failed: XCircle }
 const phaseColor = {
   pending: 'text-white/25 light:text-gray-300',
@@ -148,6 +163,52 @@ async function finish() {
   phase.value = 'starting'
   await waitForApp()
 }
+
+function chooseMode(m: SetupMode) {
+  mode.value = m
+  go('checks')
+}
+
+async function startRestore() {
+  phase.value = 'restoring'
+  error.value = ''
+  restoreStatus.value = null
+  try {
+    await setupService.restore({
+      config_path: configPath.value,
+      port: port.value,
+      database: database.value,
+      backup: restoreChoice.value.backup!,
+      encryption_key: restoreChoice.value.encryptionKey.trim(),
+    })
+  } catch (e: any) {
+    phase.value = 'form'
+    if (e?.response?.status === 409) step.value = 'database'
+    error.value = e?.response?.data?.message ?? t('setup.finish.failed')
+    return
+  }
+  for (;;) {
+    try {
+      const st = (await setupService.restoreStatus()).data.data
+      restoreStatus.value = st
+      if (st.finished) {
+        if (st.failed) {
+          phase.value = 'form'
+          step.value = 'restore'
+          error.value = st.error || t('setup.finish.failed')
+          return
+        }
+        break
+      }
+    } catch {
+      // setup has handed over to the app
+      break
+    }
+    await sleep(1000)
+  }
+  phase.value = 'starting'
+  await waitForApp()
+}
 </script>
 
 <template>
@@ -171,9 +232,9 @@ async function finish() {
         </div>
 
         <ol class="mt-10 hidden md:block" :aria-label="t('setup.title')">
-          <li v-for="(s, i) in SETUP_STEPS" :key="s" class="relative flex gap-4 pb-9 last:pb-0" :aria-current="stepState(i) === 'current' ? 'step' : undefined">
+          <li v-for="(s, i) in steps" :key="s" class="relative flex gap-4 pb-9 last:pb-0" :aria-current="stepState(i) === 'current' ? 'step' : undefined">
             <span
-              v-if="i < SETUP_STEPS.length - 1"
+              v-if="i < steps.length - 1"
               aria-hidden="true"
               class="absolute left-4 top-10 bottom-1 w-px -translate-x-1/2 transition-colors duration-300"
               :class="stepState(i) === 'done' ? 'bg-emerald-500/60' : 'bg-white/[0.08] light:bg-gray-200'"
@@ -199,7 +260,7 @@ async function finish() {
         </ol>
 
         <ol class="mt-5 flex items-center md:hidden" :aria-label="t('setup.title')">
-          <li v-for="(s, i) in SETUP_STEPS" :key="s" class="flex items-center" :class="{ 'flex-1': i < SETUP_STEPS.length - 1 }">
+          <li v-for="(s, i) in steps" :key="s" class="flex items-center" :class="{ 'flex-1': i < steps.length - 1 }">
             <span
               class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
               :class="{
@@ -212,7 +273,7 @@ async function finish() {
               <Check v-if="stepState(i) === 'done'" class="h-3.5 w-3.5" />
               <template v-else>{{ i + 1 }}</template>
             </span>
-            <span v-if="i < SETUP_STEPS.length - 1" aria-hidden="true" class="mx-2 h-px flex-1" :class="stepState(i) === 'done' ? 'bg-emerald-500/60' : 'bg-white/[0.08] light:bg-gray-200'" />
+            <span v-if="i < steps.length - 1" aria-hidden="true" class="mx-2 h-px flex-1" :class="stepState(i) === 'done' ? 'bg-emerald-500/60' : 'bg-white/[0.08] light:bg-gray-200'" />
           </li>
         </ol>
 
@@ -239,8 +300,8 @@ async function finish() {
             <Loader2 v-if="!startTimedOut" class="h-7 w-7 animate-spin text-emerald-400 light:text-emerald-600" />
             <AlertTriangle v-else class="h-7 w-7 text-red-400" />
           </div>
-          <h3 class="mt-5 text-xl font-semibold text-white light:text-gray-900">{{ t('setup.finish.title') }}</h3>
-          <p v-if="phase === 'saving'" class="mt-1 text-sm text-white/50 light:text-gray-500">{{ t('setup.finish.slow') }}</p>
+          <h3 class="mt-5 text-xl font-semibold text-white light:text-gray-900">{{ mode === 'restore' ? t('setup.finish.restoreTitle') : t('setup.finish.title') }}</h3>
+          <p v-if="phase === 'saving' || phase === 'restoring'" class="mt-1 text-sm text-white/50 light:text-gray-500">{{ t('setup.finish.slow') }}</p>
 
           <ul class="mt-8 w-full max-w-md space-y-2 text-left">
             <li
@@ -254,6 +315,10 @@ async function finish() {
             </li>
           </ul>
 
+          <div v-if="restoreStatus?.files_failed" class="mt-6 flex max-w-md gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-left text-xs text-amber-300/90 light:text-amber-700" data-testid="setup-files-failed">
+            <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span class="break-words">{{ t('setup.finish.filesFailed', { error: restoreStatus.error ?? '' }) }}</span>
+          </div>
           <p v-if="startTimedOut" class="mt-6 max-w-md text-sm text-red-400 light:text-red-600" data-testid="setup-start-timeout">{{ t('setup.finish.timeout') }}</p>
           <div v-if="plainHttp" class="mt-6 flex max-w-md gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-left text-xs text-amber-300/90 light:text-amber-700">
             <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -272,7 +337,7 @@ async function finish() {
           <div :key="step" class="flex flex-1 flex-col">
             <header class="px-6 pt-8 pb-6 sm:px-10 sm:pt-10">
               <p class="text-xs font-medium uppercase tracking-wider text-emerald-400/90 light:text-emerald-600">
-                {{ t('setup.stepOf', { n: stepIndex + 1, total: SETUP_STEPS.length }) }}
+                {{ t('setup.stepOf', { n: stepIndex + 1, total: steps.length }) }}
               </p>
               <h1 class="mt-2 text-2xl font-semibold tracking-tight text-white light:text-gray-900">{{ t(`setup.${step}.title`) }}</h1>
               <p class="mt-1.5 max-w-xl text-sm leading-relaxed text-white/55 light:text-gray-500">{{ stepSubtitle }}</p>
@@ -284,26 +349,30 @@ async function finish() {
 
             <div v-if="step === 'welcome'" class="flex flex-1 flex-col">
               <div class="flex-1 px-6 pb-8 sm:px-10">
-                <div class="grid gap-3 sm:grid-cols-3">
-                  <div
-                    v-for="tile in welcomeTiles"
-                    :key="tile.key"
-                    class="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4 light:border-gray-200 light:bg-white"
+                <div class="grid gap-3 sm:grid-cols-2" role="radiogroup">
+                  <button
+                    v-for="m in (['fresh', 'restore'] as const)"
+                    :key="m"
+                    type="button"
+                    role="radio"
+                    :aria-checked="mode === m"
+                    class="rounded-2xl border p-5 text-left transition-colors"
+                    :class="mode === m ? 'border-emerald-500/60 bg-emerald-500/[0.06] ring-1 ring-emerald-500/40' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04] light:border-gray-200 light:bg-white light:hover:bg-gray-50'"
+                    :data-testid="`setup-mode-${m}`"
+                    @click="mode = m"
                   >
                     <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20 light:text-emerald-600">
-                      <component :is="tile.icon" class="h-[18px] w-[18px]" />
+                      <component :is="m === 'fresh' ? Sparkles : RefreshCcw" class="h-[18px] w-[18px]" />
                     </div>
-                    <p class="mt-3 text-sm font-medium text-white light:text-gray-900">{{ t(`setup.steps.${tile.key}`) }}</p>
-                    <p class="mt-1 text-xs leading-relaxed text-white/45 light:text-gray-500">{{ t(`setup.welcome.tiles.${tile.key}`) }}</p>
-                  </div>
+                    <p class="mt-3 text-sm font-medium text-white light:text-gray-900">{{ t(`setup.welcome.modes.${m}.title`) }}</p>
+                    <p class="mt-1 text-xs leading-relaxed text-white/45 light:text-gray-500">{{ t(`setup.welcome.modes.${m}.body`) }}</p>
+                  </button>
                 </div>
                 <p class="mt-6 text-xs text-white/30 md:hidden light:text-gray-400">{{ t('setup.welcome.version', { version: status.version }) }}</p>
               </div>
               <SetupFooter>
                 <span />
-                <Button data-testid="setup-start" @click="go('checks')">
-                  {{ t('setup.welcome.start') }}
-                </Button>
+                <Button data-testid="setup-start" @click="chooseMode(mode)">{{ t('setup.welcome.continue') }}</Button>
               </SetupFooter>
             </div>
 
@@ -322,7 +391,16 @@ async function finish() {
               v-model="database"
               :data-dir="dataDir"
               @back="go('checks')"
-              @next="go('admin')"
+              @next="go(mode === 'restore' ? 'restore' : 'admin')"
+            />
+
+            <SetupRestore
+              v-else-if="step === 'restore'"
+              v-model="restoreChoice"
+              :config-path="configPath"
+              :database="database"
+              @back="go('database')"
+              @finish="startRestore"
             />
 
             <SetupAdmin
