@@ -156,11 +156,27 @@ The wizard writes the config file and starts whatomate on the same port. Then co
 
 To reach whatomate from other computers (or to open the setup wizard on a remote server), allow TCP port 4747 through the firewall, then open the setup link from the log with the server's address in place of `localhost`.
 
-```bash
-# Ubuntu / Debian (ufw)
-sudo ufw allow 4747/tcp
+**ufw** (Ubuntu / Debian):
 
-# Fedora / RHEL / CentOS (firewalld)
+```bash
+sudo ufw allow 4747/tcp
+sudo ufw status            # check the rule is listed
+```
+
+**iptables** (any Linux without ufw or firewalld):
+
+```bash
+sudo iptables -I INPUT -p tcp --dport 4747 -j ACCEPT
+sudo ip6tables -I INPUT -p tcp --dport 4747 -j ACCEPT   # if you use IPv6
+
+# Keep the rules after a reboot
+sudo apt install iptables-persistent && sudo netfilter-persistent save   # Debian / Ubuntu
+sudo service iptables save                                               # RHEL / CentOS with iptables-services
+```
+
+**firewalld** (Fedora / RHEL / CentOS):
+
+```bash
 sudo firewall-cmd --permanent --add-port=4747/tcp
 sudo firewall-cmd --reload
 ```
