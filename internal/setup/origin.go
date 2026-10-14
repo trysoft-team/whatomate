@@ -3,7 +3,6 @@ package setup
 import (
 	"net"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -54,22 +53,6 @@ func isOrigin(u *url.URL) bool {
 		u.Path == "" && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery
 }
 
-// allowedOrigins is the allowed_origins value setup writes. Over HTTPS it is
-// the browser origin alone; over plain HTTP it adds every listen URL, so
-// teammates on another address of this machine get live updates too.
-func allowedOrigins(origin string, https bool, urls []string) string {
-	if https {
-		return origin
-	}
-	out := []string{origin}
-	for _, u := range urls {
-		if !slices.Contains(out, u) {
-			out = append(out, u)
-		}
-	}
-	return strings.Join(out, ",")
-}
-
 func firstValue(v []byte) string {
 	s := string(v)
 	if i := strings.IndexByte(s, ','); i >= 0 {
@@ -83,13 +66,4 @@ func splitHost(h string) (host, port string) {
 		return host, port
 	}
 	return strings.Trim(h, "[]"), ""
-}
-
-// environmentFor picks the config environment: production forces Secure
-// cookies, which browsers drop on plain http://<lan-ip>.
-func environmentFor(https bool) string {
-	if https {
-		return "production"
-	}
-	return "development"
 }

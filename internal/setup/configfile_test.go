@@ -22,25 +22,47 @@ func loadRendered(t *testing.T, v Values) *config.Config {
 
 func TestRender_SQLite(t *testing.T) {
 	cfg := loadRendered(t, Values{
-		Environment: "development", Port: 4747, AllowedOrigins: "http://localhost:4747",
+		Port:      4747,
 		Database:  config.DatabaseConfig{Driver: config.DriverSQLite, Path: "whatomate.db"},
 		JWTSecret: "jwt-secret", EncryptionKey: "enc-key",
+		UploadsDir: "/var/whatomate/uploads", AudioDir: "/var/whatomate/audio",
 	})
-	assert.Equal(t, "development", cfg.App.Environment)
+	assert.Equal(t, "production", cfg.App.Environment)
 	assert.Equal(t, "enc-key", cfg.App.EncryptionKey)
 	assert.Equal(t, "0.0.0.0", cfg.Server.Host)
 	assert.Equal(t, 4747, cfg.Server.Port)
-	assert.Equal(t, "http://localhost:4747", cfg.Server.AllowedOrigins)
+	assert.Equal(t, "*", cfg.Server.AllowedOrigins)
 	assert.Equal(t, config.DriverSQLite, cfg.Database.Driver)
 	assert.Equal(t, "whatomate.db", cfg.Database.Path)
 	assert.Equal(t, "jwt-secret", cfg.JWT.Secret)
+	assert.True(t, cfg.Cookie.Secure, "HTTPS installs keep Secure cookies")
 	assert.Empty(t, cfg.Redis.Host)
+
+	assert.Equal(t, "local", cfg.Storage.Type)
+	assert.Equal(t, "/var/whatomate/uploads", cfg.Storage.LocalPath)
+
+	c := cfg.Calling
+	assert.Equal(t, 300, c.MaxCallDuration)
+	assert.Equal(t, "/var/whatomate/audio", c.AudioDir)
+	assert.Equal(t, "hold_music.opus", c.HoldMusicFile)
+	assert.Equal(t, "ringback.opus", c.RingbackFile)
+	assert.Equal(t, 120, c.TransferTimeoutSecs)
+	assert.True(t, c.RecordingEnabled)
+	assert.EqualValues(t, 10000, c.UDPPortMin)
+	assert.EqualValues(t, 10100, c.UDPPortMax)
+	require.Len(t, c.ICEServers, 1)
+	assert.Equal(t, []string{DefaultSTUN}, c.ICEServers[0].URLs)
+}
+
+func TestRender_InsecureCookiesForPlainHTTP(t *testing.T) {
+	v := Values{Port: 4747, Database: config.DatabaseConfig{Driver: config.DriverSQLite, Path: "w.db"}, InsecureCookies: true}
+	assert.False(t, loadRendered(t, v).Cookie.Secure, "login must work over http://<server-ip>")
 }
 
 func TestRender_RoundTripsAwkwardValues(t *testing.T) {
 	awkward := "p\"a\\ss\nword\t ü 🔑 \x01 '#"
 	cfg := loadRendered(t, Values{
-		Environment: "production", Port: 9000, AllowedOrigins: "https://chat.example.com",
+		Port: 9000,
 		Database: config.DatabaseConfig{
 			Driver: config.DriverPostgres, Host: "db.local", Port: 5433,
 			User: "u\"ser", Password: awkward, Name: "whatomate", SSLMode: "require",

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/calling"
+	"github.com/trysoft/whatomate/internal/calling/defaultaudio"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/frontend"
@@ -321,8 +323,14 @@ func runServer(args []string) {
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
 
-	// Initialize TTS router (Piper local + OpenAI/ElevenLabs cloud; keys come per-call from org settings)
 	audioDir := cfg.Calling.AudioDir
+	if written, err := defaultaudio.Install(audioDir); err != nil {
+		lo.Warn("Could not install the bundled call audio", "dir", audioDir, "error", err)
+	} else if len(written) > 0 {
+		lo.Info("Installed bundled call audio", "dir", audioDir, "files", written)
+	}
+
+	// Initialize TTS router (Piper local + OpenAI/ElevenLabs cloud; keys come per-call from org settings)
 	ttsRouter := &tts.Router{
 		DefaultProvider: "piper",
 		OpenAI: &tts.OpenAISynth{
@@ -627,6 +635,8 @@ func runSetup(flagPath string, lo logf.Logger) net.Listener {
 		Target:  config.Target(flagPath),
 		Port:    config.DefaultPort,
 		Log:     lo,
+
+		SharedDataDir: setup.DefaultSharedDataDir(runtime.GOOS),
 	})
 	if errors.Is(err, context.Canceled) {
 		lo.Info("Setup cancelled; nothing was written")

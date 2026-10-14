@@ -96,6 +96,31 @@ func TestCORS(t *testing.T) {
 	}
 }
 
+func TestIsOriginAllowed(t *testing.T) {
+	t.Parallel()
+
+	list := middleware.ParseAllowedOrigins("https://a.example.com, https://b.example.com")
+	assert.True(t, middleware.IsOriginAllowed("https://b.example.com", list))
+	assert.False(t, middleware.IsOriginAllowed("https://evil.example.com", list))
+
+	anyOrigin := middleware.ParseAllowedOrigins("*")
+	assert.True(t, middleware.IsOriginAllowed("https://evil.example.com", anyOrigin), "* allows every origin")
+	assert.True(t, middleware.IsOriginAllowed("http://192.168.1.5:4747", anyOrigin))
+
+	assert.True(t, middleware.IsOriginAllowed("https://x.example.com", middleware.ParseAllowedOrigins("")), "empty allows all")
+}
+
+func TestCORS_StarReflectsOriginWithCredentials(t *testing.T) {
+	t.Parallel()
+
+	req := newTestRequest()
+	req.RequestCtx.Request.Header.Set("Origin", "https://chat.example.com")
+	result := middleware.CORS(middleware.ParseAllowedOrigins("*"))(req)
+
+	assert.Equal(t, "https://chat.example.com", string(result.RequestCtx.Response.Header.Peek("Access-Control-Allow-Origin")))
+	assert.Equal(t, "true", string(result.RequestCtx.Response.Header.Peek("Access-Control-Allow-Credentials")))
+}
+
 func TestRecovery(t *testing.T) {
 	t.Parallel()
 

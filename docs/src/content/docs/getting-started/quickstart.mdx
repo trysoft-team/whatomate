@@ -281,8 +281,9 @@ same database that stopped before it finished, is also accepted). No admin
 account is created and no safety backup is taken. When the restore finishes,
 sign in with an account **from the backup**.
 
-The backed-up files go into the `uploads` and `audio` folders of the data
-folder. If loading the data fails, nothing is kept and no config file is
+The backed-up files go into the `uploads` and `audio` folders: under
+`/var/whatomate` on Linux when that folder can be created, otherwise (and on
+macOS and Windows) in the data folder. If loading the data fails, nothing is kept and no config file is
 written; fix the problem and try again. If the data is restored but some files
 cannot be put back, the data and config are kept: the page says what went
 wrong and offers **Continue to sign in**.
