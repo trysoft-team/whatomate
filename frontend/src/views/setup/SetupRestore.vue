@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Upload, HardDrive, Loader2, CheckCircle2, AlertTriangle, XCircle, KeyRound, FileArchive } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import SetupFooter from './SetupFooter.vue'
 import { setupService, type BackupInfo, type SetupBackupSummary, type SetupDatabase, type SetupRestoreChoice } from '@/services/api'
-import { formatBytes, uploadInChunks } from '@/lib/backup'
+import { formatBytes, uploadInChunks, UploadAbortedError } from '@/lib/backup'
 import { keyState, restoreReady } from '@/lib/setup'
 import { formatDateTime } from '@/lib/utils'
 
@@ -79,6 +79,9 @@ function usePath() {
   if (p) choice.value = { ...choice.value, backup: { path: p } }
 }
 
+let uploadAbort: AbortController | null = null
+const cancelling = ref(false)
+
 async function onFile(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
@@ -86,21 +89,32 @@ async function onFile(e: Event) {
   if (!file) return
   uploadPercent.value = 0
   error.value = ''
+  const ctrl = new AbortController()
+  uploadAbort = ctrl
   try {
     const info = (await uploadInChunks(file, {
       start: async (name, size) => (await setupService.startUpload(props.configPath, name, size)).data.data,
       put: async (id, offset, chunk) => (await setupService.putChunk(id, offset, chunk)).data.data,
       finish: async (id) => (await setupService.finishUpload(id)).data.data,
       cancel: (id) => setupService.cancelUpload(id),
-    }, (sent, total) => { uploadPercent.value = Math.round((sent / total) * 100) })) as BackupInfo
+    }, (sent, total) => { uploadPercent.value = Math.round((sent / total) * 100) }, undefined, { signal: ctrl.signal })) as BackupInfo
     await loadList()
     pick(info.name)
   } catch (err) {
-    error.value = message(err)
+    if (!(err instanceof UploadAbortedError)) error.value = message(err)
   } finally {
+    uploadAbort = null
+    cancelling.value = false
     uploadPercent.value = null
   }
 }
+
+// The upload stops after the chunk in flight, then the server drops the partial file.
+function cancelUpload() {
+  cancelling.value = true
+  uploadAbort?.abort()
+}
+onBeforeUnmount(() => uploadAbort?.abort())
 
 const state = computed(() => (summary.value ? keyState(summary.value, choice.value.encryptionKey) : null))
 const ready = computed(() => !checking.value && uploadPercent.value === null && restoreReady(summary.value, choice.value.encryptionKey))
@@ -130,9 +144,14 @@ const tabClass = (active: boolean) => active
           <FileArchive class="h-5 w-5" />{{ t('setup.restore.chooseFile') }}
           <input type="file" accept=".zip,application/zip" class="sr-only" data-testid="setup-restore-file" @change="onFile" />
         </label>
-        <div v-if="uploadPercent !== null" class="space-y-1.5">
-          <Progress :model-value="uploadPercent" class="h-2" />
-          <p class="text-xs text-white/50 light:text-gray-500">{{ t('setup.restore.uploading', { percent: uploadPercent }) }}</p>
+        <div v-if="uploadPercent !== null" class="flex items-center gap-3">
+          <div class="min-w-0 flex-1 space-y-1.5">
+            <Progress :model-value="uploadPercent" class="h-2" />
+            <p class="text-xs text-white/50 light:text-gray-500">{{ t('setup.restore.uploading', { percent: uploadPercent }) }}</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" :disabled="cancelling" data-testid="setup-restore-upload-cancel" @click="cancelUpload">
+            {{ t('setup.restore.cancelUpload') }}
+          </Button>
         </div>
       </div>
 
@@ -203,7 +222,7 @@ const tabClass = (active: boolean) => active
     </div>
 
     <SetupFooter>
-      <Button type="button" variant="ghost" @click="emit('back')">{{ t('setup.back') }}</Button>
+      <Button type="button" variant="ghost" :disabled="uploadPercent !== null" @click="emit('back')">{{ t('setup.back') }}</Button>
       <Button type="submit" :disabled="!ready" data-testid="setup-restore-finish">{{ t('setup.restore.finish') }}</Button>
     </SetupFooter>
   </form>

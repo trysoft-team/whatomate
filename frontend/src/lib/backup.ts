@@ -61,22 +61,39 @@ export interface UploadApi {
   cancel(id: string): Promise<unknown>
 }
 
-/** Uploads file in chunks; on failure the partial upload is cancelled. */
+export class UploadAbortedError extends Error {
+  constructor() {
+    super('upload cancelled')
+    this.name = 'UploadAbortedError'
+  }
+}
+
+/**
+ * Uploads file in chunks; on failure the partial upload is cancelled. An
+ * aborted signal is noticed between chunks and rejects with UploadAbortedError.
+ */
 export async function uploadInChunks(
   file: Blob & { name: string },
   api: UploadApi,
   onProgress: (sent: number, total: number) => void,
   chunkSize = UPLOAD_CHUNK,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<unknown> {
+  const stopIfAborted = () => {
+    if (opts.signal?.aborted) throw new UploadAbortedError()
+  }
+  stopIfAborted()
   const { id } = await api.start(file.name, file.size)
   let offset = 0
   try {
     while (offset < file.size) {
+      stopIfAborted()
       const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size))
       const { received } = await api.put(id, offset, chunk)
       offset = received
       onProgress(offset, file.size)
     }
+    stopIfAborted()
     return await api.finish(id)
   } catch (e) {
     await api.cancel(id).catch(() => {})

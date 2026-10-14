@@ -30,7 +30,9 @@ const phase = ref<'form' | 'saving' | 'restoring' | 'starting'>('form')
 const error = ref('')
 const loadFailed = ref(false)
 const startTimedOut = ref(false)
+const signInUrl = ref('')
 const START_TIMEOUT_MS = 2 * 60 * 1000
+const LOST_CONTACT_MS = 30 * 1000
 
 const candidates = computed(() => status.value?.candidates ?? [])
 const dataDir = computed(() => candidates.value.find(c => c.path === configPath.value)?.data_dir ?? '')
@@ -46,7 +48,7 @@ type PhaseState = 'pending' | 'running' | 'done' | 'failed'
 const phases = computed<{ label: string; state: PhaseState }[]>(() => {
   const starting = {
     label: t('setup.finish.starting'),
-    state: (phase.value === 'starting' ? (startTimedOut.value ? 'failed' : 'running') : 'pending') as PhaseState,
+    state: (phase.value === 'starting' ? (signInUrl.value ? 'done' : startTimedOut.value ? 'failed' : 'running') : 'pending') as PhaseState,
   }
   if (mode.value === 'restore') {
     const current = phase.value === 'restoring' ? restorePhaseIndex(restoreStatus.value?.phase ?? '') : RESTORE_PHASES.length
@@ -118,20 +120,15 @@ async function waitForOrigin(origin: string, deadline: number): Promise<boolean>
   return false
 }
 
-async function waitForApp() {
+/** waitForApp resolves with the sign-in URL once the app answers, or null on timeout. */
+async function waitForApp(): Promise<string | null> {
   const deadline = Date.now() + START_TIMEOUT_MS
   while (Date.now() < deadline) {
     try {
       const next = afterSetup((await setupService.status()).data.data, window.location.origin)
-      if (next.kind === 'login') {
-        window.location.assign(loginPath())
-        return
-      }
+      if (next.kind === 'login') return loginPath()
       if (next.kind === 'moved') {
-        if (await waitForOrigin(next.url, deadline)) {
-          window.location.assign(`${next.url}/login`)
-          return
-        }
+        if (await waitForOrigin(next.url, deadline)) return `${next.url}/login`
         break
       }
     } catch {
@@ -140,6 +137,20 @@ async function waitForApp() {
     await sleep(1000)
   }
   startTimedOut.value = true
+  return null
+}
+
+async function openApp() {
+  const url = await waitForApp()
+  if (url) window.location.assign(url)
+}
+
+async function setupHandedOver(): Promise<boolean> {
+  try {
+    return afterSetup((await setupService.status()).data.data, window.location.origin).kind !== 'wait'
+  } catch {
+    return false
+  }
 }
 
 async function finish() {
@@ -161,7 +172,7 @@ async function finish() {
     return
   }
   phase.value = 'starting'
-  await waitForApp()
+  await openApp()
 }
 
 function chooseMode(m: SetupMode) {
@@ -187,9 +198,11 @@ async function startRestore() {
     error.value = e?.response?.data?.message ?? t('setup.finish.failed')
     return
   }
+  let failingSince = 0
   for (;;) {
     try {
       const st = (await setupService.restoreStatus()).data.data
+      failingSince = 0
       restoreStatus.value = st
       if (st.finished) {
         if (st.failed) {
@@ -201,13 +214,29 @@ async function startRestore() {
         break
       }
     } catch {
-      // setup has handed over to the app
-      break
+      // Setup stops answering once it hands over to the app; anything else is a blip.
+      if (await setupHandedOver()) break
+      failingSince ||= Date.now()
+      if (Date.now() - failingSince >= LOST_CONTACT_MS) {
+        phase.value = 'form'
+        step.value = 'restore'
+        error.value = t('setup.finish.lostContact')
+        return
+      }
+      await sleep(2000)
+      continue
     }
     await sleep(1000)
   }
   phase.value = 'starting'
-  await waitForApp()
+  const url = await waitForApp()
+  if (!url) return
+  if (restoreStatus.value?.files_failed) signInUrl.value = url
+  else window.location.assign(url)
+}
+
+function continueToSignIn() {
+  window.location.assign(signInUrl.value)
 }
 </script>
 
@@ -297,7 +326,8 @@ async function startRestore() {
 
         <div v-else-if="finishing" class="flex flex-1 flex-col items-center justify-center px-6 py-14 text-center sm:px-10" data-testid="setup-progress">
           <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 ring-1 ring-emerald-500/30">
-            <Loader2 v-if="!startTimedOut" class="h-7 w-7 animate-spin text-emerald-400 light:text-emerald-600" />
+            <Check v-if="signInUrl" class="h-7 w-7 text-emerald-400 light:text-emerald-600" />
+            <Loader2 v-else-if="!startTimedOut" class="h-7 w-7 animate-spin text-emerald-400 light:text-emerald-600" />
             <AlertTriangle v-else class="h-7 w-7 text-red-400" />
           </div>
           <h3 class="mt-5 text-xl font-semibold text-white light:text-gray-900">{{ mode === 'restore' ? t('setup.finish.restoreTitle') : t('setup.finish.title') }}</h3>
@@ -319,6 +349,9 @@ async function startRestore() {
             <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span class="break-words">{{ t('setup.finish.filesFailed', { error: restoreStatus.error ?? '' }) }}</span>
           </div>
+          <Button v-if="signInUrl" class="mt-6" data-testid="setup-continue-sign-in" @click="continueToSignIn">
+            {{ t('setup.finish.continueSignIn') }}
+          </Button>
           <p v-if="startTimedOut" class="mt-6 max-w-md text-sm text-red-400 light:text-red-600" data-testid="setup-start-timeout">{{ t('setup.finish.timeout') }}</p>
           <div v-if="plainHttp" class="mt-6 flex max-w-md gap-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-left text-xs text-amber-300/90 light:text-amber-700">
             <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />

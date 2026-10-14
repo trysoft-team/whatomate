@@ -3195,6 +3195,7 @@
       "tabServer": "On this server",
       "chooseFile": "Choose a backup file (.zip)",
       "uploading": "Uploading {percent}%",
+      "cancelUpload": "Cancel",
       "folder": "Backups in {dir}",
       "none": "No backups in this folder yet",
       "pathLabel": "Or enter the full path to a backup",
@@ -3232,7 +3233,9 @@
         "swap": "Putting files back",
         "config": "Saving settings"
       },
-      "filesFailed": "The data was restored, but some files could not be put back: {error}"
+      "filesFailed": "The data was restored, but some files could not be put back: {error}",
+      "continueSignIn": "Continue to sign in",
+      "lostContact": "Lost contact with the setup server during the restore. Check that whatomate is still running and look at its log, then reload this page."
     }
   }
 }

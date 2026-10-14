@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { canConfirmRestore, formatBytes, jobPercent, lastRestoreFailure, nextRestoreStage, uploadInChunks, type UploadApi } from './backup'
+import { canConfirmRestore, formatBytes, jobPercent, lastRestoreFailure, nextRestoreStage, uploadInChunks, UploadAbortedError, type UploadApi } from './backup'
 
 describe('nextRestoreStage', () => {
   const st = (over: Partial<{ finished: boolean; failed: boolean; db_replaced: boolean }> = {}) => ({
@@ -97,5 +97,25 @@ describe('uploadInChunks', () => {
     const file = Object.assign(new Blob([new Uint8Array(3)]), { name: 'b.zip' })
     await expect(uploadInChunks(file, api, () => {}, 4)).rejects.toThrow('network')
     expect(api.cancel).toHaveBeenCalledWith('u1')
+  })
+
+  it('stops between chunks and cancels when aborted', async () => {
+    const api = fakeApi()
+    const ctrl = new AbortController()
+    const file = Object.assign(new Blob([new Uint8Array(10)]), { name: 'b.zip' })
+    const run = uploadInChunks(file, api, (sent) => { if (sent === 4) ctrl.abort() }, 4, { signal: ctrl.signal })
+    await expect(run).rejects.toBeInstanceOf(UploadAbortedError)
+    expect(api.chunks).toEqual([4])
+    expect(api.cancel).toHaveBeenCalledWith('u1')
+    expect(api.finish).not.toHaveBeenCalled()
+  })
+
+  it('does not start when already aborted', async () => {
+    const api = fakeApi()
+    const ctrl = new AbortController()
+    ctrl.abort()
+    const file = Object.assign(new Blob([new Uint8Array(3)]), { name: 'b.zip' })
+    await expect(uploadInChunks(file, api, () => {}, 4, { signal: ctrl.signal })).rejects.toBeInstanceOf(UploadAbortedError)
+    expect(api.start).not.toHaveBeenCalled()
   })
 })
