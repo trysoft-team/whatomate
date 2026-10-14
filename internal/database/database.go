@@ -171,11 +171,14 @@ func RunMigrationWithProgress(db *gorm.DB, adminCfg *config.DefaultAdminConfig) 
 		return err
 	}
 
-	// Create the first admin (only when there are no users)
+	// Create the first admin (only when there are no users). A nil adminCfg
+	// skips it: a restore brings its own users.
 	printProgress(currentStep, totalSteps)
-	if err := CreateDefaultAdmin(silentDB, adminCfg); err != nil {
-		fmt.Printf("\n  \033[31m✗ Setup failed\033[0m\n\n")
-		return err
+	if adminCfg != nil {
+		if err := CreateDefaultAdmin(silentDB, adminCfg); err != nil {
+			fmt.Printf("\n  \033[31m✗ Setup failed\033[0m\n\n")
+			return err
+		}
 	}
 	currentStep++
 
