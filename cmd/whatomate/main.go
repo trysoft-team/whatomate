@@ -483,10 +483,20 @@ func runServer(args []string) {
 	}
 
 	// The server keeps answering /api/maintenance while a restore finishes.
-	if kind, running := app.RunningBackupJob(); running {
-		lo.Info(fmt.Sprintf("Waiting for the running %s to finish", kind))
+	switch kind, running := app.RunningBackupJob(); {
+	case running && kind == "restore":
+		lo.Info("Waiting for the running restore to finish (press Ctrl-C again to stop now)")
+		stop := make(chan struct{})
+		go func() {
+			<-quit
+			close(stop)
+		}()
+		if !app.WaitForRestore(stop) {
+			lo.Warn("Stopped without waiting for the restore; uploaded files may be half restored. Restore the Before restore backup if needed")
+		}
+	case running:
+		lo.Info("Abandoning the running backup; its temporary file is removed at the next start")
 	}
-	app.WaitForBackgroundTasks()
 
 	// Then stop server
 	lo.Info("Stopping server...")

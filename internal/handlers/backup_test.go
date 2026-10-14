@@ -173,10 +173,44 @@ func TestBackupAPI_ShutdownWaitsForRestore(t *testing.T) {
 	kind, running := app.RunningBackupJob()
 	require.True(t, running)
 	assert.Equal(t, "restore", kind)
-	app.WaitForBackgroundTasks()
+	assert.True(t, app.WaitForRestore(nil))
 	_, running = app.RunningBackupJob()
 	assert.False(t, running, "shutdown waits for the restore")
 	assert.False(t, app.Maintenance.Active())
+}
+
+func TestBackupAPI_ShutdownStopsWaitingOnSecondSignal(t *testing.T) {
+	handlers.SetRestoreGraceForTest(t, 2*time.Second)
+	app, orgID, adminID := backupApp(t)
+	call(t, app.CreateBackup, testutil.NewJSONRequest(t, map[string]any{"include_files": false}), orgID, adminID)
+	made := waitJob(t, app, orgID, adminID)
+
+	req := testutil.NewJSONRequest(t, map[string]any{"confirm": "RESTORE"})
+	testutil.SetPathParam(req, "name", made.Name)
+	require.Equal(t, fasthttp.StatusOK, call(t, app.RestoreBackup, req, orgID, adminID))
+	stop := make(chan struct{})
+	close(stop)
+	started := time.Now()
+	assert.False(t, app.WaitForRestore(stop))
+	assert.Less(t, time.Since(started), time.Second)
+	_, running := app.RunningBackupJob()
+	assert.True(t, running, "the restore is still running")
+	require.True(t, app.WaitForRestore(nil))
+}
+
+func TestBackupAPI_ShutdownDoesNotWaitForBackup(t *testing.T) {
+	app, orgID, adminID := backupApp(t)
+	release := make(chan struct{})
+	handlers.SetBackupHookForTest(t, func() { <-release })
+	require.Equal(t, fasthttp.StatusOK, call(t, app.CreateBackup, testutil.NewJSONRequest(t, map[string]any{"include_files": false}), orgID, adminID))
+	kind, running := app.RunningBackupJob()
+	require.True(t, running)
+	require.Equal(t, "backup", kind)
+	assert.True(t, app.WaitForRestore(nil), "a running backup is not waited for")
+	_, running = app.RunningBackupJob()
+	assert.True(t, running)
+	close(release)
+	waitJob(t, app, orgID, adminID)
 }
 
 func TestBackupAPI_CreateRefusesWithoutSpace(t *testing.T) {

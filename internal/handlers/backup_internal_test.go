@@ -28,17 +28,76 @@ func SetEnsureSpaceForTest(t *testing.T, fn func(dir string, need int64) error) 
 	t.Cleanup(func() { ensureSpace = old })
 }
 
+// SetBackupHookForTest runs fn at the start of each background backup.
+func SetBackupHookForTest(t *testing.T, fn func()) {
+	old := beforeBackup
+	beforeBackup = fn
+	t.Cleanup(func() { beforeBackup = old })
+}
+
 func TestGoBackupJob_PanicFailsJob(t *testing.T) {
 	a := &App{Log: testutil.NopLogger(), Maintenance: &maintenance.Gate{}}
 	require.True(t, a.backupJob.start("restore", "x.zip"))
 	a.Maintenance.Set(true)
 	a.goBackupJob(func() { panic("boom") })
-	a.WaitForBackgroundTasks()
+	require.True(t, a.WaitForRestore(nil))
 	job := a.backupJob.get()
 	assert.False(t, job.Running)
 	assert.Equal(t, "failed", job.Phase)
 	assert.Contains(t, job.Error, "boom")
 	assert.False(t, a.Maintenance.Active())
+}
+
+func waitResult(a *App, stop <-chan struct{}) <-chan bool {
+	res := make(chan bool, 1)
+	go func() { res <- a.WaitForRestore(stop) }()
+	return res
+}
+
+func TestWaitForRestore_UntilFinished(t *testing.T) {
+	a := &App{}
+	assert.True(t, a.WaitForRestore(nil), "nothing running")
+	require.True(t, a.backupJob.start("restore", "x.zip"))
+	res := waitResult(a, nil)
+	select {
+	case <-res:
+		t.Fatal("returned while the restore runs")
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.backupJob.finish(nil)
+	select {
+	case ok := <-res:
+		assert.True(t, ok)
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not return after the restore finished")
+	}
+}
+
+func TestWaitForRestore_StopEndsWait(t *testing.T) {
+	a := &App{}
+	require.True(t, a.backupJob.start("restore", "x.zip"))
+	stop := make(chan struct{})
+	res := waitResult(a, stop)
+	close(stop)
+	select {
+	case ok := <-res:
+		assert.False(t, ok)
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not end the wait")
+	}
+	_, running := a.RunningBackupJob()
+	assert.True(t, running)
+}
+
+func TestWaitForRestore_BackupNotWaited(t *testing.T) {
+	a := &App{}
+	require.True(t, a.backupJob.start("backup", ""))
+	select {
+	case ok := <-waitResult(a, nil):
+		assert.True(t, ok)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waited for a backup")
+	}
 }
 
 func TestRunningBackupJob(t *testing.T) {

@@ -42,6 +42,8 @@ type BackupJob struct {
 type backupJobs struct {
 	mu  sync.Mutex
 	job BackupJob
+	// done is closed when the running job finishes.
+	done chan struct{}
 }
 
 func (j *backupJobs) start(kind, name string) bool {
@@ -51,6 +53,7 @@ func (j *backupJobs) start(kind, name string) bool {
 		return false
 	}
 	j.job = BackupJob{Kind: kind, Running: true, Name: name, StartedAt: time.Now().UTC()}
+	j.done = make(chan struct{})
 	return true
 }
 
@@ -77,6 +80,10 @@ func (j *backupJobs) finish(err error) {
 	} else {
 		j.job.Phase = "done"
 	}
+	if j.done != nil {
+		close(j.done)
+		j.done = nil
+	}
 }
 
 func (j *backupJobs) get() BackupJob {
@@ -100,14 +107,15 @@ func (a *App) backupOptions(kind string, includeFiles bool) backup.Options {
 	}
 }
 
-var ensureSpace = backup.EnsureSpace
+var (
+	ensureSpace  = backup.EnsureSpace
+	beforeBackup = func() {}
+)
 
-// goBackupJob runs fn in the background; shutdown waits for it. A panic fails
-// the job and turns maintenance mode off.
+// goBackupJob runs fn in the background. A panic fails the job and turns
+// maintenance mode off.
 func (a *App) goBackupJob(fn func()) {
-	a.wg.Add(1)
 	go func() {
-		defer a.wg.Done()
 		defer func() {
 			if p := recover(); p != nil {
 				a.Log.Error("Backup or restore crashed", "panic", p, "stack", string(debug.Stack()))
@@ -124,6 +132,24 @@ func (a *App) goBackupJob(fn func()) {
 func (a *App) RunningBackupJob() (string, bool) {
 	j := a.backupJob.get()
 	return j.Kind, j.Running
+}
+
+// WaitForRestore blocks until a running restore finishes or stop is closed,
+// and reports whether it finished. A running backup is not waited for.
+func (a *App) WaitForRestore(stop <-chan struct{}) bool {
+	a.backupJob.mu.Lock()
+	done := a.backupJob.done
+	restoring := a.backupJob.job.Running && a.backupJob.job.Kind == "restore"
+	a.backupJob.mu.Unlock()
+	if !restoring || done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-stop:
+		return false
+	}
 }
 
 // ListBackups returns the saved backups, the backup folder and the current job.
@@ -164,6 +190,7 @@ func (a *App) CreateBackup(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusConflict, "A backup or restore is already running", nil, "")
 	}
 	a.goBackupJob(func() {
+		beforeBackup()
 		info, err := backup.Create(context.Background(), a.DB, a.Config.Backup.Dir, opts, a.backupJob.progress)
 		if err != nil {
 			a.Log.Error("Backup failed", "error", err)
