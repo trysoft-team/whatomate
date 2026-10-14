@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/frontend"
@@ -62,7 +63,18 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	port := raw.Addr().(*net.TCPAddr).Port
 	shared := Share(raw)
 	s := newServer(o, port)
-	srv := &fasthttp.Server{Handler: s.handle, Name: "Whatomate setup", ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
+	srv := &fasthttp.Server{
+		Handler: s.handle, Name: "Whatomate setup",
+		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
+		// Upload chunks are up to backup.ChunkMax; the default limit is 4 MB.
+		MaxRequestBodySize: 16 << 20,
+		HeaderReceived: func(h *fasthttp.RequestHeader) fasthttp.RequestConfig {
+			if isUploadChunk(h.Method(), h.RequestURI()) {
+				return fasthttp.RequestConfig{ReadTimeout: 5 * time.Minute}
+			}
+			return fasthttp.RequestConfig{}
+		},
+	}
 	go func() { _ = srv.Serve(shared.View(false)) }()
 
 	urls := listenURLs(port)
@@ -137,6 +149,8 @@ type server struct {
 	// database it is in. Guarded by completeMu.
 	seeded *seededAdmin
 
+	uploads backup.Uploads
+
 	// beforeWrite runs just before the config file is written; tests use it.
 	beforeWrite func()
 	// migrate prepares the database; tests replace it to fail part-way.
@@ -185,6 +199,14 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 		s.databaseCreate(ctx)
 	case path == "/api/setup/complete" && ctx.IsPost():
 		s.complete(ctx)
+	case path == "/api/setup/backups" && ctx.IsGet():
+		s.listBackups(ctx)
+	case path == uploadsPath && ctx.IsPost():
+		s.startUpload(ctx)
+	case strings.HasPrefix(path, uploadsPath+"/"):
+		s.uploadItem(ctx, strings.TrimPrefix(path, uploadsPath+"/"))
+	case path == "/api/setup/backup/inspect" && ctx.IsPost():
+		s.inspectBackup(ctx)
 	case strings.HasPrefix(path, "/api/") || path == "/ws":
 		writeError(ctx, fasthttp.StatusNotFound, "whatomate is not set up yet")
 	default:

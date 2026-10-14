@@ -138,6 +138,28 @@ func TestListen_SkipsPortTakenOnLoopback(t *testing.T) {
 	assert.NotEqual(t, taken, ln.Addr().(*net.TCPAddr).Port, "another program's loopback listener keeps the port")
 }
 
+func TestRun_AcceptsLargeUploadChunk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	dir := t.TempDir()
+	st := startRun(t, ctx, dir)
+	configPath := filepath.Join(dir, "user", "config.toml")
+	body := map[string]any{"config_path": configPath, "name": "big.zip", "size": 8 << 20}
+	resp := postJSON(t, st.url+"/api/setup/backup-uploads", body)
+	require.Equal(t, 200, resp.StatusCode)
+	var out struct{ Data struct{ ID string } }
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	_ = resp.Body.Close()
+
+	req, err := http.NewRequest("PUT", st.url+"/api/setup/backup-uploads/"+out.Data.ID+"?offset=0", bytes.NewReader(make([]byte, 8<<20)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	put, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = put.Body.Close()
+	assert.Equal(t, 200, put.StatusCode)
+}
+
 func TestRun_CancelStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	st := startRun(t, ctx, t.TempDir())
