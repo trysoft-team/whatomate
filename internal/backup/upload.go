@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// ChunkMax is the largest upload chunk accepted. It keeps each chunk well
-// under the server's 15 MB body limit.
+// ChunkMax is the largest upload chunk accepted. Servers taking chunks must
+// allow request bodies of at least this size.
 const ChunkMax = 8 << 20
 
 // DefaultMaxUploadMB is the upload limit when none is configured.

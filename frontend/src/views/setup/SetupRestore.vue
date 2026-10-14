@@ -181,7 +181,7 @@ const tabClass = (active: boolean) => active
         <div class="space-y-2">
           <Label for="setup-restore-path" class="text-white/70 light:text-gray-700">{{ t('setup.restore.pathLabel') }}</Label>
           <div class="flex gap-2">
-            <Input id="setup-restore-path" v-model="typedPath" class="font-mono" :placeholder="t('setup.restore.pathPlaceholder')" data-testid="setup-restore-path" />
+            <Input id="setup-restore-path" v-model="typedPath" class="font-mono" :placeholder="t('setup.restore.pathPlaceholder')" data-testid="setup-restore-path" @keydown.enter.prevent="usePath" />
             <Button type="button" variant="outline" :disabled="!typedPath.trim()" @click="usePath">{{ t('setup.restore.usePath') }}</Button>
           </div>
         </div>
