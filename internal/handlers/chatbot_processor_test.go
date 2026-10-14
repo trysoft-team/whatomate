@@ -11,17 +11,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/trysoft/whatomate/test/testutil"
 )
 
 // newProcessorTestApp creates a minimal App suitable for chatbot processor tests.
-// It connects to the test database and Redis, provides a mock WhatsApp client,
-// and uses a no-op logger.
+// It connects to the test database, uses the built-in stores, provides a mock
+// WhatsApp client, and uses a no-op logger.
 func newProcessorTestApp(t *testing.T) *App {
 	t.Helper()
 	db := testutil.SetupTestDB(t)
 	log := testutil.NopLogger()
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
+	state := store.NewSQLKV(db)
+	t.Cleanup(state.Close)
 
 	// Mock WhatsApp API server that accepts all requests.
 	waServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,11 +40,11 @@ func newProcessorTestApp(t *testing.T) *App {
 	app := &App{
 		DB:         db,
 		Log:        log,
+		Cache:      mem,
+		State:      state,
+		Scheduler:  store.NewSQLScheduler(db),
 		WhatsApp:   whatsapp.NewWithBaseURL(log, waServer.URL),
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
-	}
-	if rdb := testutil.SetupTestRedis(t); rdb != nil {
-		app.Redis = rdb
 	}
 	return app
 }

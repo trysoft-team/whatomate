@@ -37,15 +37,12 @@ test.describe('Call Logs Page', () => {
     }
   })
 
-  test('should show call detail when clicking a row', async ({ page }) => {
+  test('should open the call detail page when clicking a row', async ({ page }) => {
     const rowCount = await callLogsPage.getRowCount()
     if (rowCount > 0) {
       await callLogsPage.clickRow(0)
-      // Should open a detail dialog or expand
-      const dialog = page.getByRole('dialog')
-      if (await dialog.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await expect(dialog).toBeVisible()
-      }
+      await expect(page).toHaveURL(/\/calling\/logs\/[0-9a-f-]+$/)
+      await expect(page.getByRole('heading', { name: 'Call Detail' })).toBeVisible()
     }
   })
 

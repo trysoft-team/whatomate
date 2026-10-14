@@ -2,12 +2,10 @@ package handlers
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/models"
 )
 
@@ -45,6 +43,9 @@ func (p *ChatDelayProcessor) Start(ctx context.Context) {
 			p.app.Log.Info("Chat delay processor stopped")
 			return
 		case <-ticker.C:
+			if p.app.Maintenance.Active() {
+				continue
+			}
 			p.processDueDelays(ctx)
 			p.processDueAgentSessionTimeouts(ctx)
 			p.processIdleChatbotSessionTimeouts()
@@ -62,23 +63,14 @@ func (p *ChatDelayProcessor) Stop() {
 }
 
 func (p *ChatDelayProcessor) processDueDelays(ctx context.Context) {
-	if p.app.Redis == nil {
+	if p.app.Scheduler == nil {
 		return
 	}
-	now := float64(time.Now().Unix())
-	ids, err := p.app.Redis.ZRangeByScore(ctx, chatDelayZSetKey, &redis.ZRangeBy{
-		Min: "-inf", Max: strconv.FormatFloat(now, 'f', 0, 64), Count: 50,
-	}).Result()
+	ids, err := p.app.Scheduler.PopDue(ctx, chatDelayZSetKey, time.Now(), 50)
 	if err != nil {
 		p.app.Log.Warn("chat delay poll failed", "error", err)
-		return
 	}
 	for _, idStr := range ids {
-		// Remove first so concurrent pollers don't double-resume.
-		removed, err := p.app.Redis.ZRem(ctx, chatDelayZSetKey, idStr).Result()
-		if err != nil || removed == 0 {
-			continue
-		}
 		sessionID, err := uuid.Parse(idStr)
 		if err != nil {
 			continue
@@ -91,15 +83,13 @@ func (p *ChatDelayProcessor) processDueDelays(ctx context.Context) {
 
 // scheduleChatDelay enqueues a session for resume after seconds.
 func (a *App) scheduleChatDelay(sessionID uuid.UUID, seconds int) {
-	if a.Redis == nil || seconds <= 0 {
+	if a.Scheduler == nil || seconds <= 0 {
 		return
 	}
-	resumeAt := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := a.Redis.ZAdd(ctx, chatDelayZSetKey, redis.Z{
-		Score: float64(resumeAt), Member: sessionID.String(),
-	}).Err(); err != nil {
+	if err := a.Scheduler.Schedule(ctx, chatDelayZSetKey, sessionID.String(),
+		time.Now().Add(time.Duration(seconds)*time.Second)); err != nil {
 		a.Log.Error("failed to schedule chat delay", "session", sessionID, "error", err)
 	}
 }
@@ -107,7 +97,7 @@ func (a *App) scheduleChatDelay(sessionID uuid.UUID, seconds int) {
 // cancelChatDelaysForContact removes pending delay resumes for a contact's
 // active chatbot sessions (e.g. after an agent takes over).
 func (a *App) cancelChatDelaysForContact(contactID uuid.UUID) {
-	if a.Redis == nil {
+	if a.Scheduler == nil {
 		return
 	}
 	var sessionIDs []uuid.UUID
@@ -116,13 +106,13 @@ func (a *App) cancelChatDelaysForContact(contactID uuid.UUID) {
 		Pluck("id", &sessionIDs).Error; err != nil || len(sessionIDs) == 0 {
 		return
 	}
-	members := make([]any, len(sessionIDs))
+	items := make([]string, len(sessionIDs))
 	for i, id := range sessionIDs {
-		members[i] = id.String()
+		items[i] = id.String()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := a.Redis.ZRem(ctx, chatDelayZSetKey, members...).Err(); err != nil {
+	if err := a.Scheduler.Cancel(ctx, chatDelayZSetKey, items...); err != nil {
 		a.Log.Warn("failed to cancel chat delays", "contact_id", contactID, "error", err)
 	}
 }
@@ -165,46 +155,36 @@ func (a *App) resumeChatSessionAfterDelay(sessionID uuid.UUID) error {
 // scheduleAgentSessionTimeout fires when an agent-reply mute expires so we can
 // send the optional timeout message and clear mute metadata.
 func (a *App) scheduleAgentSessionTimeout(contactID uuid.UUID, until time.Time) {
-	if a.Redis == nil || until.IsZero() {
+	if a.Scheduler == nil || until.IsZero() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := a.Redis.ZAdd(ctx, agentSessionTimeoutZSetKey, redis.Z{
-		Score: float64(until.Unix()), Member: contactID.String(),
-	}).Err(); err != nil {
+	if err := a.Scheduler.Schedule(ctx, agentSessionTimeoutZSetKey, contactID.String(), until); err != nil {
 		a.Log.Error("failed to schedule agent session timeout", "contact_id", contactID, "error", err)
 	}
 }
 
 func (a *App) cancelAgentSessionTimeout(contactID uuid.UUID) {
-	if a.Redis == nil {
+	if a.Scheduler == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := a.Redis.ZRem(ctx, agentSessionTimeoutZSetKey, contactID.String()).Err(); err != nil {
+	if err := a.Scheduler.Cancel(ctx, agentSessionTimeoutZSetKey, contactID.String()); err != nil {
 		a.Log.Warn("failed to cancel agent session timeout", "contact_id", contactID, "error", err)
 	}
 }
 
 func (p *ChatDelayProcessor) processDueAgentSessionTimeouts(ctx context.Context) {
-	if p.app.Redis == nil {
+	if p.app.Scheduler == nil {
 		return
 	}
-	now := float64(time.Now().Unix())
-	ids, err := p.app.Redis.ZRangeByScore(ctx, agentSessionTimeoutZSetKey, &redis.ZRangeBy{
-		Min: "-inf", Max: strconv.FormatFloat(now, 'f', 0, 64), Count: 50,
-	}).Result()
+	ids, err := p.app.Scheduler.PopDue(ctx, agentSessionTimeoutZSetKey, time.Now(), 50)
 	if err != nil {
 		p.app.Log.Warn("agent session timeout poll failed", "error", err)
-		return
 	}
 	for _, idStr := range ids {
-		removed, err := p.app.Redis.ZRem(ctx, agentSessionTimeoutZSetKey, idStr).Result()
-		if err != nil || removed == 0 {
-			continue
-		}
 		contactID, err := uuid.Parse(idStr)
 		if err != nil {
 			continue

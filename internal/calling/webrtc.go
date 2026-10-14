@@ -129,12 +129,6 @@ func (m *Manager) negotiateWebRTC(session *CallSession, account *models.WhatsApp
 		return
 	}
 
-	// Start welcome TTS during ICE gathering (~several seconds) so first speech
-	// is cached before media connects / Pipecat WS opens.
-	if m.PipecatEnabled() {
-		go m.warmPipecatWelcome(session)
-	}
-
 	// Wait for ICE gathering to complete
 	localDesc, err := waitForICEGathering(pc, 15*time.Second)
 	if err != nil {
@@ -177,11 +171,7 @@ func (m *Manager) negotiateWebRTC(session *CallSession, account *models.WhatsApp
 	}
 
 	// Brief delay to let the media path stabilize before sending audio.
-	// Pipecat opens the WS immediately and can play welcome while ICE/media
-	// finishes warming — skip the settle wait that only delays first speech.
-	if !m.PipecatEnabled() {
-		time.Sleep(500 * time.Millisecond)
-	}
+	time.Sleep(500 * time.Millisecond)
 
 	// Sticky-routed call: skip IVR entirely and ring the originating agent
 	// directly via the existing transfer flow. initiateTransfer's
@@ -291,6 +281,15 @@ func (m *Manager) createPeerConnection() (*webrtc.PeerConnection, error) {
 	}
 	if err := settingEngine.SetEphemeralUDPPortRange(portMin, portMax); err != nil {
 		return nil, fmt.Errorf("failed to set UDP port range: %w", err)
+	}
+
+	// WhatsApp offers a=setup:actpass. As the DTLS client we would send
+	// ClientHello as soon as ICE connects, often before Meta has processed the
+	// pre-accept answer carrying our fingerprint, and Meta then aborts the
+	// handshake with a fatal DecryptError. Answering passive lets the remote
+	// start DTLS once it has our answer.
+	if err := settingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleServer); err != nil {
+		return nil, fmt.Errorf("failed to set answering DTLS role: %w", err)
 	}
 
 	// On cloud/AWS, map private IP to public IP so ICE candidates

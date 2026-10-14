@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 )
 
@@ -367,7 +368,7 @@ func TestPublishCampaignStats(t *testing.T) {
 	log := testutil.NopLogger()
 	ctx := testutil.TestContext(t)
 
-	pub := queue.NewPublisher(client, log)
+	pub := queue.NewPublisher(store.NewRedis(client), log)
 
 	update := &queue.CampaignStatsUpdate{
 		CampaignID:     uuid.New().String(),
@@ -390,8 +391,8 @@ func TestSubscribeCampaignStats_ReceivesUpdate(t *testing.T) {
 	log := testutil.NopLogger()
 	ctx := testutil.TestContextWithTimeout(t, 10*time.Second)
 
-	pub := queue.NewPublisher(client, log)
-	sub := queue.NewSubscriber(client, log)
+	pub := queue.NewPublisher(store.NewRedis(client), log)
+	sub := queue.NewSubscriber(store.NewRedis(client), log)
 	defer sub.Close() //nolint:errcheck
 
 	// Use a unique campaign ID to filter out messages from parallel tests
@@ -452,7 +453,7 @@ func TestSubscriber_Close(t *testing.T) {
 	client := skipIfNoRedis(t)
 	log := testutil.NopLogger()
 
-	sub := queue.NewSubscriber(client, log)
+	sub := queue.NewSubscriber(store.NewRedis(client), log)
 
 	// Close before subscribing should not error.
 	err := sub.Close()
@@ -524,7 +525,7 @@ func TestPublishCampaignStats_InvalidRedis(t *testing.T) {
 	})
 	defer badClient.Close() //nolint:errcheck
 
-	pub := queue.NewPublisher(badClient, log)
+	pub := queue.NewPublisher(store.NewRedis(badClient), log)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 

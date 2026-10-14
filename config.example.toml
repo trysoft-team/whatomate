@@ -1,7 +1,7 @@
 # Whatomate Configuration
 # Copy this to config.toml and update values
 #
-# For Docker: use "db" and "redis" as hostnames
+# For Docker: use "db" as the database hostname
 # For local dev: use "localhost"
 
 [app]
@@ -12,7 +12,7 @@ encryption_key = ""  # AES-256 key for encrypting secrets at rest (32+ chars, re
 
 [server]
 host = "0.0.0.0"
-port = 8080
+port = 4747
 read_timeout = 30
 write_timeout = 30
 base_path = ""  # Set to "/subpath" if behind nginx proxy pass
@@ -40,13 +40,16 @@ max_open_conns = 25
 max_idle_conns = 5
 conn_max_lifetime = 300
 
-[redis]
-host = "redis"  # Use "localhost" for local development
-port = 6379
-username = ""  # Redis ACL username (Redis 6+). Leave empty to use the default user.
-password = ""
-db = 0
-tls = false    # Set to true for TLS connections (e.g. Upstash, Redis Cloud)
+# Redis is optional. Leave this section commented out to use the built-in
+# store (memory + the main database). Set host to use a Redis server, e.g.
+# when running several API servers or separate worker machines.
+# [redis]
+# host = "localhost"
+# port = 6379
+# username = ""  # Redis ACL username (Redis 6+)
+# password = ""
+# db = 0
+# tls = false    # true for TLS connections (e.g. Upstash, Redis Cloud)
 
 [jwt]
 secret = "your-super-secret-jwt-key-change-in-production"  # Must be 32+ chars in production
@@ -61,6 +64,13 @@ s3_region = ""
 s3_key = ""
 s3_secret = ""
 
+[backup]
+# Folder for backups made from Settings → Backup & Restore. A relative path
+# is resolved like the other paths (against the data folder).
+dir = "backups"
+# Largest backup file the page accepts for upload, in MB.
+max_upload_mb = 10240
+
 [whatsapp]
 webhook_verify_token = "random-string-change-this"
 api_version = "v24.0"
@@ -74,7 +84,7 @@ config_id = ""  # WhatsApp Config ID for frontend login
 domain = ""    # Cookie domain (e.g., ".example.com"). Empty = current host only.
 secure = false # Set Secure flag on cookies. Auto-set true when environment=production.
 
-# Rate limiting for auth endpoints (uses Redis fixed-window counters)
+# Rate limiting for auth endpoints (fixed-window counters)
 [rate_limit]
 enabled = false                # Set to true to enable rate limiting
 login_max_attempts = 10        # Max login attempts per IP per window
@@ -95,17 +105,6 @@ api_window_seconds = 60        # Time window for global API rate limit (0 = 60)
 # piper_model = "/opt/piper/models/en_US-lessac-high.onnx"  # Docker image also ships en_US-lessac-medium
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 
-# Optional realtime AI Call sidecar (services/pipecat-bot).
-# When enabled, ai_call nodes bridge Opus to Pipecat instead of turn-based Whisper/TTS.
-# Whatomate still owns WhatsApp WebRTC; transfer_to_agent returns IVR outcome "transfer".
-# [pipecat]
-# enabled = true
-# base_url = "http://127.0.0.1:7860"
-# ws_url = "ws://127.0.0.1:7860"
-# auth_token = "change-me"
-# callback_url = "http://127.0.0.1:8080"
-# max_session_secs = 600
-
 # WhatsApp Calling / WebRTC
 [calling]
 max_call_duration = 300       # Max call duration in seconds
@@ -118,6 +117,7 @@ udp_port_min = 10000          # WebRTC UDP port range start
 udp_port_max = 10100          # WebRTC UDP port range end
 # public_ip = "1.2.3.4"      # Public IP for NAT mapping (required on AWS/cloud)
 # relay_only = true           # Force all media through TURN relay (no direct UDP needed)
+# turn_based_ai_call = true   # AI Call nodes skip built-in Gemini Live and use STT → LLM → TTS turns
 
 # ICE servers for WebRTC NAT traversal
 # Configure STUN, TURN, or both. Only what you configure is used.

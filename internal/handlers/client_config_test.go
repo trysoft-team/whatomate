@@ -14,7 +14,7 @@ import (
 func TestGetEmbeddedSignupConfig(t *testing.T) {
 	t.Parallel()
 
-	// Setup test app using the DB/Redis fixture
+	// Setup test app using the DB and built-in store fixture
 	app := newTestApp(t)
 	org := testutil.CreateTestOrganization(t, app.DB)
 	user := createAdminUser(t, app, org.ID)
@@ -51,7 +51,7 @@ func TestGetEmbeddedSignupConfig(t *testing.T) {
 func TestGetEmbeddedSignupConfig_EmptyValues(t *testing.T) {
 	t.Parallel()
 
-	// Setup test app using the DB/Redis fixture
+	// Setup test app using the DB and built-in store fixture
 	app := newTestApp(t)
 	org := testutil.CreateTestOrganization(t, app.DB)
 	user := createAdminUser(t, app, org.ID)

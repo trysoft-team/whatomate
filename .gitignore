@@ -66,12 +66,20 @@ test-results/
 # GoReleaser output
 /dist/
 
-# Beads / Dolt files (added by bd init)
+# Backups written by the app (default backup folder)
+backups/
+
+# AI agent and issue-tracker files (local only)
+.cursor/
+.codex/
+.claude/
+.agents/
+.superpowers/
+docs/superpowers/
+AGENTS.md
+CLAUDE.md
+.beads/
 .dolt/
 *.db
 .beads-credential-key
-.beads/proxieddb/
 *.gate.lock*
-
-# Pipecat sidecar
-services/pipecat-bot/.venv/

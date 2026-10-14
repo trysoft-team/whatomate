@@ -1,0 +1,134 @@
+---
+title: Backup & Restore
+description: Back up the whole server to one file and restore it, even onto a different database
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Whatomate can save everything on a server into a single `.zip` file and put it back later. A backup made on one database (SQLite, PostgreSQL or MySQL/MariaDB) restores onto any of the others, so it is also the way to move to a different database.
+
+Backups are made and restored from **Settings → Backup & Restore**, or from the [command line](#command-line). Only super admins see the page and can use its API.
+
+## What a backup holds
+
+- **Every organization's data**: users, roles, contacts, messages, templates, campaigns, chatbot flows, settings and so on. One backup covers the whole server, not a single organization.
+- **Uploaded files**, unless you untick *Include uploaded files* when making the backup:
+  - the media folder (`[storage] local_path`, which also holds local call recordings);
+  - the audio folder (`[calling] audio_dir`).
+
+A backup does **not** hold:
+
+- `config.toml`. Keep a copy of it yourself, above all its `encryption_key` (see [Moving to another database](#moving-to-another-database)).
+- Call recordings stored in S3. They stay in the bucket; the restored records still point at them.
+- Short-lived background state: cached values, scheduled items and queued campaign jobs. A restore empties these; whatomate rebuilds what it needs.
+- The config file in use, the SQLite database file (with its `-wal`, `-shm` and `-journal` files) and the backup folder, even when they sit inside the media or audio folder. A restore leaves them where they are. If one of them is inside a subfolder of the media or audio folder (rather than directly in it), a restore that includes files is refused; move it, or point `local_path`/`audio_dir` elsewhere.
+
+Backups are saved in the folder set by `[backup] dir` (default `backups`; a relative path resolves like the other paths in the config). The page shows the folder under **Back up now**. Each file is named after the time it was made, for example `whatomate-backup-20260101T120000Z.zip`.
+
+<Aside type="caution">
+  A backup holds all your data, including password hashes and encrypted tokens. Store downloaded backups somewhere safe.
+</Aside>
+
+## Making and managing backups
+
+On **Settings → Backup & Restore**:
+
+- **Back up now** starts a backup. It runs in the background and the page shows its progress. Untick *Include uploaded files* for a smaller, database-only backup. Only one backup or restore runs at a time. A backup or restore does not start when the disk holding the backup folder looks too full for it. Files whose name contains a backslash (`\`) are left out and named in the server log.
+- The **Backups** list shows each file with its date, size, the database it was made on (*Made on*) and whether it includes files. Backups taken automatically before a restore are marked **Before restore**. A file that cannot be read shows why.
+- **Download** saves a backup to your computer, so you can keep a copy off the server.
+- **Upload backup** adds a backup made on this or another server. Large files are sent in pieces; the largest file accepted is set by `[backup] max_upload_mb` (default `10240`, i.e. 10 GB). The file is checked when the upload finishes and is refused if it is not a readable whatomate backup or was made by a newer version of whatomate. Its data is checked in full again before a restore.
+- **Delete** removes a backup file from the server.
+
+## Restoring
+
+Click **Restore** on a backup. The dialog first checks the file and then shows:
+
+- when and with which whatomate version the backup was made;
+- the database it came from and the one it is going into (for example `sqlite → postgres`);
+- how many rows and tables it holds, and how many files (or that it is database-only, in which case the current files stay as they are);
+- a warning if the backup was made with a different `encryption_key`.
+
+Type `RESTORE` and press **Restore**. Whatomate then:
+
+1. takes a **safety backup** of the current state (listed as **Before restore**). If this fails, nothing is changed. The server keeps running while it is taken, so messages that arrive during the safety backup are not in it;
+2. switches to **maintenance mode**: the API, live updates and public media links answer "Restore in progress" until it is done, and background work pauses;
+3. replaces the data in every table with the backup's, in one step. If loading the data fails, nothing is changed;
+4. puts the backed-up files back, if the backup includes them;
+5. signs **everyone** out. Saved sessions end at once; anyone else who has whatomate open is asked to sign in again when their current access token runs out (`[jwt] access_expiry_mins`, 15 minutes by default).
+
+The page shows the progress and, when the restore finishes, sends you to the sign-in page. Sign in with an account that exists **in the backup**; the account you used to start the restore may not exist any more.
+
+If the data was restored but some files could not be put back, the dialog says the restore **partly finished**. The folder that failed still has the files from before the restore. After you sign in, the Backup & Restore page shows what went wrong until the next backup or restore starts. To go back to the state before the restore, restore the **Before restore** backup.
+
+If whatomate is asked to stop while a restore runs, it waits for the restore to finish before it exits (in Docker, give the container enough time with `stop_grace_period`). Press Ctrl-C again (or send a second stop signal) to stop at once; uploaded files may then be half restored. A running backup is not waited for: it is abandoned and its unfinished file is removed at the next start. If the server stops during a restore, the dialog reports that the restore status was lost: check the server log and, if needed, restore the **Before restore** backup. At the next start the server warns about any `.restore-*` or `.old-*` folder an interrupted restore left in the media or audio folder; check it and delete it yourself.
+
+<Aside type="caution">
+  Before restoring, stop any separate `whatomate worker` processes; they are not paused by maintenance mode. Calls in progress may be cut off.
+</Aside>
+
+## Moving to another database
+
+To move, for example from SQLite to PostgreSQL:
+
+1. On the old server, make a backup (with files) and download it.
+2. Copy `encryption_key` from the old server's `config.toml`.
+3. Start whatomate on the new server with no config file, so the [setup wizard](/whatomate/getting-started/quickstart/#restore-from-a-backup) opens. From another machine, open the full URL it prints in its log: it ends in a one-time key (`#token=…`).
+4. Choose **Restore from a backup** and pick the new database. It must have no users.
+5. Under **Upload a backup**, upload the backup file.
+6. Paste the old `encryption_key` into **Old encryption key**; it should show "Matches the backup".
+7. Press **Restore and finish**.
+8. Sign in with your account from the old server.
+
+On a server that is already installed, you can still upload the backup and restore it from **Settings → Backup & Restore** as described above.
+
+If the old `encryption_key` is left blank in the wizard (a new key is generated), or an installed server uses a different key, the restore still works, but saved WhatsApp access tokens, AI provider keys and SSO client secrets will not decrypt. Re-enter them in Settings after the restore.
+
+## Command line
+
+The same backups can be made and restored without the web app. Both commands use the config file whatomate finds (or the one given with `-config`).
+
+```bash
+# Back up into the backup folder
+whatomate backup
+
+# Database only, written to a file of your choice
+whatomate backup -no-files -o /path/to/backup.zip
+
+# Restore (asks you to type RESTORE)
+whatomate restore /path/to/backup.zip
+
+# Restore without asking
+whatomate restore -yes /path/to/backup.zip
+```
+
+| Command | Options |
+|---|---|
+| `whatomate backup` | `-config <file>`, `-no-files` (leave out media and audio), `-o <file>` (write here instead of the backup folder) |
+| `whatomate restore <file>` | `-config <file>`, `-yes` (don't ask to type `RESTORE`) |
+
+`whatomate backup` can run while the server is running. **Stop the server and any separate `whatomate worker` processes before `whatomate restore`**; it refuses to run while a server using the same backup folder may be up, but it cannot detect separate workers. The server records its process ID and host name in `server.lock` in the backup folder. A lock written on another host (for example another container sharing the folder) counts as a running server, because the command cannot check it. If `whatomate restore` says a server is running but none is, delete `<backup dir>/server.lock` and run it again. Like the web app, it takes a safety backup first and prints its name, and with Redis configured it clears Redis caches and signs everyone out.
+
+## Docker
+
+Inside the container the backup folder is `/app/backups` unless `[backup] dir` says otherwise. Mount a volume there so backups survive the container being recreated:
+
+```yaml
+services:
+  app:
+    volumes:
+      - ./backups:/app/backups:rw
+```
+
+To use the command line in Docker:
+
+```bash
+# Back up while the app runs
+docker compose exec app ./whatomate backup -config /app/config.toml
+
+# Restore: stop the app, restore in a one-off container, start it again
+docker compose stop app
+docker compose run --rm app restore -config /app/config.toml -yes /app/backups/<file>.zip
+docker compose start app
+```
+
+The one-off container has its own host name, so if the app container did not stop cleanly its leftover lock makes `restore` say a server is running. With the app stopped, delete `./backups/server.lock` and run the restore again. A server starting in a recreated container takes over a lock from an old container's host name and logs a warning.

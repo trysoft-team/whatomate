@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { setupNeeded, setupRedirect } from '@/lib/setupState'
+import { captureSetupToken } from '@/lib/setup'
 
 // Permission-based route meta type
 declare module 'vue-router' {
@@ -14,9 +16,19 @@ declare module 'vue-router' {
 const basePath = (window as any).__BASE_PATH__ ?? import.meta.env.BASE_URL ?? '/'
 const normalizedBasePath = basePath.endsWith('/') ? basePath : basePath + '/'
 
+// The router keeps the address it starts with, so take the setup key out first.
+const setupAddress = captureSetupToken(window.location, sessionStorage)
+if (setupAddress !== null) window.history.replaceState(window.history.state, '', setupAddress)
+
 const router = createRouter({
   history: createWebHistory(normalizedBasePath),
   routes: [
+    {
+      path: '/setup',
+      name: 'setup',
+      component: () => import('@/views/setup/SetupView.vue'),
+      meta: { requiresAuth: false }
+    },
     {
       path: '/login',
       name: 'login',
@@ -190,6 +202,12 @@ const router = createRouter({
           meta: { superAdmin: true }
         },
         {
+          path: 'settings/backup',
+          name: 'backup',
+          component: () => import('@/views/settings/BackupView.vue'),
+          meta: { superAdmin: true }
+        },
+        {
           path: 'settings/chatbot',
           name: 'chatbot-settings',
           component: () => import('@/views/settings/ChatbotSettingsView.vue'),
@@ -353,6 +371,12 @@ const router = createRouter({
           meta: { permission: 'call_logs' }
         },
         {
+          path: 'calling/logs/:id',
+          name: 'call-log-detail',
+          component: () => import('@/views/calling/CallLogDetailView.vue'),
+          meta: { permission: 'call_logs' }
+        },
+        {
           path: 'calling/ivr-flows',
           name: 'ivr-flows',
           component: () => import('@/views/calling/IVRFlowsView.vue'),
@@ -413,6 +437,7 @@ const navigationOrder: NavAccess[] = [
   { path: '/settings', permission: 'settings.general', childPaths: [
     { path: '/settings', permission: 'settings.general' },
     { path: '/settings/organizations', superAdmin: true },
+    { path: '/settings/backup', superAdmin: true },
     { path: '/settings/chatbot', permission: 'settings.chatbot' },
     { path: '/settings/ai', permission: 'settings.chatbot' },
     { path: '/settings/accounts', permission: 'accounts' },
@@ -456,6 +481,10 @@ function getFirstAccessibleRoute(authStore: ReturnType<typeof useAuthStore>): st
 
 // Navigation guard
 router.beforeEach(async (to, _from, next) => {
+  const redirect = setupRedirect(await setupNeeded(), to.name)
+  if (redirect) return next({ path: redirect })
+  if (to.name === 'setup') return next()
+
   const authStore = useAuthStore()
 
   // Hydrate the store from localStorage before any route decision — an authenticated user hitting /login must be redirected away.

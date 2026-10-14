@@ -94,7 +94,7 @@ COPY --from=piper-dl /tmp/piper-models /opt/piper/models
 RUN mkdir -p /app/uploads /app/audio
 
 # Expose port
-EXPOSE 8080
+EXPOSE 4747
 
 # Match the GoReleaser image's launch convention so the same orchestrator
 # args work against both tags: the binary is the ENTRYPOINT and CMD holds

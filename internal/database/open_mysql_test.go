@@ -173,6 +173,29 @@ func captureMySQLDDL(t *testing.T, db *gorm.DB) func() []string {
 	}
 }
 
+func TestOpenMySQL_MigrationFixesKeyCollation(t *testing.T) {
+	db := openMySQL(t)
+	collation := func(table, column string) string {
+		var c string
+		require.NoError(t, db.Raw(`SELECT collation_name FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Row().Scan(&c))
+		return c
+	}
+	assert.Equal(t, "utf8mb4_bin", collation("kv_entries", "kv_key"))
+	assert.Equal(t, "utf8mb4_bin", collation("scheduled_items", "set_name"))
+	assert.Equal(t, "utf8mb4_bin", collation("scheduled_items", "item"))
+
+	// Tables created before the binary collation was added.
+	require.NoError(t, db.Exec("ALTER TABLE kv_entries MODIFY COLUMN kv_key varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL").Error)
+	require.NoError(t, db.Exec("ALTER TABLE scheduled_items MODIFY COLUMN item varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL").Error)
+	migrateMySQL(t, db)
+	assert.Equal(t, "utf8mb4_bin", collation("kv_entries", "kv_key"))
+	assert.Equal(t, "utf8mb4_bin", collation("scheduled_items", "item"))
+
+	require.NoError(t, db.Create(&models.KVEntry{Key: "Abc"}).Error)
+	require.NoError(t, db.Create(&models.KVEntry{Key: "abc"}).Error)
+}
+
 func TestOpenMySQL_StringDefaultOnTextColumn(t *testing.T) {
 	db := openMySQLEmpty(t)
 	type textDefault struct {

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,16 +13,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/assignment"
+	"github.com/trysoft/whatomate/internal/backup"
 	"github.com/trysoft/whatomate/internal/calling"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/frontend"
 	"github.com/trysoft/whatomate/internal/handlers"
+	"github.com/trysoft/whatomate/internal/maintenance"
 	"github.com/trysoft/whatomate/internal/middleware"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/setup"
 	"github.com/trysoft/whatomate/internal/storage"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/tts"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/internal/worker"
@@ -28,6 +33,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
 	"github.com/zerodha/logf"
+	"gorm.io/gorm"
 )
 
 var (
@@ -36,22 +42,28 @@ var (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	args := os.Args[1:]
+	if len(args) == 0 {
+		args = []string{"server"}
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "server":
-		runServer(os.Args[2:])
+		runServer(args[1:])
 	case "worker":
-		runWorker(os.Args[2:])
+		runWorker(args[1:])
+	case "config":
+		runConfig(args[1:])
+	case "backup":
+		runBackupCmd(args[1:])
+	case "restore":
+		runRestoreCmd(args[1:])
 	case "version":
 		fmt.Printf("Whatomate %s (built %s)\n", Version, BuildTime)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		fmt.Printf("Unknown command: %s\n\n", os.Args[1])
+		fmt.Printf("Unknown command: %s\n\n", args[0])
 		printUsage()
 		os.Exit(1)
 	}
@@ -61,22 +73,45 @@ func printUsage() {
 	fmt.Println(`Whatomate - WhatsApp Business API Platform
 
 Usage:
-  whatomate <command> [options]
+  whatomate [command] [options]
 
 Commands:
   server    Start the API server (with optional embedded workers)
-  worker    Start background workers only (no API server)
-  version   Show version information
+	worker    Start background workers only (no API server)
+	config    "config path" shows which config file would be used
+  backup    Back up the database (and files) into the backup folder
+  restore   Restore a backup into the configured database
+	version   Show version information
   help      Show this help message
 
+With no command, whatomate runs "server". When no config file is found,
+server opens a setup wizard in the browser (port 4747) and writes one.
+
 Server Options:
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see below)
   -migrate          Run database migrations on startup
   -workers int      Number of embedded workers (0 to disable) (default 1)
 
 Worker Options:
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see below)
   -workers int      Number of workers to run (default 1)
+
+Backup Options:
+  -config string    Path to config file
+  -no-files         Leave out uploaded media and audio
+  -o string         Write to this file instead of the backup folder
+
+Restore Options:
+  -config string    Path to config file
+  -yes              Do not ask to type RESTORE
+
+Config file search (first found wins):
+  -config, then $WHATOMATE_CONFIG, then (the current folder is not searched)
+  Linux:   ~/.config/whatomate/config.toml, /etc/whatomate/config.toml
+  macOS:   ~/Library/Application Support/whatomate/config.toml,
+           ~/.config/whatomate/config.toml,
+           /opt/homebrew/etc/whatomate/config.toml, /usr/local/etc/whatomate/config.toml
+  Windows: %AppData%\whatomate\config.toml, %ProgramData%\whatomate\config.toml
 
 Examples:
   whatomate server                     # API + 1 embedded worker
@@ -97,7 +132,7 @@ Deployment Scenarios:
 
 func runServer(args []string) {
 	serverFlags := flag.NewFlagSet("server", flag.ExitOnError)
-	configPath := serverFlags.String("config", "config.toml", "Path to config file")
+	configPath := serverFlags.String("config", "", "Path to config file (default: search standard locations)")
 	migrate := serverFlags.Bool("migrate", false, "Run database migrations")
 	numWorkers := serverFlags.Int("workers", 1, "Number of workers to run (0 to disable embedded workers)")
 	_ = serverFlags.Parse(args)
@@ -113,11 +148,28 @@ func runServer(args []string) {
 
 	lo.Info("Starting Whatomate server...", "version", Version)
 
-	// Load configuration
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		lo.Fatal("Failed to load config", "error", err)
+	var handoff net.Listener
+	if _, err := config.Locate(*configPath); errors.Is(err, config.ErrNotFound) {
+		handoff = runSetup(*configPath, lo)
 	}
+	cfg, cfgPath := loadConfig(*configPath, lo)
+	switch claimed, other, err := backup.ClaimServerLock(cfg.Backup.Dir); {
+	case err != nil:
+		lo.Warn("Could not write the server lock in the backup folder", "dir", cfg.Backup.Dir, "error", err)
+		backup.CleanTemp(cfg.Backup.Dir)
+	case !claimed:
+		lo.Warn("Another whatomate process is using this backup folder; leaving its lock and temp files alone", "pid", other.PID)
+	default:
+		if other.FromOtherHost() {
+			lo.Warn("Took over the backup folder lock written on another host; make sure no other whatomate server uses this folder", "host", other.Host, "pid", other.PID)
+		}
+		backup.CleanTemp(cfg.Backup.Dir)
+		defer backup.RemoveServerLock(cfg.Backup.Dir)
+		for _, dir := range backup.LeftoverWorkDirs(cliAreas(cfg)) {
+			lo.Warn("Folder left by an interrupted restore; check it and delete it when it is no longer needed", "path", dir)
+		}
+	}
+	gate := &maintenance.Gate{}
 
 	// Validate JWT secret
 	if cfg.App.Environment == "production" && len(cfg.JWT.Secret) < 32 {
@@ -171,15 +223,32 @@ func runServer(args []string) {
 		}
 	}
 
-	// Connect to Redis
-	rdb, err := database.NewRedis(&cfg.Redis)
+	// Caches, state, scheduler and broker: embedded unless [redis] host is set
+	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
-		lo.Fatal("Failed to connect to Redis", "error", err)
+		lo.Fatal("Failed to connect to Redis; remove [redis] host to use the built-in store",
+			"error", err, "host", cfg.Redis.Host, "port", cfg.Redis.Port)
 	}
-	lo.Info("Connected to Redis")
+	defer stores.Close()
+	if stores.Embedded() {
+		if missing := store.MissingTables(db); len(missing) > 0 {
+			lo.Fatal("Built-in store tables are missing; run `whatomate server -migrate` once", "tables", strings.Join(missing, ", "))
+		}
+		lo.Info("Using built-in store (no Redis server)")
+	} else {
+		lo.Info("Connected to Redis")
+		warnLeftoverRows(db, lo)
+	}
 
 	// Initialize job queue
-	jobQueue := queue.NewRedisQueue(rdb, lo)
+	var jobQueue queue.Queue
+	var dbQueue *queue.DBQueue
+	if stores.Embedded() {
+		dbQueue = queue.NewDBQueue(db, lo)
+		jobQueue = dbQueue
+	} else {
+		jobQueue = queue.NewRedisQueue(stores.Redis, lo)
+	}
 	lo.Info("Job queue initialized")
 
 	// Initialize Fastglue
@@ -206,14 +275,20 @@ func runServer(args []string) {
 	}
 
 	app := &handlers.App{
-		Config:     cfg,
-		DB:         db,
-		Redis:      rdb,
-		Log:        lo,
-		WhatsApp:   waClient,
-		WSHub:      wsHub,
-		Queue:      jobQueue,
-		HTTPClient: httpClient,
+		Config:      cfg,
+		ConfigPath:  cfgPath,
+		DB:          db,
+		Cache:       stores.Cache,
+		State:       stores.State,
+		Scheduler:   stores.Scheduler,
+		Broker:      stores.Broker,
+		Log:         lo,
+		WhatsApp:    waClient,
+		WSHub:       wsHub,
+		Queue:       jobQueue,
+		HTTPClient:  httpClient,
+		Maintenance: gate,
+		Version:     Version,
 	}
 
 	// Initialize recording storage (S3 when configured, otherwise local_path)
@@ -237,13 +312,12 @@ func runServer(args []string) {
 	}
 
 	// Initialize shared assignment engine (used by both chat and call transfers)
-	assigner := assignment.New(db, rdb, lo)
+	assigner := assignment.New(db, stores.Cache, lo)
 	app.Assigner = assigner
 
 	// Initialize CallManager (per-org calling_enabled DB setting controls access)
-	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, rdb, waClient, wsHub, assigner, lo)
+	app.CallManager = calling.NewManager(&cfg.Calling, recordings, db, stores.Cache, waClient, wsHub, assigner, lo)
 	app.CallManager.SetSecrets(cfg.App.EncryptionKey, &cfg.AI)
-	app.CallManager.SetPipecat(&cfg.Pipecat)
 	app.S3Client = s3Client
 	lo.Info("Call manager initialized")
 
@@ -287,7 +361,7 @@ func runServer(args []string) {
 	g.Before(middleware.CSRFProtection())
 
 	// Setup routes
-	setupRoutes(g, app, lo, cfg.Server.BasePath, rdb, cfg)
+	setupRoutes(g, app, lo, cfg.Server.BasePath, stores.Counter, cfg)
 
 	// Create server with CORS wrapper
 	server := &fasthttp.Server{
@@ -296,13 +370,33 @@ func runServer(args []string) {
 		WriteTimeout:       time.Duration(cfg.Server.WriteTimeout) * time.Second,
 		MaxRequestBodySize: 15 * 1024 * 1024,
 		Name:               "Whatomate",
+		HeaderReceived: func(h *fasthttp.RequestHeader) fasthttp.RequestConfig {
+			switch {
+			case handlers.IsBackupDownload(string(h.Method()), string(h.RequestURI())):
+				return fasthttp.RequestConfig{WriteTimeout: 6 * time.Hour}
+			case handlers.LongUploadRead(h):
+				return fasthttp.RequestConfig{ReadTimeout: 5 * time.Minute}
+			}
+			return fasthttp.RequestConfig{}
+		},
 	}
 
 	// Start server in goroutine
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	go func() {
-		lo.Info("Server listening", "address", addr)
-		if err := server.ListenAndServe(addr); err != nil {
+		var err error
+		if handoff != nil {
+			lo.Info("Server listening", "address", handoff.Addr().String())
+			err = server.Serve(handoff)
+		} else {
+			ln, lerr := listenApp(addr, cfgPath)
+			if lerr != nil {
+				lo.Fatal("Server failed", "error", lerr)
+			}
+			lo.Info("Server listening", "address", addr)
+			err = server.Serve(ln)
+		}
+		if err != nil {
 			lo.Fatal("Server failed", "error", err)
 		}
 	}()
@@ -331,10 +425,12 @@ func runServer(args []string) {
 		workerCtx, workerCancel = context.WithCancel(context.Background())
 
 		for i := 0; i < *numWorkers; i++ {
-			w, err := worker.New(cfg, db, rdb, lo)
+			consumer, err := newConsumer(stores, dbQueue, lo)
 			if err != nil {
 				lo.Fatal("Failed to create worker", "error", err, "worker_num", i+1)
 			}
+			w := worker.New(cfg, db, consumer, stores.Broker, lo)
+			w.Gate = gate
 			workers = append(workers, w)
 
 			workerNum := i + 1
@@ -386,6 +482,22 @@ func runServer(args []string) {
 		lo.Info("Workers stopped")
 	}
 
+	// The server keeps answering /api/maintenance while a restore finishes.
+	switch kind, running := app.RunningBackupJob(); {
+	case running && kind == "restore":
+		lo.Info("Waiting for the running restore to finish (press Ctrl-C again to stop now)")
+		stop := make(chan struct{})
+		go func() {
+			<-quit
+			close(stop)
+		}()
+		if !app.WaitForRestore(stop) {
+			lo.Warn("Stopped without waiting for the restore; uploaded files may be half restored. Restore the Before restore backup if needed")
+		}
+	case running:
+		lo.Info("Abandoning the running backup; its temporary file is removed at the next start")
+	}
+
 	// Then stop server
 	lo.Info("Stopping server...")
 	if err := server.Shutdown(); err != nil {
@@ -400,7 +512,7 @@ func runServer(args []string) {
 
 func runWorker(args []string) {
 	workerFlags := flag.NewFlagSet("worker", flag.ExitOnError)
-	configPath := workerFlags.String("config", "config.toml", "Path to config file")
+	configPath := workerFlags.String("config", "", "Path to config file (default: search standard locations)")
 	workerCount := workerFlags.Int("workers", 1, "Number of workers to run")
 	_ = workerFlags.Parse(args)
 
@@ -415,11 +527,7 @@ func runWorker(args []string) {
 
 	lo.Info("Starting Whatomate worker...", "version", Version)
 
-	// Load configuration
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		lo.Fatal("Failed to load config", "error", err)
-	}
+	cfg, _ := loadConfig(*configPath, lo)
 
 	// Set log level based on environment
 	if cfg.App.Environment == "production" {
@@ -437,12 +545,25 @@ func runWorker(args []string) {
 	}
 	lo.Info("Connected to database", "driver", cfg.Database.Driver)
 
-	// Connect to Redis
-	rdb, err := database.NewRedis(&cfg.Redis)
+	// Caches, state, scheduler and broker: embedded unless [redis] host is set
+	stores, err := store.New(&cfg.Redis, db)
 	if err != nil {
-		lo.Fatal("Failed to connect to Redis", "error", err)
+		lo.Fatal("Failed to connect to Redis; remove [redis] host to use the built-in store",
+			"error", err, "host", cfg.Redis.Host, "port", cfg.Redis.Port)
 	}
-	lo.Info("Connected to Redis")
+	defer stores.Close()
+	var dbQueue *queue.DBQueue
+	if stores.Embedded() {
+		if missing := store.MissingTables(db); len(missing) > 0 {
+			lo.Fatal("Built-in store tables are missing; run `whatomate server -migrate` once", "tables", strings.Join(missing, ", "))
+		}
+		dbQueue = queue.NewDBQueue(db, lo)
+		lo.Info("Using built-in store (no Redis server)")
+		lo.Info("No Redis configured: live campaign progress is not pushed to the UI from separate worker processes")
+	} else {
+		lo.Info("Connected to Redis")
+		warnLeftoverRows(db, lo)
+	}
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -457,10 +578,11 @@ func runWorker(args []string) {
 	errCh := make(chan error, *workerCount)
 
 	for i := 0; i < *workerCount; i++ {
-		w, err := worker.New(cfg, db, rdb, lo)
+		consumer, err := newConsumer(stores, dbQueue, lo)
 		if err != nil {
 			lo.Fatal("Failed to create worker", "error", err, "worker_num", i+1)
 		}
+		w := worker.New(cfg, db, consumer, stores.Broker, lo)
 		workers[i] = w
 
 		go func(workerNum int) {
@@ -495,14 +617,106 @@ func runWorker(args []string) {
 	lo.Info("Workers stopped")
 }
 
+// runSetup serves the first-run setup wizard. It returns the setup socket
+// for the app to keep serving on, or nil when the app binds its own port.
+func runSetup(flagPath string, lo logf.Logger) net.Listener {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	res, err := setup.Run(ctx, setup.Options{
+		Version: Version,
+		Target:  config.Target(flagPath),
+		Port:    config.DefaultPort,
+		Log:     lo,
+	})
+	if errors.Is(err, context.Canceled) {
+		lo.Info("Setup cancelled; nothing was written")
+		os.Exit(0)
+	}
+	if err != nil {
+		lo.Fatal("Setup failed", "error", err)
+	}
+	return res.Listener
+}
+
+// listenApp binds addr as fasthttp's ListenAndServe does; the error names the
+// config file to edit.
+func listenApp(addr, cfgPath string) (net.Listener, error) {
+	ln, err := net.Listen("tcp4", addr)
+	if err != nil {
+		return nil, fmt.Errorf("cannot listen on %s: %w; change [server] port in %s or stop the program using that port", addr, err, cfgPath)
+	}
+	return ln, nil
+}
+
+// loadConfig finds and loads the config file, anchoring relative paths in a
+// config from the user or system folder to its base folder. It returns the
+// config and the file it came from.
+func loadConfig(flagPath string, lo logf.Logger) (*config.Config, string) {
+	src, err := config.Locate(flagPath)
+	if errors.Is(err, config.ErrNotFound) {
+		lo.Fatal("No config file found. Run `whatomate server` once to open the setup wizard", "error", err)
+	}
+	if err != nil {
+		lo.Fatal("Failed to find config", "error", err)
+	}
+	cfg, err := config.Load(src.Path)
+	if err != nil {
+		lo.Fatal("Failed to load config", "path", src.Path, "error", err)
+	}
+	if src.BaseDir != "" {
+		if err := os.MkdirAll(src.BaseDir, 0o750); err != nil {
+			lo.Fatal("Failed to create data folder", "path", src.BaseDir, "error", err)
+		}
+		cfg.ResolvePaths(src.BaseDir)
+	}
+	lo.Info("Loaded config", "path", src.Path, "data_dir", src.BaseDir)
+	return cfg, src.Path
+}
+
+// runConfig handles "whatomate config path [-config file]".
+func runConfig(args []string) {
+	if len(args) == 0 || args[0] != "path" {
+		fmt.Println("Usage: whatomate config path [-config file]")
+		os.Exit(1)
+	}
+	fs := flag.NewFlagSet("config path", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file")
+	_ = fs.Parse(args[1:])
+	src, err := config.Locate(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(src.Path)
+	if src.BaseDir != "" {
+		fmt.Println("relative paths resolve against:", src.BaseDir)
+	}
+}
+
+// warnLeftoverRows logs built-in store rows that Redis mode leaves unprocessed.
+func warnLeftoverRows(db *gorm.DB, lo logf.Logger) {
+	for table, n := range store.LeftoverRows(db) {
+		lo.Warn("Rows left from the built-in store are not processed in Redis mode", "table", table, "rows", n)
+	}
+}
+
+// newConsumer returns a campaign job consumer for the active store mode.
+func newConsumer(stores *store.Stores, dbQueue *queue.DBQueue, lo logf.Logger) (queue.Consumer, error) {
+	if stores.Embedded() {
+		return dbQueue.NewConsumer(), nil
+	}
+	return queue.NewRedisConsumer(stores.Redis, lo)
+}
+
 // ============================================================================
 // ROUTES
 // ============================================================================
 
-func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePath string, rdb *redis.Client, cfg *config.Config) {
+func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePath string, counter store.Counter, cfg *config.Config) {
 	// Health check
 	g.GET("/health", app.HealthCheck)
 	g.GET("/ready", app.ReadyCheck)
+	g.GET("/api/setup/status", app.SetupStatus)
 
 	g.GET("/api/embedded-signup/config", app.GetEmbeddedSignupConfig)
 
@@ -517,21 +731,21 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 			"window_seconds", cfg.RateLimit.WindowSeconds)
 
 		g.POST("/api/auth/login", withRateLimit(app.Login, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "login", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "login", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/register", withRateLimit(app.Register, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.RegisterMaxAttempts, Window: window, KeyPrefix: "register", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.RegisterMaxAttempts, Window: window, KeyPrefix: "register", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/refresh", withRateLimit(app.RefreshToken, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.RefreshMaxAttempts, Window: window, KeyPrefix: "refresh", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.RefreshMaxAttempts, Window: window, KeyPrefix: "refresh", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		// Begin only issues a challenge, and the login page requests one on every
 		// load for passkey autofill, so it gets more headroom than finish.
 		g.POST("/api/auth/passkey/begin", withRateLimit(app.BeginPasskeyLogin, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts * 6, Window: window, KeyPrefix: "passkey_begin", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts * 6, Window: window, KeyPrefix: "passkey_begin", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.POST("/api/auth/passkey/finish", withRateLimit(app.FinishPasskeyLogin, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "passkey_finish", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.LoginMaxAttempts, Window: window, KeyPrefix: "passkey_finish", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 	} else {
 		g.POST("/api/auth/login", app.Login)
@@ -549,10 +763,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	if cfg.RateLimit.Enabled {
 		window := time.Duration(cfg.RateLimit.WindowSeconds) * time.Second
 		g.GET("/api/auth/sso/{provider}/init", withRateLimit(app.InitSSO, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_init", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_init", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 		g.GET("/api/auth/sso/{provider}/callback", withRateLimit(app.CallbackSSO, middleware.RateLimitOpts{
-			Redis: rdb, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_callback", TrustProxy: cfg.RateLimit.TrustProxy,
+			Counter: counter, Log: lo, Max: cfg.RateLimit.SSOMaxAttempts, Window: window, KeyPrefix: "sso_callback", TrustProxy: cfg.RateLimit.TrustProxy,
 		}))
 	} else {
 		g.GET("/api/auth/sso/{provider}/init", app.InitSSO)
@@ -572,6 +786,8 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// WebSocket route (auth via message-based flow after upgrade)
 	g.GET("/ws", app.WebSocketHandler)
 
+	g.Before(app.MaintenanceGuard)
+
 	// For protected routes, we'll use a path-based middleware approach
 	// Apply auth middleware globally but check path in the middleware
 	g.Before(func(r *fastglue.Request) *fastglue.Request {
@@ -581,14 +797,10 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		}
 		path := string(r.RequestCtx.Path())
 		// Skip auth for public routes
-		if path == "/health" || path == "/ready" ||
+		if path == "/health" || path == "/ready" || path == "/api/setup/status" || path == "/api/maintenance" ||
 			path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" ||
 			path == "/api/auth/logout" || path == "/api/webhook" || path == "/ws" ||
 			path == "/api/auth/passkey/begin" || path == "/api/auth/passkey/finish" {
-			return r
-		}
-		// Pipecat sidecar callbacks use shared auth_token (validated in handlers).
-		if strings.HasPrefix(path, "/api/internal/pipecat") {
 			return r
 		}
 		// Public chatbot media for Meta (UUID filenames; also under base_path)
@@ -603,7 +815,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		if len(path) >= 13 && path[:13] == "/api/auth/sso" {
 			return r
 		}
-		// Google account connect callback (one-time state token in Redis)
+		// Google account connect callback (one-time state token)
 		if path == "/api/google-credentials/oauth/callback" {
 			return r
 		}
@@ -630,7 +842,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 			apiWindow = 60
 		}
 		apiRL := middleware.UserAwareRateLimit(middleware.RateLimitOpts{
-			Redis:      rdb,
+			Counter:    counter,
 			Log:        lo,
 			Max:        apiMax,
 			Window:     time.Duration(apiWindow) * time.Second,
@@ -909,6 +1121,20 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	// Shared Meta App credentials (super admin only — enforced in handlers)
 	g.GET("/api/admin/meta-app", app.GetSharedMetaApp)
 	g.PUT("/api/admin/meta-app", app.UpdateSharedMetaApp)
+	g.GET("/api/admin/server-settings", app.GetServerSettings)
+	g.PUT("/api/admin/server-settings", app.UpdateServerSettings)
+	g.GET("/api/maintenance", app.GetMaintenance)
+	g.GET("/api/admin/backups", app.ListBackups)
+	g.POST("/api/admin/backups", app.CreateBackup)
+	g.GET("/api/admin/backup-job", app.GetBackupJob)
+	g.GET("/api/admin/backups/{name}/download", app.DownloadBackup)
+	g.GET("/api/admin/backups/{name}/inspect", app.InspectBackup)
+	g.POST("/api/admin/backups/{name}/restore", app.RestoreBackup)
+	g.DELETE("/api/admin/backups/{name}", app.DeleteBackup)
+	g.POST("/api/admin/backup-uploads", app.StartBackupUpload)
+	g.PUT("/api/admin/backup-uploads/{id}", app.PutBackupUploadChunk)
+	g.POST("/api/admin/backup-uploads/{id}/finish", app.FinishBackupUpload)
+	g.DELETE("/api/admin/backup-uploads/{id}", app.CancelBackupUpload)
 
 	// Organizations
 	g.GET("/api/organizations", app.ListOrganizations)
@@ -945,12 +1171,6 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.GET("/api/custom-actions/redirect/{token}", app.CustomActionRedirect)
 
 	// IVR Flows
-	g.POST("/api/internal/pipecat/events", app.PipecatEvent)
-	g.POST("/api/internal/pipecat/tools/{call_id}", app.PipecatTool)
-	g.POST("/api/internal/pipecat/transcript/{call_id}", app.PipecatTranscript)
-	g.POST("/api/internal/pipecat/recordings/{call_id}", app.PipecatRecording)
-	g.GET("/api/internal/pipecat/status", app.PipecatStatus)
-
 	g.GET("/api/ivr-flows", app.ListIVRFlows)
 	g.GET("/api/ivr-flows/{id}", app.GetIVRFlow)
 	g.POST("/api/ivr-flows", app.CreateIVRFlow)

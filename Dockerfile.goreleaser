@@ -50,8 +50,11 @@ COPY --from=piper-dl /tmp/piper-models /opt/piper/models
 # Create directories
 RUN mkdir -p /app/uploads /app/audio
 
+# Mount your config here; without one the first-run setup wizard writes it here.
+ENV WHATOMATE_CONFIG=/app/config.toml
+
 # Expose port
-EXPOSE 8080
+EXPOSE 4747
 
 # Run the binary
 ENTRYPOINT ["./whatomate"]

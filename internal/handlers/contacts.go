@@ -788,7 +788,7 @@ func (a *App) SendMessage(r *fastglue.Request) error {
 			// Never trust a client-supplied payload — would let any agent
 			// impersonate any other.
 			msgReq.VoiceCallPayload = "agent:" + userID.String()
-			// Pre-register the sticky-routing intent in Redis so that the
+			// Pre-register the sticky-routing intent in the state store so the
 			// resulting incoming-call webhook can resolve the originating
 			// agent in O(1) (Meta does not currently echo the payload).
 			// TTL matches the button's clickable lifetime.

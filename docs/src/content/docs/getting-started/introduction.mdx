@@ -15,7 +15,7 @@ Whatomate is a modern WhatsApp Business Platform built with Go (Fastglue) and Vu
 ## Key Features
 
 <CardGrid>
-  <Card title="Multi-tenant Architecture" icon="building">
+  <Card title="Multi-tenant Architecture" icon="puzzle">
     Support multiple organizations with isolated data and configurations.
   </Card>
   <Card title="Granular Roles & Permissions" icon="approve-check">
@@ -30,7 +30,7 @@ Whatomate is a modern WhatsApp Business Platform built with Go (Fastglue) and Vu
   <Card title="Template Management" icon="document">
     Create and manage message templates approved by Meta.
   </Card>
-  <Card title="Bulk Messaging" icon="paper-plane">
+  <Card title="Bulk Messaging" icon="list-format">
     Send campaigns to multiple contacts efficiently.
   </Card>
   <Card title="Chatbot Automation" icon="setting">
@@ -60,6 +60,24 @@ Whatomate is a modern WhatsApp Business Platform built with Go (Fastglue) and Vu
   <Card title="Audit Logs" icon="document">
     A per-organization trail of every create, update, and delete.
   </Card>
+  <Card title="AI Assist" icon="star">
+    Suggest, rewrite, and translate replies in the inbox; transcribe voice notes; pick a template when the 24-hour window has closed.
+  </Card>
+  <Card title="AI Calls" icon="phone">
+    A Gemini Live voice agent answers callers inside a call flow, calls your functions, and hands over to a person.
+  </Card>
+  <Card title="Backup & Restore" icon="download">
+    Back up the whole server to one file and restore it, even onto a different database type.
+  </Card>
+  <Card title="Setup Wizard" icon="laptop">
+    The first run opens a browser wizard that checks the system, sets up the database and admin, or restores a backup.
+  </Card>
+  <Card title="Your Database, No Redis" icon="seti:db">
+    PostgreSQL, MySQL / MariaDB, or SQLite; a built-in store replaces Redis on a single server.
+  </Card>
+  <Card title="Passkeys & SSO" icon="approve-check">
+    Sign in with a password, a passkey, or Google, Microsoft, GitHub, Facebook, or any OIDC provider.
+  </Card>
 </CardGrid>
 
 ## Tech Stack
@@ -67,7 +85,7 @@ Whatomate is a modern WhatsApp Business Platform built with Go (Fastglue) and Vu
 ### Backend
 - **Go 1.25+** with [Fastglue](https://github.com/zerodha/fastglue) (fasthttp-based HTTP framework)
 - **PostgreSQL**, **MySQL / MariaDB** or **SQLite** (your choice) for data storage with GORM v2
-- **Redis** for caching and pub/sub
+- **Redis** (optional) for caching and pub/sub across servers; a built-in store is used otherwise
 - **JWT** for authentication
 
 ### Frontend

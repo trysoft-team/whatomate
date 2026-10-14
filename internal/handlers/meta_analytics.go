@@ -50,7 +50,7 @@ type MetaAnalyticsResponse struct {
 	Currency      string                          `json:"currency,omitempty"`       // ISO 4217 code the WABA is billed in
 }
 
-// GetMetaAnalytics fetches Meta WhatsApp analytics with Redis caching
+// GetMetaAnalytics fetches Meta WhatsApp analytics with caching
 func (a *App) GetMetaAnalytics(r *fastglue.Request) error {
 	orgID, userID, err := a.getOrgAndUserID(r)
 	if err != nil {
@@ -162,16 +162,13 @@ func (a *App) GetMetaAnalytics(r *fastglue.Request) error {
 
 	// Try cache first
 	ctx := context.Background()
-	cached, err := a.Redis.Get(ctx, cacheKey).Result()
-	if err == nil && cached != "" {
-		var cachedResponse []MetaAnalyticsResponse
-		if err := json.Unmarshal([]byte(cached), &cachedResponse); err == nil {
-			a.Log.Debug("Meta analytics cache hit", "cache_key", cacheKey)
-			return r.SendEnvelope(map[string]any{
-				"accounts": cachedResponse,
-				"cached":   true,
-			})
-		}
+	var cachedResponse []MetaAnalyticsResponse
+	if a.cacheGetJSON(ctx, cacheKey, &cachedResponse) {
+		a.Log.Debug("Meta analytics cache hit", "cache_key", cacheKey)
+		return r.SendEnvelope(map[string]any{
+			"accounts": cachedResponse,
+			"cached":   true,
+		})
 	}
 
 	// Cache miss - fetch from Meta API
@@ -344,9 +341,7 @@ func (a *App) GetMetaAnalytics(r *fastglue.Request) error {
 
 	// Cache the results
 	cacheTTL := a.getMetaAnalyticsCacheTTL(granularity)
-	if cacheData, err := json.Marshal(results); err == nil {
-		a.Redis.Set(ctx, cacheKey, cacheData, cacheTTL)
-	}
+	a.cacheSetJSON(ctx, cacheKey, results, cacheTTL)
 
 	response := map[string]any{
 		"accounts": results,
@@ -414,8 +409,7 @@ func (a *App) RefreshMetaAnalyticsCache(r *fastglue.Request) error {
 
 	// Delete all cached analytics for this organization
 	ctx := context.Background()
-	pattern := fmt.Sprintf("%s%s:*", metaAnalyticsCachePrefix, orgID.String())
-	a.deleteKeysByPattern(ctx, pattern)
+	a.cacheDelPrefix(ctx, fmt.Sprintf("%s%s:", metaAnalyticsCachePrefix, orgID.String()))
 
 	return r.SendEnvelope(map[string]any{
 		"message": "Analytics cache cleared successfully",
@@ -440,7 +434,7 @@ func (a *App) buildMetaAnalyticsCacheKey(orgID uuid.UUID, accountID, analyticsTy
 
 // getWABACurrency returns the ISO 4217 currency the WhatsApp Business Account
 // is billed in, which is the currency Meta denominates analytics costs in.
-// The value is cached in Redis for a day.
+// The value is cached for a day.
 //
 // A lookup failure degrades to USD rather than failing the whole analytics
 // request, and the fallback is deliberately not cached so a transient Graph
@@ -448,8 +442,10 @@ func (a *App) buildMetaAnalyticsCacheKey(orgID uuid.UUID, accountID, analyticsTy
 func (a *App) getWABACurrency(ctx context.Context, account *whatsapp.Account) string {
 	cacheKey := metaWABACurrencyCachePrefix + account.BusinessID
 
-	if cached, err := a.Redis.Get(ctx, cacheKey).Result(); err == nil && cached != "" {
-		return cached
+	if a.Cache != nil {
+		if cached, err := a.Cache.Get(ctx, cacheKey); err == nil && len(cached) > 0 {
+			return string(cached)
+		}
 	}
 
 	info, err := a.WhatsApp.GetBusinessAccountInfo(ctx, account)
@@ -462,7 +458,11 @@ func (a *App) getWABACurrency(ctx context.Context, account *whatsapp.Account) st
 		return defaultAnalyticsCurrency
 	}
 
-	a.Redis.Set(ctx, cacheKey, info.Currency, metaWABACurrencyCacheTTL)
+	if a.Cache != nil {
+		if err := a.Cache.Set(ctx, cacheKey, []byte(info.Currency), metaWABACurrencyCacheTTL); err != nil {
+			a.Log.Warn("Cache write failed", "key", cacheKey, "error", err)
+		}
+	}
 
 	return info.Currency
 }

@@ -31,21 +31,28 @@ var (
 	mariaDBTypes = map[string]string{"uuid": "char(36)", "jsonb": "longtext", "text": "longtext"}
 )
 
-// An index key is at most 3072 bytes, and utf8mb4 counts 4 per character.
-// These columns hold ASCII identifiers too long to index as utf8mb4; the
-// binary collation also keeps them case-sensitive, as on PostgreSQL.
+// Binary collations keep these columns case-sensitive, as on PostgreSQL.
+// credential_id holds ASCII identifiers too long to index as utf8mb4 (an
+// index key is at most 3072 bytes, 4 per utf8mb4 character); the store keys
+// are arbitrary strings, so they stay utf8mb4.
 var mysqlColumnSuffixes = map[string]string{
 	"user_passkeys.credential_id": " CHARACTER SET ascii COLLATE ascii_bin", // base64url, size 1400
+	"kv_entries.kv_key":           " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
+	"scheduled_items.set_name":    " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
+	"scheduled_items.item":        " CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
 }
 
+var columnCollation = regexp.MustCompile(`(?i)\bCOLLATE\s+(\w+)`)
+
 // openMySQL rejects unsupported servers and databases, then returns a
-// dialector on a pool whose connections run at READ COMMITTED.
-func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
-	mariaDB, err := probeMySQL(cfg)
+// dialector on a pool whose connections run at READ COMMITTED. A non-zero
+// dialTimeout bounds each connection's dial.
+func openMySQL(cfg *config.DatabaseConfig, dialTimeout time.Duration) (gorm.Dialector, error) {
+	mariaDB, err := probeMySQL(cfg, dialTimeout)
 	if err != nil {
 		return nil, err
 	}
-	dsn, err := mysqlDSN(cfg, mysqlIsolationVar(mariaDB))
+	dsn, err := mysqlDSN(cfg, mysqlIsolationVar(mariaDB), dialTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +83,8 @@ func openMySQL(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 
 // probeMySQL checks the server and database on a throwaway connection and
 // reports whether the server is MariaDB.
-func probeMySQL(cfg *config.DatabaseConfig) (mariaDB bool, err error) {
-	dsn, err := mysqlDSN(cfg, "")
+func probeMySQL(cfg *config.DatabaseConfig, dialTimeout time.Duration) (mariaDB bool, err error) {
+	dsn, err := mysqlDSN(cfg, "", dialTimeout)
 	if err != nil {
 		return false, err
 	}
@@ -111,8 +118,9 @@ func mysqlIsolationVar(mariaDB bool) string {
 }
 
 // mysqlDSN builds the connection DSN; if isolationVar is set, every new
-// connection sets it to READ-COMMITTED.
-func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string) (string, error) {
+// connection sets it to READ-COMMITTED. Zero dialTimeout keeps the driver's
+// default.
+func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string, dialTimeout time.Duration) (string, error) {
 	tls, err := mysqlTLS(cfg.SSLMode)
 	if err != nil {
 		return "", err
@@ -124,6 +132,7 @@ func mysqlDSN(cfg *config.DatabaseConfig, isolationVar string) (string, error) {
 	c.ParseTime, c.Loc = true, time.UTC
 	c.ClientFoundRows = true // RowsAffected counts matched rows, as on PostgreSQL
 	c.TLSConfig = tls
+	c.Timeout = dialTimeout
 	c.Params = map[string]string{"time_zone": "'+00:00'", "sql_mode": mysqlSQLMode}
 	if isolationVar != "" {
 		c.Params[isolationVar] = "'READ-COMMITTED'"
@@ -306,7 +315,33 @@ func (m mysqlMigrator) MigrateColumn(value any, field *schema.Field, ct gorm.Col
 			ct = reportedDefault{columnType: ct, dv: field.DefaultValue}
 		}
 	}
-	return m.Migrator.MigrateColumn(value, field, ct)
+	if err := m.Migrator.MigrateColumn(value, field, ct); err != nil {
+		return err
+	}
+	return m.migrateCollation(value, field)
+}
+
+// migrateCollation alters a column whose collation differs from the one its
+// column suffix names: GORM compares types but not collations.
+func (m mysqlMigrator) migrateCollation(value any, field *schema.Field) error {
+	d, ok := m.Migrator.Migrator.Dialector.(portableDialector)
+	if !ok || field.Schema == nil {
+		return nil
+	}
+	want := columnCollation.FindStringSubmatch(d.columnSuffixes[field.Schema.Table+"."+field.DBName])
+	if want == nil {
+		return nil
+	}
+	var current string
+	if err := m.DB.Raw(`SELECT collation_name FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+		field.Schema.Table, field.DBName).Row().Scan(&current); err != nil {
+		return err
+	}
+	if strings.EqualFold(current, want[1]) {
+		return nil
+	}
+	return m.AlterColumn(value, field.DBName)
 }
 
 // sameTypedDefault reports whether the server's spelling of a bool or float

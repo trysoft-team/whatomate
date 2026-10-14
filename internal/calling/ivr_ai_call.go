@@ -16,13 +16,19 @@ import (
 
 // executeAICall runs a multi-turn voice conversation with optional LLM tool calls.
 // Outcomes: completed, transfer, max_turns, error.
-// When [pipecat] is enabled, delegates to the realtime sidecar instead of the
-// turn-based Whisper/TTS loop.
+// A Gemini key runs a realtime Gemini Live session; anything else (or Live
+// being unreachable) uses the turn-based Whisper/TTS loop.
 func (m *Manager) executeAICall(session *CallSession, node *IVRNode, ctx *IVRContext, player *AudioPlayer) string {
-	if m.PipecatEnabled() {
-		return m.executeAICallPipecat(session, node, ctx, player)
+	if m.realtimeAICallEnabled() {
+		if outcome, handled := m.executeAICallRealtime(session, node, ctx, player); handled {
+			return outcome
+		}
 	}
 	return m.executeAICallTurnBased(session, node, ctx, player)
+}
+
+func (m *Manager) realtimeAICallEnabled() bool {
+	return m != nil && (m.config == nil || !m.config.TurnBasedAICall)
 }
 
 func (m *Manager) executeAICallTurnBased(session *CallSession, node *IVRNode, ctx *IVRContext, player *AudioPlayer) string {
@@ -66,6 +72,7 @@ func (m *Manager) executeAICallTurnBased(session *CallSession, node *IVRNode, ct
 		systemInstr = "You are a helpful phone IVR assistant. Keep replies under 2 short sentences. Use tools when needed."
 	}
 	systemInstr = interpolateTemplate(systemInstr, ctx.Variables)
+	systemInstr, welcome = m.applyAITransferBusy(session, ctx, systemInstr, welcome)
 	// Seed with org AI Contexts + optional extra_knowledge; refreshed each turn.
 	baseSystem := systemInstr
 	systemInstr = m.composeAICallSystemPrompt(session, ctx, baseSystem, "", node.Config)

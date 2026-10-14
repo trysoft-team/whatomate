@@ -11,7 +11,7 @@ BINARY_PATH=./cmd/whatomate
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
-# Local host runs use config.local.toml (localhost:5433 Postgres / localhost Redis).
+# Local host runs use config.local.toml (localhost:5433 Postgres).
 # Override: make run CONFIG=config.toml
 CONFIG?=config.local.toml
 
@@ -40,12 +40,12 @@ embed-frontend:
 
 # Run the backend locally
 run:
-	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433"; exit 1)
 	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG)
 
 # Run with migrations
 run-migrate:
-	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433"; exit 1)
 	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG) -migrate
 
 # Run tests. Uses gotestsum when available for live progress + a clear
@@ -60,7 +60,8 @@ test:
 		$(GOTEST) -v ./...; \
 	fi
 
-# Run the test suite against a temporary SQLite database (needs Redis).
+# Run the test suite against a temporary SQLite database. Redis-mode tests
+# run when TEST_REDIS_URL reaches a server and are skipped otherwise.
 test-sqlite:
 	TEST_DB_DRIVER=sqlite TEST_REDIS_URL=$${TEST_REDIS_URL:-redis://127.0.0.1:6379/15} go test -p 1 -count=1 ./...
 
@@ -133,14 +134,14 @@ docker-restart:
 
 # Database migrations
 migrate:
-	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433, redis.host=localhost"; exit 1)
+	@test -f $(CONFIG) || (echo "Missing $(CONFIG). Copy config.toml → config.local.toml and set database.host=localhost port=5433"; exit 1)
 	$(GOCMD) run $(BINARY_PATH)/main.go server -config $(CONFIG) -migrate
 
-# Infra only (Postgres + Redis). App runs on the host via make run-migrate / make frontend-dev.
+# Infra only (Postgres). App runs on the host via make run-migrate / make frontend-dev.
 docker-infra:
-	$(DOCKER_COMPOSE) up -d db redis
+	$(DOCKER_COMPOSE) up -d db
 	@$(DOCKER_COMPOSE) stop app 2>/dev/null || true
-	@echo "db (localhost:5433) and redis (localhost:6379) are up; app container stopped."
+	@echo "db (localhost:5433) is up; app container stopped."
 
 # Frontend commands
 frontend-install:
@@ -166,7 +167,7 @@ frontend-preview:
 # Development - run both backend and frontend (requires docker-infra first)
 dev:
 	@echo "Starting backend ($(CONFIG)) and frontend..."
-	@echo "API :8080  |  UI :3000 (proxies /api → :8080)"
+	@echo "API :4747 (or [server] port)  |  UI :3000 (proxies /api → the API)"
 	@make run-migrate &
 	@make frontend-dev
 
@@ -191,8 +192,8 @@ help:
 	@echo "  release-check  - Validate the GoReleaser config"
 	@echo "  release-snapshot - Build all release archives locally into dist/"
 	@echo ""
-	@echo "Development (host app + Docker db/redis):"
-	@echo "  docker-infra   - Start Postgres+Redis only; stop app container"
+	@echo "Development (host app + Docker db):"
+	@echo "  docker-infra   - Start Postgres only; stop app container"
 	@echo "  run            - Run the backend locally (CONFIG=$(CONFIG))"
 	@echo "  run-migrate    - Run the backend with database migrations"
 	@echo "  frontend-dev   - Run Vite UI on :3000"

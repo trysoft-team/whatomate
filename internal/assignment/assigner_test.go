@@ -11,22 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/assignment"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 	"gorm.io/gorm"
 )
 
 // --- Test setup helpers ---
 
-// newAssigner constructs an Assigner against the live test DB+Redis.
-// Skips the test if either is unavailable.
+// newAssigner constructs an Assigner against the live test DB and a memory cache.
 func newAssigner(t *testing.T) (*assignment.Assigner, *gorm.DB) {
 	t.Helper()
+	a, db, _ := newAssignerWithCache(t)
+	return a, db
+}
+
+func newAssignerWithCache(t *testing.T) (*assignment.Assigner, *gorm.DB, *store.Memory) {
+	t.Helper()
 	db := testutil.SetupTestDB(t)
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set, skipping")
-	}
-	return assignment.New(db, rdb, testutil.NopLogger()), db
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
+	return assignment.New(db, mem, testutil.NopLogger()), db, mem
 }
 
 // createTeam creates a team with a strategy and member set, and returns the team
@@ -71,7 +75,7 @@ func setInactive(t *testing.T, db *gorm.DB, userID uuid.UUID) {
 // --- GetTeamConfig (cache) ---
 
 func TestGetTeamConfig_LoadsFromDBAndCaches(t *testing.T) {
-	a, db := newAssigner(t)
+	a, db, mem := newAssignerWithCache(t)
 	org := testutil.CreateTestOrganization(t, db)
 	team, users := createTeam(t, db, org.ID, models.AssignmentStrategyRoundRobin, 3, 20)
 
@@ -82,12 +86,10 @@ func TestGetTeamConfig_LoadsFromDBAndCaches(t *testing.T) {
 	assert.Len(t, cfg.MemberIDs, len(users))
 
 	// Subsequent call must come from cache; verify the cache key is populated.
-	rdb := testutil.SetupTestRedis(t)
-	require.NotNil(t, rdb)
-	cached, err := rdb.Get(context.Background(), "team:assignment:"+team.ID.String()).Result()
+	cached, err := mem.Get(context.Background(), "team:assignment:"+team.ID.String())
 	require.NoError(t, err)
 	var roundtrip assignment.TeamConfig
-	require.NoError(t, json.Unmarshal([]byte(cached), &roundtrip))
+	require.NoError(t, json.Unmarshal(cached, &roundtrip))
 	assert.Equal(t, cfg.Strategy, roundtrip.Strategy)
 	assert.ElementsMatch(t, cfg.MemberIDs, roundtrip.MemberIDs)
 }
@@ -124,17 +126,15 @@ func TestGetTeamConfig_OnlyAgentRoleMembers(t *testing.T) {
 }
 
 func TestInvalidateTeamCache_RemovesCachedConfig(t *testing.T) {
-	a, db := newAssigner(t)
+	a, db, mem := newAssignerWithCache(t)
 	org := testutil.CreateTestOrganization(t, db)
 	team, _ := createTeam(t, db, org.ID, models.AssignmentStrategyRoundRobin, 1, 0)
 
 	require.NotNil(t, a.GetTeamConfig(team.ID)) // populates cache
 	a.InvalidateTeamCache(team.ID)
 
-	rdb := testutil.SetupTestRedis(t)
-	exists, err := rdb.Exists(context.Background(), "team:assignment:"+team.ID.String()).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
+	_, err := mem.Get(context.Background(), "team:assignment:"+team.ID.String())
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
 // --- AssignToTeam: round_robin ---

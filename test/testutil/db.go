@@ -3,6 +3,7 @@ package testutil
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -161,6 +162,34 @@ func MySQLConfigFromDSN(raw string) (*config.DatabaseConfig, error) {
 	}, nil
 }
 
+// PostgresConfigFromURL turns TEST_DATABASE_URL (postgres://user:pass@host:port/name?sslmode=…)
+// into a postgres DatabaseConfig. The database name must start with whatomate_test.
+func PostgresConfigFromURL(raw string) (*config.DatabaseConfig, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("TEST_DATABASE_URL does not parse: %w", err)
+	}
+	name := strings.TrimPrefix(u.Path, "/")
+	if !strings.HasPrefix(name, "whatomate_test") {
+		return nil, fmt.Errorf("TEST_DATABASE_URL names database %q; it must start with whatomate_test", name)
+	}
+	port := 5432
+	if p := u.Port(); p != "" {
+		if port, err = strconv.Atoi(p); err != nil {
+			return nil, fmt.Errorf("TEST_DATABASE_URL port: %w", err)
+		}
+	}
+	password, _ := u.User.Password()
+	ssl := u.Query().Get("sslmode")
+	if ssl == "" {
+		ssl = "disable"
+	}
+	return &config.DatabaseConfig{
+		Driver: config.DriverPostgres, Host: u.Hostname(), Port: port,
+		User: u.User.Username(), Password: password, Name: name, SSLMode: ssl,
+	}, nil
+}
+
 // SetupTestDBWithCleanup is like SetupTestDB but allows controlling cleanup behavior.
 func SetupTestDBWithCleanup(t *testing.T, cleanup bool) *gorm.DB {
 	t.Helper()
@@ -246,6 +275,10 @@ func migrateModels(db *gorm.DB) error {
 		// AI usage & shared Meta app
 		&models.AIUsageLog{},
 		&models.SharedMetaAppCredentials{},
+		// Embedded store
+		&models.KVEntry{},
+		&models.ScheduledItem{},
+		&models.CampaignJob{},
 	)
 }
 
@@ -253,6 +286,9 @@ func migrateModels(db *gorm.DB) error {
 // Uses TRUNCATE CASCADE on PostgreSQL to handle foreign key constraints properly.
 func cleanupTables(db *gorm.DB) {
 	tables := []string{
+		"kv_entries",
+		"scheduled_items",
+		"campaign_jobs",
 		"ai_usage_logs",
 		"shared_meta_app_credentials",
 		// Dashboard tables
@@ -309,6 +345,9 @@ func cleanupTables(db *gorm.DB) {
 // TruncateTables empties all tables (TRUNCATE on PostgreSQL and MySQL, DELETE on SQLite).
 func TruncateTables(db *gorm.DB) {
 	tables := []string{
+		"kv_entries",
+		"scheduled_items",
+		"campaign_jobs",
 		"widgets",
 		"catalog_products",
 		"catalogs",

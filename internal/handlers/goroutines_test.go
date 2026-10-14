@@ -11,21 +11,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/handlers"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 )
 
 // clearWebhookCache clears the webhook cache for a specific organization.
-// This ensures test isolation when using shared Redis.
-func clearWebhookCache(t *testing.T, redisClient *redis.Client, orgID uuid.UUID) {
+func clearWebhookCache(t *testing.T, cache store.KV, orgID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 	cacheKey := fmt.Sprintf("webhooks:%s", orgID.String())
-	redisClient.Del(ctx, cacheKey)
+	_ = cache.Del(ctx, cacheKey)
 }
 
 func TestApp_WaitForBackgroundTasks(t *testing.T) {
@@ -67,8 +66,8 @@ func TestApp_DispatchWebhook_CompletesSuccessfully(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	// Create a test server that responds successfully
 	var requestCount atomic.Int32
@@ -113,8 +112,8 @@ func TestApp_DispatchWebhook_ConcurrencyLimit(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	// Track concurrent requests
 	var currentConcurrent atomic.Int32
@@ -177,8 +176,8 @@ func TestApp_DispatchWebhook_NoWebhooks(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	// Should not panic when no webhooks exist
 	app.DispatchWebhook(org.ID, models.WebhookEventMessageIncoming, map[string]string{"test": "data"})
@@ -213,10 +212,10 @@ func TestApp_DispatchWebhook_InactiveWebhook(t *testing.T) {
 
 	// Ensure clean state: delete any webhooks and clear cache
 	app.DB.Where("organization_id = ?", org.ID).Delete(&models.Webhook{})
-	clearWebhookCache(t, app.Redis, org.ID)
+	clearWebhookCache(t, app.Cache, org.ID)
 	t.Cleanup(func() {
 		app.DB.Where("organization_id = ?", org.ID).Delete(&models.Webhook{})
-		clearWebhookCache(t, app.Redis, org.ID)
+		clearWebhookCache(t, app.Cache, org.ID)
 	})
 
 	var requestCount atomic.Int32
@@ -245,7 +244,7 @@ func TestApp_DispatchWebhook_InactiveWebhook(t *testing.T) {
 	require.False(t, savedWebhook.IsActive, "webhook should be saved as inactive")
 
 	// Clear cache after updating webhook to inactive
-	clearWebhookCache(t, app.Redis, org.ID)
+	clearWebhookCache(t, app.Cache, org.ID)
 
 	app.DispatchWebhook(org.ID, models.WebhookEventMessageIncoming, map[string]string{"test": "data"})
 	app.WaitForBackgroundTasks()
@@ -268,8 +267,8 @@ func TestApp_DispatchWebhook_EventFiltering(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -311,8 +310,8 @@ func TestApp_DispatchWebhook_RetryOnFailure(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,8 +356,8 @@ func TestApp_DispatchWebhook_HTTPTimeout(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	var requestStarted atomic.Bool
 
@@ -418,8 +417,8 @@ func TestApp_DispatchWebhook_MultipleEvents(t *testing.T) {
 	require.NoError(t, app.DB.Create(org).Error)
 
 	// Clear cache and cleanup after test
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	var incomingCount atomic.Int32
 	var outgoingCount atomic.Int32
@@ -483,8 +482,8 @@ func TestApp_DispatchWebhook_MessageEventWithMedia(t *testing.T) {
 	}
 	require.NoError(t, app.DB.Create(org).Error)
 
-	clearWebhookCache(t, app.Redis, org.ID)
-	t.Cleanup(func() { clearWebhookCache(t, app.Redis, org.ID) })
+	clearWebhookCache(t, app.Cache, org.ID)
+	t.Cleanup(func() { clearWebhookCache(t, app.Cache, org.ID) })
 
 	var receivedPayload struct {
 		Event string `json:"event"`

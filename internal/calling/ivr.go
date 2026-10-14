@@ -150,6 +150,7 @@ func (m *Manager) executeNodeLoop(session *CallSession, waAccount *whatsapp.Acco
 		m.log.Info("Executing IVR node", "call_id", session.ID, "node_id", node.ID, "type", node.Type, "label", node.Label)
 
 		var outcome string
+		returnToAI := ""
 
 		switch node.Type {
 		case IVRNodeStart:
@@ -180,6 +181,7 @@ func (m *Manager) executeNodeLoop(session *CallSession, waAccount *whatsapp.Acco
 			session.mu.Lock()
 			player = session.IVRPlayer
 			session.mu.Unlock()
+			returnToAI = takeAITransferReturn(ctx, outcome)
 		case IVRNodeGotoFlow:
 			ctx.Path = append(ctx.Path, map[string]string{
 				"node": node.ID, "type": string(node.Type), "label": node.Label,
@@ -212,6 +214,9 @@ func (m *Manager) executeNodeLoop(session *CallSession, waAccount *whatsapp.Acco
 			outcome = m.executeAIVoice(session, node, ctx, player)
 		case IVRNodeAICall:
 			outcome = m.executeAICall(session, node, ctx, player)
+			if outcome == "transfer" && aiCallTransferReturnsToCall(node.Config) {
+				markAITransferReturn(ctx, node.ID)
+			}
 		case IVRNodeExecuteFunction:
 			outcome = m.executeFunction(session, node, ctx)
 		case IVRNodeDialOut:
@@ -250,7 +255,17 @@ func (m *Manager) executeNodeLoop(session *CallSession, waAccount *whatsapp.Acco
 			step["outcome"] = outcome
 		}
 
+		if returnToAI != "" {
+			step["returned_to"] = returnToAI
+		}
+
 		ctx.Path = append(ctx.Path, step)
+
+		if returnToAI != "" {
+			m.log.Info("Transfer unanswered, returning to AI Call", "call_id", session.ID, "node", returnToAI)
+			ctx.CurrentNode = returnToAI
+			continue
+		}
 
 		// Resolve the next node via edges
 		nextID := graph.ResolveEdge(node.ID, outcome)

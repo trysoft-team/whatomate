@@ -161,7 +161,7 @@ POST /api/messages/template
 **Using phone number (creates contact if needed):**
 
 ```bash
-curl -X POST "http://your-server:8080/api/messages/template" \
+curl -X POST "http://your-server:4747/api/messages/template" \
   -H "X-API-Key: whm_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -294,7 +294,7 @@ POST /api/messages/media
 | `whatsapp_account` | text | No | Account to send from; defaults to the contact's account |
 
 ```bash
-curl -X POST "http://your-server:8080/api/messages/media" \
+curl -X POST "http://your-server:4747/api/messages/media" \
   -H "X-API-Key: whm_your_api_key" \
   -F "contact_id=<uuid>" \
   -F "type=image" \
@@ -352,7 +352,7 @@ The `interactive.type` selects the variant:
 Send a message with up to 3 quick reply buttons:
 
 ```bash
-curl -X POST "http://your-server:8080/api/contacts/{contact_id}/messages" \
+curl -X POST "http://your-server:4747/api/contacts/{contact_id}/messages" \
   -H "X-API-Key: whm_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -387,7 +387,7 @@ curl -X POST "http://your-server:8080/api/contacts/{contact_id}/messages" \
 Send a message with a call-to-action URL button:
 
 ```bash
-curl -X POST "http://your-server:8080/api/contacts/{contact_id}/messages" \
+curl -X POST "http://your-server:4747/api/contacts/{contact_id}/messages" \
   -H "X-API-Key: whm_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{

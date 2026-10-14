@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 )
 
@@ -19,7 +20,7 @@ func TestPublisher_PublishCampaignStats_NoSubscribersIsNotAnError(t *testing.T) 
 	if rdb == nil {
 		t.Skip("TEST_REDIS_URL not set")
 	}
-	pub := queue.NewPublisher(rdb, testutil.NopLogger())
+	pub := queue.NewPublisher(store.NewRedis(rdb), testutil.NopLogger())
 
 	err := pub.PublishCampaignStats(context.Background(), &queue.CampaignStatsUpdate{
 		CampaignID:     "abc",
@@ -35,8 +36,8 @@ func TestSubscriber_ReceivesPublishedUpdate(t *testing.T) {
 	if rdb == nil {
 		t.Skip("TEST_REDIS_URL not set")
 	}
-	pub := queue.NewPublisher(rdb, testutil.NopLogger())
-	sub := queue.NewSubscriber(rdb, testutil.NopLogger())
+	pub := queue.NewPublisher(store.NewRedis(rdb), testutil.NopLogger())
+	sub := queue.NewSubscriber(store.NewRedis(rdb), testutil.NopLogger())
 	t.Cleanup(func() { _ = sub.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,10 +88,10 @@ func TestSubscriber_FanoutToAllSubscribers(t *testing.T) {
 	if rdb == nil {
 		t.Skip("TEST_REDIS_URL not set")
 	}
-	pub := queue.NewPublisher(rdb, testutil.NopLogger())
+	pub := queue.NewPublisher(store.NewRedis(rdb), testutil.NopLogger())
 
-	subA := queue.NewSubscriber(rdb, testutil.NopLogger())
-	subB := queue.NewSubscriber(rdb, testutil.NopLogger())
+	subA := queue.NewSubscriber(store.NewRedis(rdb), testutil.NopLogger())
+	subB := queue.NewSubscriber(store.NewRedis(rdb), testutil.NopLogger())
 	t.Cleanup(func() { _ = subA.Close() })
 	t.Cleanup(func() { _ = subB.Close() })
 
@@ -139,8 +140,8 @@ func TestSubscriber_ContextCancelStopsHandler(t *testing.T) {
 	if rdb == nil {
 		t.Skip("TEST_REDIS_URL not set")
 	}
-	pub := queue.NewPublisher(rdb, testutil.NopLogger())
-	sub := queue.NewSubscriber(rdb, testutil.NopLogger())
+	pub := queue.NewPublisher(store.NewRedis(rdb), testutil.NopLogger())
+	sub := queue.NewSubscriber(store.NewRedis(rdb), testutil.NopLogger())
 	t.Cleanup(func() { _ = sub.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,4 +181,21 @@ func TestSubscriber_ContextCancelStopsHandler(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, 1, received, "no messages must be delivered after Close")
+}
+
+func TestPubSub_MemoryBroker(t *testing.T) {
+	b := store.NewMemoryBroker()
+	pub := queue.NewPublisher(b, testutil.NopLogger())
+	sub := queue.NewSubscriber(b, testutil.NopLogger())
+	got := make(chan *queue.CampaignStatsUpdate, 1)
+	require.NoError(t, sub.SubscribeCampaignStats(context.Background(), func(u *queue.CampaignStatsUpdate) { got <- u }))
+	defer func() { _ = sub.Close() }()
+	require.NoError(t, pub.PublishCampaignStats(context.Background(), &queue.CampaignStatsUpdate{CampaignID: "c1", SentCount: 3}))
+	select {
+	case u := <-got:
+		assert.Equal(t, "c1", u.CampaignID)
+		assert.Equal(t, 3, u.SentCount)
+	case <-time.After(2 * time.Second):
+		t.Fatal("no update")
+	}
 }

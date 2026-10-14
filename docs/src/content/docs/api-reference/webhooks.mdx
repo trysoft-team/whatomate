@@ -333,7 +333,7 @@ the token is never passed in the query string. Fetch a short-lived token from
 ```javascript
 const { data } = await (await fetch('/api/auth/ws-token')).json();
 
-const ws = new WebSocket('ws://your-server:8080/ws');
+const ws = new WebSocket('ws://your-server:4747/ws');
 ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', payload: { token: data.token } }));
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);

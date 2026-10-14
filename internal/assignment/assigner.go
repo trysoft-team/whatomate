@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/database/dialect"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/zerodha/logf"
 	"gorm.io/gorm"
 )
@@ -20,13 +20,13 @@ type LoadCounter func(db *gorm.DB, orgID uuid.UUID, agentIDs []uuid.UUID) map[uu
 // Assigner provides team-based agent assignment with caching.
 type Assigner struct {
 	db    *gorm.DB
-	redis *redis.Client
+	cache store.KV
 	log   logf.Logger
 }
 
 // New creates a new Assigner.
-func New(db *gorm.DB, redis *redis.Client, log logf.Logger) *Assigner {
-	return &Assigner{db: db, redis: redis, log: log}
+func New(db *gorm.DB, cache store.KV, log logf.Logger) *Assigner {
+	return &Assigner{db: db, cache: cache, log: log}
 }
 
 // AssignToTeam dispatches to the appropriate strategy based on the team's
@@ -170,6 +170,8 @@ func ResolvePerAgentTimeout(teamTimeout int, _ int, globalDefault int) int {
 func (a *Assigner) InvalidateTeamCache(teamID uuid.UUID) {
 	ctx := context.Background()
 	key := teamCachePrefix + teamID.String()
-	a.redis.Del(ctx, key)
+	if a.cache != nil {
+		_ = a.cache.Del(ctx, key)
+	}
 	a.log.Debug("Invalidated team assignment cache", "team_id", teamID)
 }

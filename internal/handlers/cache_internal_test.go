@@ -13,22 +13,21 @@ import (
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/crypto"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/test/testutil"
 )
 
-// cacheTestApp builds a minimal App configured for cache tests, with both DB
-// and Redis available. Skips the test if Redis isn't reachable.
+// cacheTestApp builds a minimal App configured for cache tests, with a test
+// database and an in-memory cache.
 func cacheTestApp(t *testing.T) *App {
 	t.Helper()
 	db := testutil.SetupTestDB(t)
-	rdb := testutil.SetupTestRedis(t)
-	if rdb == nil {
-		t.Skip("TEST_REDIS_URL not set")
-	}
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 	return &App{
 		DB:    db,
 		Log:   testutil.NopLogger(),
-		Redis: rdb,
+		Cache: mem,
 		Config: &config.Config{
 			JWT: config.JWTConfig{Secret: testutil.TestJWTSecret, AccessExpiryMins: 15, RefreshExpiryDays: 7},
 		},
@@ -64,7 +63,7 @@ func TestGetWhatsAppAccountCached_CacheMissPopulatesCache(t *testing.T) {
 
 	// Ensure cache is clean.
 	cacheKey := fmt.Sprintf("%s%s", whatsappAccountCachePrefix, phoneID)
-	app.Redis.Del(context.Background(), cacheKey)
+	_ = app.Cache.Del(context.Background(), cacheKey)
 
 	got, err := app.getWhatsAppAccountCached(phoneID)
 	require.NoError(t, err)
@@ -74,7 +73,7 @@ func TestGetWhatsAppAccountCached_CacheMissPopulatesCache(t *testing.T) {
 	assert.Equal(t, "secret", got.AppSecret)
 
 	// Cache should now be populated.
-	cached, err := app.Redis.Get(context.Background(), cacheKey).Result()
+	cached, err := app.Cache.Get(context.Background(), cacheKey)
 	require.NoError(t, err)
 	require.NotEmpty(t, cached)
 }
@@ -100,7 +99,7 @@ func TestGetWhatsAppAccountCached_CacheHitSkipsDB(t *testing.T) {
 	data, err := json.Marshal(cacheData)
 	require.NoError(t, err)
 	cacheKey := fmt.Sprintf("%s%s", whatsappAccountCachePrefix, phoneID)
-	require.NoError(t, app.Redis.Set(context.Background(), cacheKey, data, time.Hour).Err())
+	require.NoError(t, app.Cache.Set(context.Background(), cacheKey, data, time.Hour))
 
 	got, err := app.getWhatsAppAccountCached(phoneID)
 	require.NoError(t, err)
@@ -128,15 +127,13 @@ func TestInvalidateWhatsAppAccountCache_DeletesKey(t *testing.T) {
 	require.NoError(t, err)
 
 	cacheKey := fmt.Sprintf("%s%s", whatsappAccountCachePrefix, phoneID)
-	exists, err := app.Redis.Exists(context.Background(), cacheKey).Result()
+	_, err = app.Cache.Get(context.Background(), cacheKey)
 	require.NoError(t, err)
-	require.Equal(t, int64(1), exists)
 
 	app.InvalidateWhatsAppAccountCache(phoneID)
 
-	exists, err = app.Redis.Exists(context.Background(), cacheKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists, "invalidation must remove the cache key")
+	_, err = app.Cache.Get(context.Background(), cacheKey)
+	assert.ErrorIs(t, err, store.ErrNotFound, "invalidation must remove the cache key")
 }
 
 // --- decryptAccountSecrets handles encrypted + legacy plaintext ---
@@ -183,15 +180,15 @@ func TestGetChatbotSettingsCached_DecryptsAIKeyOnDBAndCachePaths(t *testing.T) {
 	}).Error)
 
 	cacheKey := fmt.Sprintf("%s%s:%s", settingsCachePrefix, org.ID.String(), "")
-	app.Redis.Del(context.Background(), cacheKey)
+	_ = app.Cache.Del(context.Background(), cacheKey)
 
 	fromDB, err := app.getChatbotSettingsCached(org.ID, "")
 	require.NoError(t, err)
 	assert.Equal(t, "sk-plain-ai-key", fromDB.AI.APIKey)
 
-	cached, err := app.Redis.Get(context.Background(), cacheKey).Result()
+	cached, err := app.Cache.Get(context.Background(), cacheKey)
 	require.NoError(t, err)
-	assert.NotContains(t, cached, "sk-plain-ai-key", "Redis must keep the encrypted key")
+	assert.NotContains(t, string(cached), "sk-plain-ai-key", "The cache must keep the encrypted key")
 
 	fromCache, err := app.getChatbotSettingsCached(org.ID, "")
 	require.NoError(t, err)
@@ -245,7 +242,7 @@ func TestGetWebhooksCached_CacheHitSkipsDB(t *testing.T) {
 	}}
 	data, err := json.Marshal(cached)
 	require.NoError(t, err)
-	require.NoError(t, app.Redis.Set(context.Background(), cacheKey, data, time.Hour).Err())
+	require.NoError(t, app.Cache.Set(context.Background(), cacheKey, data, time.Hour))
 
 	got, err := app.getWebhooksCached(orgID)
 	require.NoError(t, err)
@@ -257,13 +254,12 @@ func TestInvalidateWebhooksCache_DeletesKey(t *testing.T) {
 	app := cacheTestApp(t)
 	orgID := uuid.New()
 	cacheKey := fmt.Sprintf("%s%s", webhooksCachePrefix, orgID.String())
-	require.NoError(t, app.Redis.Set(context.Background(), cacheKey, "[]", time.Hour).Err())
+	require.NoError(t, app.Cache.Set(context.Background(), cacheKey, []byte("[]"), time.Hour))
 
 	app.InvalidateWebhooksCache(orgID)
 
-	exists, err := app.Redis.Exists(context.Background(), cacheKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
+	_, err := app.Cache.Get(context.Background(), cacheKey)
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
 // --- getSLAEnabledSettingsCached ---
@@ -303,39 +299,36 @@ func TestGetSLAEnabledSettingsCached_OnlySLAEnabledRows(t *testing.T) {
 
 func TestInvalidateSLASettingsCache_DeletesKey(t *testing.T) {
 	app := cacheTestApp(t)
-	require.NoError(t, app.Redis.Set(context.Background(), slaSettingsCacheKey, "[]", time.Hour).Err())
+	require.NoError(t, app.Cache.Set(context.Background(), slaSettingsCacheKey, []byte("[]"), time.Hour))
 
 	app.InvalidateSLASettingsCache()
 
-	exists, err := app.Redis.Exists(context.Background(), slaSettingsCacheKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
+	_, err := app.Cache.Get(context.Background(), slaSettingsCacheKey)
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
-// --- deleteKeysByPattern ---
+// --- cacheDelPrefix ---
 
-func TestDeleteKeysByPattern_RemovesAllMatchingKeys(t *testing.T) {
+func TestCacheDelPrefix_RemovesAllMatchingKeys(t *testing.T) {
 	app := cacheTestApp(t)
 	ctx := context.Background()
 
 	prefix := "test:cache:" + uuid.New().String()[:8] + ":"
 	for i := range 5 {
-		require.NoError(t, app.Redis.Set(ctx, fmt.Sprintf("%s%d", prefix, i), "x", time.Hour).Err())
+		require.NoError(t, app.Cache.Set(ctx, fmt.Sprintf("%s%d", prefix, i), []byte("x"), time.Hour))
 	}
 	// Sentinel key with a similar but non-matching prefix.
 	other := "test:other:" + uuid.New().String()[:8]
-	require.NoError(t, app.Redis.Set(ctx, other, "y", time.Hour).Err())
+	require.NoError(t, app.Cache.Set(ctx, other, []byte("y"), time.Hour))
 
-	app.deleteKeysByPattern(ctx, prefix+"*")
+	app.cacheDelPrefix(ctx, prefix)
 
 	for i := range 5 {
-		exists, err := app.Redis.Exists(ctx, fmt.Sprintf("%s%d", prefix, i)).Result()
-		require.NoError(t, err)
-		assert.Equal(t, int64(0), exists, "key %d should have been deleted", i)
+		_, err := app.Cache.Get(ctx, fmt.Sprintf("%s%d", prefix, i))
+		assert.ErrorIs(t, err, store.ErrNotFound, "key %d should have been deleted", i)
 	}
-	exists, err := app.Redis.Exists(ctx, other).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), exists, "non-matching key must be left alone")
+	_, err := app.Cache.Get(ctx, other)
+	assert.NoError(t, err, "non-matching key must be left alone")
 }
 
 // --- InvalidateChatbotFlowsCache (uses Del on a single key) ---
@@ -344,13 +337,12 @@ func TestInvalidateChatbotFlowsCache_DeletesKey(t *testing.T) {
 	app := cacheTestApp(t)
 	orgID := uuid.New()
 	cacheKey := fmt.Sprintf("%s%s", flowsCachePrefix, orgID.String())
-	require.NoError(t, app.Redis.Set(context.Background(), cacheKey, "[]", time.Hour).Err())
+	require.NoError(t, app.Cache.Set(context.Background(), cacheKey, []byte("[]"), time.Hour))
 
 	app.InvalidateChatbotFlowsCache(orgID)
 
-	exists, err := app.Redis.Exists(context.Background(), cacheKey).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), exists)
+	_, err := app.Cache.Get(context.Background(), cacheKey)
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
 // --- InvalidateChatbotSettingsCache (pattern-based) ---
@@ -364,20 +356,18 @@ func TestInvalidateChatbotSettingsCache_DeletesAllAccountVariants(t *testing.T) 
 	keyA := fmt.Sprintf("%s%s:%s", settingsCachePrefix, orgID.String(), "acc-A")
 	keyB := fmt.Sprintf("%s%s:%s", settingsCachePrefix, orgID.String(), "acc-B")
 	keyOther := fmt.Sprintf("%s%s:%s", settingsCachePrefix, uuid.New().String(), "acc-X")
-	require.NoError(t, app.Redis.Set(ctx, keyA, "{}", time.Hour).Err())
-	require.NoError(t, app.Redis.Set(ctx, keyB, "{}", time.Hour).Err())
-	require.NoError(t, app.Redis.Set(ctx, keyOther, "{}", time.Hour).Err())
+	require.NoError(t, app.Cache.Set(ctx, keyA, []byte("{}"), time.Hour))
+	require.NoError(t, app.Cache.Set(ctx, keyB, []byte("{}"), time.Hour))
+	require.NoError(t, app.Cache.Set(ctx, keyOther, []byte("{}"), time.Hour))
 
 	app.InvalidateChatbotSettingsCache(orgID)
 
 	// Both org keys gone…
 	for _, k := range []string{keyA, keyB} {
-		exists, err := app.Redis.Exists(ctx, k).Result()
-		require.NoError(t, err)
-		assert.Equal(t, int64(0), exists, "expected %s to be deleted", k)
+		_, err := app.Cache.Get(ctx, k)
+		assert.ErrorIs(t, err, store.ErrNotFound, "expected %s to be deleted", k)
 	}
 	// …other org's key untouched.
-	exists, err := app.Redis.Exists(ctx, keyOther).Result()
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), exists, "other org's cache must not be invalidated")
+	_, err := app.Cache.Get(ctx, keyOther)
+	assert.NoError(t, err, "other org's cache must not be invalidated")
 }

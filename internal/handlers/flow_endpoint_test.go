@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -39,6 +40,27 @@ func dataExchange(next string) map[string]any {
 }
 
 // --- pure helpers ---
+
+func TestFlowEndpointStateKey(t *testing.T) {
+	flowID := uuid.New()
+	prefix := "flow_endpoint:" + flowID.String() + ":"
+
+	t.Run("short token unchanged", func(t *testing.T) {
+		assert.Equal(t, prefix+"tok-123", handlers.FlowEndpointStateKeyForTest(flowID, "tok-123"))
+		fits := strings.Repeat("x", 255-len(prefix))
+		assert.Equal(t, prefix+fits, handlers.FlowEndpointStateKeyForTest(flowID, fits))
+	})
+
+	t.Run("long token hashed", func(t *testing.T) {
+		token := strings.Repeat("y", 256-len(prefix))
+		key := handlers.FlowEndpointStateKeyForTest(flowID, token)
+		assert.LessOrEqual(t, len(key), 255)
+		assert.True(t, strings.HasPrefix(key, prefix))
+		assert.NotContains(t, key, token)
+		assert.Equal(t, key, handlers.FlowEndpointStateKeyForTest(flowID, token))
+		assert.NotEqual(t, key, handlers.FlowEndpointStateKeyForTest(flowID, token+"z"))
+	})
+}
 
 func TestBuildRoutingModel_ForwardEdgesOnly(t *testing.T) {
 	t.Parallel()

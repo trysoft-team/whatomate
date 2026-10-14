@@ -5,7 +5,40 @@ description: Complete configuration reference for Whatomate
 
 import { Aside } from '@astrojs/starlight/components';
 
-Whatomate uses a TOML configuration file for all settings. By default, it looks for `config.toml` in the current directory; pass `-config /path/to/config.toml` to override.
+Whatomate uses a TOML configuration file for all settings. You don't need to pass its path each time: `whatomate server` and `whatomate worker` search the standard locations below and use the first file they find.
+
+1. `-config /path/to/config.toml`, if given.
+2. The file named by the `WHATOMATE_CONFIG` environment variable.
+3. Your user config folder:
+   - Linux: `~/.config/whatomate/config.toml` (or `$XDG_CONFIG_HOME/whatomate/config.toml`)
+   - macOS: `~/Library/Application Support/whatomate/config.toml`, then `~/.config/whatomate/config.toml`
+   - Windows: `%AppData%\whatomate\config.toml`
+4. The system config folder:
+   - Linux: `/etc/whatomate/config.toml`
+   - macOS (Homebrew): `/opt/homebrew/etc/whatomate/config.toml` or `/usr/local/etc/whatomate/config.toml`
+   - Windows: `%ProgramData%\whatomate\config.toml`
+
+The current directory is not searched: a `config.toml` next to where you run
+`whatomate` is only used when you pass it with `-config` or `WHATOMATE_CONFIG`.
+
+If no file is found, `whatomate server` (or plain `whatomate`) starts the
+setup wizard instead of exiting. The wizard writes the config to the system
+folder when it can, otherwise to your user folder, with mode 0600. It
+generates `[jwt] secret` and `[app] encryption_key`, and sets
+`environment = "production"` only when the wizard was opened over HTTPS.
+Over plain HTTP it sets `allowed_origins` to the address you used plus
+`http://localhost:<port>` and each LAN address of the machine; over HTTPS,
+only the address you used.
+When `-config` or `WHATOMATE_CONFIG` names a file that does not exist yet,
+the wizard writes exactly that file. If that path is a directory (Docker
+creates one when a bind-mounted `config.toml` is missing on the host),
+whatomate stops with an error instead. See [First run](/whatomate/getting-started/quickstart/#first-run).
+
+`whatomate worker` never runs the wizard.
+
+Run `whatomate config path` to see which file would be used.
+
+Relative paths in the config (the SQLite `path`, `[storage] local_path`, `[calling] audio_dir`, the Piper model) resolve against the current directory for options 1–2. For a config found in your user folder they resolve against that folder; for a system config they resolve against the data folder: `/var/lib/whatomate` on Linux, `$(brew --prefix)/var/whatomate` on macOS, `%ProgramData%\whatomate` on Windows. Whatomate creates that folder if it is missing. Absolute paths are always used as written.
 
 A complete commented example lives in [`config.example.toml`](https://github.com/trysoft-team/whatomate/blob/main/config.example.toml) at the repository root — copy it to `config.toml` and edit. The reference below documents every section.
 
@@ -20,7 +53,7 @@ encryption_key = ""           # AES-256 key (32+ chars) for encrypting secrets a
 
 [server]
 host = "0.0.0.0"
-port = 8080
+port = 4747
 read_timeout = 30
 write_timeout = 30
 base_path = ""                # Set to "/subpath" if behind nginx proxy_pass at a sub-path
@@ -39,13 +72,16 @@ max_open_conns = 25
 max_idle_conns = 5
 conn_max_lifetime = 300       # seconds
 
-[redis]
-host = "localhost"            # Use "redis" inside Docker compose
-port = 6379
-username = ""                 # Redis 6+ ACL username. Empty = default user.
-password = ""
-db = 0
-tls = false                   # true for managed Redis (Upstash, Redis Cloud)
+# Redis is optional. Leave this section commented out to use the built-in
+# store (memory + the main database). Set host to use a Redis server, e.g.
+# when running several API servers or separate worker machines.
+# [redis]
+# host = "localhost"
+# port = 6379
+# username = ""               # Redis 6+ ACL username. Empty = default user.
+# password = ""
+# db = 0
+# tls = false                 # true for managed Redis (Upstash, Redis Cloud)
 
 [jwt]
 secret = "change-me-in-production"   # 32+ chars in production
@@ -143,9 +179,13 @@ full_name = "Admin"
 
 ### `[server]`
 
+<Aside type="note" title="Upgrading">
+  The default port changed from 8080 to 4747. A config without `[server] port` now listens on 4747; set `port = 8080` to keep the old port. Docker Compose now publishes `${WHATOMATE_PORT:-4747}`: if your `config.toml` says `port = 8080` (as the old `config.example.toml` did), either change it to `4747` or set `WHATOMATE_PORT=8080` in `.env` or your shell.
+</Aside>
+
 | Field | Notes |
 |---|---|
-| `host`, `port` | Default `0.0.0.0:8080`. |
+| `host`, `port` | Default `0.0.0.0:4747`. Super admins can change the port in Settings → General; it applies after a restart. Browser addresses in `allowed_origins` that use the old port (such as `http://localhost:4747`) are moved to the new port. |
 | `read_timeout`, `write_timeout` | Seconds. |
 | `base_path` | Leave empty unless serving at a sub-path (`https://app.example.com/whatomate`) behind a proxy. |
 | `allowed_origins` | Comma-separated list, e.g. `"https://app.example.com,https://admin.example.com"`. **Empty allows all origins** — only safe in development. |
@@ -163,21 +203,44 @@ The `max_open_conns` / `max_idle_conns` / `conn_max_lifetime` knobs map directly
 `ssl_mode` accepts standard `libpq` values: `disable`, `require`, `verify-ca`, `verify-full`. Use `require` or stricter in production. MySQL maps these values to its own TLS settings and also accepts `preferred`; see [MySQL / MariaDB](#mysql--mariadb).
 
 <Aside type="note">
-  SQLite suits a single server: the API and its embedded workers share one database file. Separate `whatomate worker` processes on other machines cannot share that file — use PostgreSQL or MySQL for that setup. Redis is still required with SQLite. SQLite search matches case-insensitively only for ASCII letters, so `é` and `É` are treated as different.
+  SQLite suits a single server: the API and its embedded workers share one database file. Separate `whatomate worker` processes on other machines cannot share that file — use PostgreSQL or MySQL for that setup. SQLite search matches case-insensitively only for ASCII letters, so `é` and `É` are treated as different.
 </Aside>
 
 ### `[redis]`
 
-Required. Used for:
-- Job queue (Redis Streams) for campaign sends
-- Pub/Sub for campaign-stats fan-out between workers and the API process
-- Rate-limit counters (fixed window)
-- OAuth state during the SSO login round-trip (5-minute TTL)
-- Caches: chatbot settings, flows, keyword rules, AI contexts, WhatsApp accounts, outbound webhooks, user/role permissions, and tags
+Optional. When `host` is empty (the default), whatomate keeps caches and rate
+limits in memory and stores logins, OAuth and passkey state, WhatsApp Flow
+state, sticky call routing, chatbot delays and the campaign queue in the main
+database. No Redis server is needed.
 
-CSRF protection does **not** use Redis — it is a stateless double-submit cookie check (`whm_csrf` cookie vs. `X-CSRF-Token` header).
+The built-in store uses tables created by migrations, so start the server once
+with `-migrate` after upgrading; without them whatomate stops at startup and
+names the missing tables.
 
-Set `tls = true` and provide `username` + `password` for managed services like Upstash or AWS ElastiCache Serverless.
+Set `host` to use a Redis server instead. Do this when you run several API
+servers behind a load balancer, or `whatomate worker` on separate machines and
+want live campaign progress in the UI.
+
+Switching an existing install from Redis to the built-in store signs users out
+once. Campaign messages still queued in Redis are not moved: pause and start
+the campaign again to re-queue its pending recipients.
+
+Switching from the built-in store to Redis also signs users out once. Campaign
+messages still queued in the database are not moved, so switch when no
+campaign is running, or pause and start unfinished campaigns afterwards.
+Chatbot conversations waiting on a Delay node and pending agent-session
+timeouts will not fire.
+
+| Field | Notes |
+|---|---|
+| `host` | Redis server host. Empty uses the built-in store. |
+| `port` | Default `6379`. |
+| `username` | Redis 6+ ACL username. Empty uses the default user. |
+| `password` | Redis password. |
+| `db` | Redis database number. Default `0`. |
+| `tls` | `true` for TLS connections, e.g. managed services like Upstash, Redis Cloud or AWS ElastiCache Serverless. |
+
+CSRF protection does **not** use Redis or the database — it is a stateless double-submit cookie check (`whm_csrf` cookie vs. `X-CSRF-Token` header).
 
 ### `[jwt]`
 
@@ -195,6 +258,17 @@ Controls media storage (template samples, uploaded files, call recordings).
 
 - `type = "local"` — files under `local_path` (default `./uploads`). Suitable for single-host deployments. The directory must be writable by the process and persisted (Docker volume). Call recordings land in `local_path/recordings/{org-id}/{call-log-id}.ogg`.
 - `type = "s3"` — fill in `s3_bucket`, `s3_region`, `s3_key`, `s3_secret`. Call recordings are uploaded to the bucket.
+
+### `[backup]`
+
+Controls backups made from **Settings → Backup & Restore** (see [Backup & Restore](/whatomate/features/backup-restore/)).
+
+| Field | Notes |
+|---|---|
+| `dir` | Folder where backups are kept. Default `backups`. A relative path resolves like the other paths above. |
+| `max_upload_mb` | Largest backup file the page accepts for upload, in MB. Default `10240`. |
+
+In Docker, point `dir` at a mounted volume so backups survive the container.
 
 ### `[whatsapp]`
 
@@ -230,7 +304,7 @@ Off by default. Turn on with `enabled = true` for any internet-facing deployment
 | `api_window_seconds` | Window for `api_max_requests`. Defaults to `60` when unset or `0`. |
 | `trust_proxy` | Set to `true` only if you run behind a trusted reverse proxy (nginx, Cloudflare, ALB) — otherwise clients can spoof their IP via `X-Forwarded-For`. |
 
-Implemented as Redis fixed-window counters. The limiter **fails open**: if Redis is unreachable the error is logged and the request is allowed through.
+Implemented as fixed-window counters, kept in memory or in Redis when `[redis] host` is set. The limiter **fails open**: if Redis is unreachable the error is logged and the request is allowed through.
 
 ### `[tts]`
 
@@ -296,7 +370,7 @@ Dashboard widgets that use the **Webhooks** data source can only report on the d
 
 ### `[default_admin]`
 
-The credentials seeded the first time `whatomate server -migrate` runs against an empty user table. Subsequent runs are no-ops. Always change these on first login.
+Used only by `server -migrate` on a database with no users: it seeds this admin account. Later runs are no-ops. Always change these credentials on first login. The setup wizard does not use this section; it creates the admin account you enter.
 
 ## Environment variables
 
@@ -427,7 +501,8 @@ For development, run the backend and frontend separately:
 - Backend: `make run-migrate` (or `./whatomate server -migrate`)
 - Frontend: `cd frontend && npm run dev`
 
-The Vite dev server proxies `/api` to `:8080`.
+The Vite dev server proxies `/api` to `:4747`.
+Set `WHATOMATE_API_URL=http://localhost:8080` when your local config uses another port.
 
 ### Production
 
@@ -451,17 +526,20 @@ Releases are published from the `master` branch; see [How Releases Are Published
 
 | Command | Description |
 |---|---|
-| `server` | Start the API server (with optional embedded workers) |
+| `server` | Start the API server (with optional embedded workers). Runs the setup wizard when no config file is found. |
 | `worker` | Start background workers only (no API server) |
+| `config path` | Show which config file would be used |
 | `version` | Show version information |
 | `help` | Show help message |
+
+With no command, `whatomate` runs `server`.
 
 ### `server` options
 
 ```bash
 ./whatomate server [options]
 
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see above)
   -migrate          Run database migrations on startup
   -workers int      Number of embedded workers, 0 to disable (default 1)
 ```
@@ -471,7 +549,7 @@ Releases are published from the `master` branch; see [How Releases Are Published
 ```bash
 ./whatomate worker [options]
 
-  -config string    Path to config file (default "config.toml")
+  -config string    Path to config file (default: search, see above)
   -workers int      Number of workers to run (default 1)
 ```
 
@@ -499,19 +577,19 @@ Run workers on separate machines:
 ./whatomate worker -workers=4
 ```
 
-Both API and worker processes need access to the same database (PostgreSQL or MySQL) and Redis. SQLite does not support this setup.
+Both API and worker processes need access to the same database (PostgreSQL or MySQL). SQLite does not support this setup. Without Redis the workers still send campaigns from the database queue, but the UI shows no live campaign progress; set `[redis] host` on every process for that.
 
 ### Docker Compose
 
-The bundled [`docker-compose.yml`](https://github.com/trysoft-team/whatomate/blob/main/docker-compose.yml) at the repository root builds the image from source and runs three services — `app`, `db` (postgres:17-alpine) and `redis` (redis:7-alpine). The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
+The bundled [`docker-compose.yml`](https://github.com/trysoft-team/whatomate/blob/main/docker-compose.yml) at the repository root builds the image from source and runs two services — `app` and `db` (postgres:17-alpine). It runs no Redis; the app uses the built-in store, so comment out `[redis]` in a `config.toml` that still sets `host = "redis"`. The `app` service runs `server -migrate -config /app/config.toml`, i.e. API plus one embedded worker.
 
 ```bash
 docker compose up -d --build
 ```
 
-It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft-team/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
+It publishes port `WHATOMATE_PORT` (default `4747`), which must match `[server] port` in `config.toml`. It mounts `./config.toml` read-only into the container and `./uploads` read-write, and reads `.env` for `TZ` and the `POSTGRES_*` credentials (copy [`.env.example`](https://github.com/trysoft-team/whatomate/blob/main/.env.example) to `.env`). `TZ` matters — IVR timing nodes evaluate business hours in the container's local time. With `calling.recording_enabled = true` and local storage, call recordings are written under `uploads/recordings/`.
 
-There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` and `redis`.
+There is no separate `worker` service in the bundled file. To scale workers, either raise `-workers` on the `app` command, or add your own service running `worker -workers=N` against the same `db` (plus a Redis service for live campaign progress).
 
 ## Production Recommendations
 
@@ -519,7 +597,7 @@ There is no separate `worker` service in the bundled file. To scale workers, eit
 - Set `app.encryption_key` to a 32+ char random string. Back it up — losing it means losing all stored credentials.
 - Use strong, unique values for `jwt.secret` (32+ chars).
 - Set `database.ssl_mode = "require"` (or stricter).
-- Configure `redis.password` (and `redis.username` for ACL) and enable `redis.tls = true` for managed Redis.
+- If you use Redis, configure `redis.password` (and `redis.username` for ACL) and enable `redis.tls = true` for managed Redis.
 - Enable `rate_limit.enabled = true` and set `rate_limit.trust_proxy` to match your reverse proxy.
 - Restrict `server.allowed_origins` to your actual frontend hostnames.
 - For voice calling: set `calling.public_ip` on cloud hosts, ensure UDP `udp_port_min`–`udp_port_max` is open in your security group, configure at least one `[[calling.ice_servers]]` (TURN strongly recommended for traversal across strict NATs).

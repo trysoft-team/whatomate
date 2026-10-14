@@ -1945,7 +1945,7 @@ func (a *App) execChatWATemplate(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome,
 }
 
 // execChatDelay parks the session for N seconds without holding the
-// inbound webhook open. A Redis-backed poller resumes the graph.
+// inbound webhook open. A scheduler-backed poller resumes the graph.
 // Config: { "seconds": 30 } — clamped to 1..3600; 0 advances immediately.
 func (a *App) execChatDelay(node *ChatNode, ctx *chatNodeCtx) (nodeOutcome, error) {
 	if ctx.session.SessionData == nil {

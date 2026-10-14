@@ -302,12 +302,11 @@ func (a *App) RefreshToken(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Invalid token claims", nil, "")
 	}
 
-	// Validate JTI in Redis (single-use: delete on consumption)
+	// Validate JTI (single-use: removed on consumption)
 	if claims.ID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		deleted, err := a.Redis.Del(ctx, refreshTokenKey(claims.ID)).Result()
-		if err != nil || deleted == 0 {
+		if _, err := a.State.GetDel(ctx, refreshTokenKey(claims.ID)); err != nil {
 			// Token was already used or revoked
 			return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Refresh token has been revoked", nil, "")
 		}
@@ -404,17 +403,17 @@ func (a *App) generateRefreshToken(user *models.User) (string, error) {
 		return "", err
 	}
 
-	// Store JTI in Redis so it can be revoked
+	// Store JTI so it can be revoked
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := a.Redis.Set(ctx, refreshTokenKey(jti), user.ID.String(), expiry).Err(); err != nil {
-		a.Log.Error("Failed to store refresh token in Redis", "error", err)
+	if err := a.State.Set(ctx, refreshTokenKey(jti), []byte(user.ID.String()), expiry); err != nil {
+		a.Log.Error("Failed to store refresh token", "error", err)
 	}
 
 	return signed, nil
 }
 
-// refreshTokenKey returns the Redis key for a refresh token JTI.
+// refreshTokenKey returns the state key for a refresh token JTI.
 func refreshTokenKey(jti string) string {
 	return fmt.Sprintf("refresh:%s", jti)
 }
@@ -533,7 +532,9 @@ func (a *App) Logout(r *fastglue.Request) error {
 			if claims, ok := token.Claims.(*middleware.JWTClaims); ok && claims.ID != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				a.Redis.Del(ctx, refreshTokenKey(claims.ID))
+				if err := a.State.Del(ctx, refreshTokenKey(claims.ID)); err != nil {
+					a.Log.Warn("Failed to revoke refresh token", "error", err)
+				}
 			}
 		}
 	}

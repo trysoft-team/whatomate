@@ -172,20 +172,15 @@ homebrew_casks:
       - formula: ffmpeg
       - formula: opus-tools
     caveats: |
-      Whatomate needs Redis and a database. Start Redis:
-        brew install redis
-        brew services start redis
+      Start whatomate and finish setup in your browser:
+        whatomate
+      It opens http://localhost:4747 and asks which database to use
+      (SQLite needs nothing else installed). The config is saved to
+      #{HOMEBREW_PREFIX}/etc/whatomate/config.toml on macOS
+      (~/.config/whatomate/config.toml on Linux).
+      Until setup is finished, anyone who can reach this port can complete it.
 
-      Create a config from the example shipped with this cask:
-        cp "#{staged_path}/config.example.toml" ./config.toml
-
-      In config.toml, set [database] driver to the database you already have:
-        "sqlite"   one file, no server needed (set path)
-        "postgres" PostgreSQL
-        "mysql"    MySQL 8.0.19+ or MariaDB 10.6+
-
-      Then start the server:
-        whatomate server -config ./config.toml -migrate
+      Redis is optional: set [redis] host in config.toml to use one.
       {{- if not (isEnvSet "MACOS_SIGN_P12") }}
 
       This build is not notarized. If macOS blocks it, run:

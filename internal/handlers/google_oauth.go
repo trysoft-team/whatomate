@@ -120,9 +120,9 @@ func (a *App) StartGoogleOAuth(r *fastglue.Request) error {
 
 	nonce := generateRandomString(32)
 	stateJSON, _ := json.Marshal(googleOAuthState{OrgID: orgID, UserID: userID, Label: label, RedirectURI: redirectURI})
-	redisCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := a.Redis.Set(redisCtx, googleOAuthStatePrefix+nonce, stateJSON, googleOAuthStateTTL).Err(); err != nil {
+	if err := a.State.Set(stateCtx, googleOAuthStatePrefix+nonce, stateJSON, googleOAuthStateTTL); err != nil {
 		a.Log.Error("Failed to store Google OAuth state", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to start Google sign-in", nil, "")
 	}
@@ -136,7 +136,7 @@ func (a *App) StartGoogleOAuth(r *fastglue.Request) error {
 }
 
 // GoogleOAuthCallback finishes Connect Google account and stores the credential.
-// Public route: the one-time state stored in Redis identifies the org and user.
+// Public route: the one-time state stored in the state store identifies the org and user.
 func (a *App) GoogleOAuthCallback(r *fastglue.Request) error {
 	args := r.RequestCtx.QueryArgs()
 	code := string(args.Peek("code"))
@@ -151,7 +151,7 @@ func (a *App) GoogleOAuthCallback(r *fastglue.Request) error {
 	var state googleOAuthState
 	haveState := false
 	if nonce != "" {
-		if stateJSON, err := a.Redis.GetDel(ctx, googleOAuthStatePrefix+nonce).Bytes(); err == nil {
+		if stateJSON, err := a.State.GetDel(ctx, googleOAuthStatePrefix+nonce); err == nil {
 			haveState = json.Unmarshal(stateJSON, &state) == nil
 		}
 	}

@@ -54,7 +54,7 @@ Each **node** has the shape:
 | `voicemail` | Record caller audio; upload and store storage key in a variable |
 | `speech_input` | Record + transcribe via OpenAI Whisper into a variable |
 | `ai_voice` | One LLM turn (org chatbot AI) with TTS reply |
-| `ai_call` | Multi-turn voice AI using org AI settings + AI Contexts (`ai_context_mode` / `ai_context_ids`); optional function calling (`tools`). When `[pipecat]` is enabled, the sidecar runs **Gemini Live** (realtime bidirectional audio over Opus WebSocket). Otherwise turn-based STT/LLM/TTS. Outcomes: `completed`, `transfer`, `max_turns`, `error`. |
+| `ai_call` | Multi-turn voice AI using org AI settings + AI Contexts (`ai_context_mode` / `ai_context_ids`); optional function calling (`tools`). With a Google/Gemini key, whatomate runs **Gemini Live** (realtime bidirectional audio) itself. Other providers, or `[calling] turn_based_ai_call = true`, use turn-based STT/LLM/TTS. Outcomes: `completed`, `transfer`, `max_turns`, `error`. |
 | `execute_function` | HTTP request (whatsCRM-style execute function); outcomes `default` / `error` |
 | `http_callback` | Make an HTTP request and branch on the response |
 | `webhook` | Fire-and-forget HTTP (does not block or branch on status) |
@@ -70,21 +70,13 @@ Each **node** has the shape:
   If text-to-speech is configured on the server, any node with a non-empty `greeting_text` in its `config` has audio generated automatically on save, and the resulting filename is stored back in the node's `config.audio_file`. Without TTS, upload audio files and reference them instead.
 </Aside>
 
-### Pipecat realtime AI Call
+### Realtime AI Call (Gemini Live)
 
-Whatomate keeps WhatsApp WebRTC. Optional sidecar at `services/pipecat-bot` runs **Gemini Live** (native realtime audio in/out) over a private Opus WebSocket — the same approach as [pipecat-examples/whatsapp](https://github.com/pipecat-ai/pipecat-examples/tree/main/whatsapp). Prefers `gemini-3.1-flash-live-preview` (more stable than floating `native-audio-latest`, which can drop mid-call with WebSocket 1007 / `CONTENT_TYPE_AUDIO`). Set `PIPECAT_GEMINI_LIVE=0` on the sidecar to force the legacy turn-based STT → LLM → TTS path.
+When the organization's AI key is a Google/Gemini key, `ai_call` runs **Gemini Live** inside whatomate: caller Opus is decoded to 16 kHz PCM and streamed to Gemini, and Gemini's 24 kHz audio is encoded back to Opus on the WhatsApp call. No extra service is needed. It prefers `gemini-3.1-flash-live-preview` (more stable than floating `native-audio-latest`, which can drop mid-call with WebSocket 1007 / `CONTENT_TYPE_AUDIO`) and tries the native-audio models next. If no Live model can be reached, the node falls back to turn-based STT → LLM → TTS. Set `turn_based_ai_call = true` under `[calling]` to always use turn-based.
 
-```toml
-[pipecat]
-enabled = true
-base_url = "http://127.0.0.1:7860"
-ws_url = "ws://127.0.0.1:7860"
-auth_token = "shared-secret"
-callback_url = "http://127.0.0.1:8080"  # Whatomate URL reachable from the sidecar
-max_session_secs = 600
-```
+Tools `transfer_to_agent` / `end_call` return IVR outcome `transfer` or `completed` without tearing down the WhatsApp PeerConnection. Wire an edge `transfer` → `transfer` node so agents receive the call via the existing transfer pipeline. Barge-in clears playback when the caller speaks; `end_call` and transfers wait for the model's last words to finish playing.
 
-On `ai_call`, Go POSTs a bootstrap (system prompt + AI Contexts, Gemini voice, tools, `transfer_team_id`) then bridges caller Opus ↔ sidecar. Tools `transfer_to_agent` / `end_call` POST `/api/internal/pipecat/events`; Go returns IVR outcome `transfer` or `completed` without tearing down the WhatsApp PeerConnection. Wire an edge `transfer` → `transfer` node so agents receive the call via the existing transfer pipeline. Barge-in clears playback when the caller speaks; `end_call` drains farewell audio before notifying hangup.
+A realtime session ends after 10 minutes.
 
 **Function → node subroutines:** set a function’s handler to **`nodes`** to expose a canvas handle `fn:<function_name>`. Wire it to Send Message, Condition, HTTP, etc. When the model calls that tool, Go runs the linked subgraph as a subroutine and resumes the same AI Call with a JSON result. **Return to call** is a UI flag that the AI Call continues after the tool — it does **not** create a canvas edge. Inline handlers (`http`, `set_variable`, `transfer`, `hangup`) never use canvas edges. Legacy configs with `return_to_call: true` are still treated as `handler: nodes` at runtime.
 
@@ -105,7 +97,7 @@ If handler is `nodes` but there is no `fn:` edge, the tool returns an error to t
 
 Requires a Google/Gemini API key on Settings → AI. Gemini Live voices (e.g. Puck, Kore) are configured on the AI Call node.
 
-When the AI Call node has **Recording** and/or **Transcription** enabled, the sidecar uploads WAV tracks (`user` / `assistant` / `stereo`) and transcript lines to `/api/internal/pipecat/recordings/{call_id}` and `/api/internal/pipecat/transcript/{call_id}`. Artifacts land on `call_logs.ai_call_artifacts` and are playable/viewable in Call Logs (requires `[calling] recording_enabled` so storage is initialized).
+When the AI Call node has **Recording** and/or **Transcription** enabled, WAV tracks (`user` / `assistant` / `stereo`, 16 kHz) and transcript lines are saved for the call. Artifacts land on `call_logs.ai_call_artifacts` and are playable/viewable in Call Logs (requires `[calling] recording_enabled` so storage is initialized).
 
 ## List Call Flows
 

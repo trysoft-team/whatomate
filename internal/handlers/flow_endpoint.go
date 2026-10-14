@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +12,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,21 +48,23 @@ type flowEndpointState struct {
 	Media map[string]map[string]any `json:"media,omitempty"`
 }
 
-// flowEndpointMemState backs state when Redis is not configured (tests, dev).
-var flowEndpointMemState sync.Map
-
+// flowEndpointStateKey hashes tokens that would push the key past the
+// 255-byte kv_entries.kv_key column.
 func flowEndpointStateKey(flowID uuid.UUID, token string) string {
-	return "flow_endpoint:" + flowID.String() + ":" + token
+	prefix := "flow_endpoint:" + flowID.String() + ":"
+	if len(prefix)+len(token) > 255 {
+		sum := sha256.Sum256([]byte(token))
+		token = hex.EncodeToString(sum[:])
+	}
+	return prefix + token
 }
 
 func (a *App) loadFlowEndpointState(ctx context.Context, key string) *flowEndpointState {
 	st := &flowEndpointState{Data: map[string]any{}}
-	if a.Redis != nil {
-		if raw, err := a.Redis.Get(ctx, key).Bytes(); err == nil {
+	if a.State != nil {
+		if raw, err := a.State.Get(ctx, key); err == nil {
 			_ = json.Unmarshal(raw, st)
 		}
-	} else if v, ok := flowEndpointMemState.Load(key); ok {
-		_ = json.Unmarshal(v.([]byte), st)
 	}
 	if st.Data == nil {
 		st.Data = map[string]any{}
@@ -70,25 +73,25 @@ func (a *App) loadFlowEndpointState(ctx context.Context, key string) *flowEndpoi
 }
 
 func (a *App) saveFlowEndpointState(ctx context.Context, key string, st *flowEndpointState) {
+	if a.State == nil {
+		return
+	}
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return
 	}
-	if a.Redis != nil {
-		if err := a.Redis.Set(ctx, key, raw, flowEndpointStateTTL).Err(); err != nil {
-			a.Log.Warn("flow endpoint: failed to save state", "error", err)
-		}
-		return
+	if err := a.State.Set(ctx, key, raw, flowEndpointStateTTL); err != nil {
+		a.Log.Warn("flow endpoint: failed to save state", "error", err)
 	}
-	flowEndpointMemState.Store(key, raw)
 }
 
 func (a *App) deleteFlowEndpointState(ctx context.Context, key string) {
-	if a.Redis != nil {
-		a.Redis.Del(ctx, key)
+	if a.State == nil {
 		return
 	}
-	flowEndpointMemState.Delete(key)
+	if err := a.State.Del(ctx, key); err != nil {
+		a.Log.Warn("flow endpoint: failed to delete state", "error", err)
+	}
 }
 
 // FlowEndpoint is the public WhatsApp Flow data endpoint (POST /api/flow-endpoint/{id}).

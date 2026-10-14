@@ -14,6 +14,7 @@ require (
 	github.com/go-webauthn/webauthn v0.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/knadh/koanf/parsers/toml v0.1.0
 	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.0
@@ -22,11 +23,13 @@ require (
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/redis/go-redis/v9 v9.4.0
 	github.com/stretchr/testify v1.12.1
+	github.com/thesyncim/gopus v0.1.2
 	github.com/valyala/fasthttp v1.58.0
 	github.com/zerodha/fastglue v1.8.0
 	github.com/zerodha/logf v0.5.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.34.0
+	golang.org/x/sys v0.47.0
 	gorm.io/driver/mysql v1.5.7
 	gorm.io/driver/postgres v1.5.6
 	gorm.io/gorm v1.25.7
@@ -59,7 +62,6 @@ require (
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.9.2 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
@@ -93,7 +95,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	modernc.org/libc v1.22.5 // indirect

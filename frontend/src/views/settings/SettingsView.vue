@@ -13,10 +13,11 @@ import { PageHeader, AuditLogPanel } from '@/components/shared'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { toast } from 'vue-sonner'
 import { Settings, Bell, Loader2, Globe, Phone, Upload, Play, Pause, Music, Mail } from 'lucide-vue-next'
-import { usersService, organizationService, sharedMetaAppService, organizationsService, type MetaAppShareMode, type Organization } from '@/services/api'
+import { usersService, organizationService, sharedMetaAppService, organizationsService, serverSettingsService, type MetaAppShareMode, type Organization, type ServerSettings } from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
 import { getTimezoneGroups } from '@/lib/timezones'
 import { setOrgDisplayPrefs, type TimeFormat } from '@/lib/orgDisplay'
+import { validPort } from '@/lib/setup'
 import { Checkbox } from '@/components/ui/checkbox'
 
 const { t } = useI18n()
@@ -128,6 +129,39 @@ const smtpSettings = ref({
   has_smtp_password: false,
 })
 
+const serverSettings = ref<ServerSettings | null>(null)
+const serverPort = ref(4747)
+const isSavingServer = ref(false)
+
+async function loadServerSettings() {
+  if (!isSuperAdmin.value) return
+  try {
+    const res = await serverSettingsService.get()
+    serverSettings.value = res.data.data
+    serverPort.value = res.data.data.config_port
+  } catch (error) {
+    console.error('Failed to load server settings:', error)
+    serverSettings.value = null
+  }
+}
+
+async function saveServerPort() {
+  if (!validPort(serverPort.value)) {
+    toast.error(t('settings.server.invalidPort'))
+    return
+  }
+  isSavingServer.value = true
+  try {
+    const res = await serverSettingsService.update(serverPort.value)
+    serverSettings.value = res.data.data
+    toast.success(t('settings.server.saved'))
+  } catch (e: any) {
+    toast.error(e?.response?.data?.message ?? t('settings.server.saveFailed'))
+  } finally {
+    isSavingServer.value = false
+  }
+}
+
 function refreshActivityLog(key: typeof generalLogKey) {
   setTimeout(() => { key.value++ }, 500)
 }
@@ -190,6 +224,7 @@ onMounted(async () => {
     if (user?.is_super_admin) {
       await loadSharedMetaApp()
     }
+    await loadServerSettings()
   } catch (error) {
     console.error('Failed to load settings:', error)
   } finally {
@@ -624,6 +659,37 @@ function togglePlayAudio(type: 'hold_music' | 'ringback') {
                     </Button>
                   </div>
                 </template>
+              </div>
+            </div>
+            <div
+              v-if="isSuperAdmin && serverSettings"
+              class="mt-4 rounded-xl border border-white/[0.08] bg-white/[0.02] light:bg-white light:border-gray-200"
+              data-testid="server-settings-card"
+            >
+              <div class="p-6 pb-3">
+                <h3 class="text-lg font-semibold text-white light:text-gray-900">{{ $t('settings.server.title') }}</h3>
+                <p class="text-sm text-white/40 light:text-gray-500">{{ $t('settings.server.desc') }}</p>
+              </div>
+              <div class="p-6 pt-3 space-y-4">
+                <div class="space-y-2 max-w-xs">
+                  <Label for="server_port" class="text-white/70 light:text-gray-700">{{ $t('settings.server.port') }}</Label>
+                  <Input id="server_port" v-model.number="serverPort" type="number" min="1" max="65535" :disabled="!serverSettings.writable" />
+                </div>
+                <p class="text-xs font-mono break-all text-white/40 light:text-gray-500">{{ $t('settings.server.configFile', { path: serverSettings.config_path }) }}</p>
+                <p v-if="!serverSettings.writable" class="text-xs text-amber-500">{{ $t('settings.server.notWritable', { path: serverSettings.config_path }) }}</p>
+                <p v-else-if="serverSettings.config_port !== serverSettings.port" class="text-xs text-amber-500">{{ $t('settings.server.restartNeeded', { port: serverSettings.config_port }) }}</p>
+                <div class="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    class="bg-white/[0.04] border-white/[0.1] text-white/70 hover:bg-white/[0.08] hover:text-white light:bg-white light:border-gray-200 light:text-gray-700 light:hover:bg-gray-50"
+                    :disabled="isSavingServer || !serverSettings.writable"
+                    @click="saveServerPort"
+                  >
+                    <Loader2 v-if="isSavingServer" class="mr-2 h-4 w-4 animate-spin" />
+                    {{ $t('settings.server.save') }}
+                  </Button>
+                </div>
               </div>
             </div>
             <div v-if="orgID" class="mt-4">

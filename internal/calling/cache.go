@@ -18,13 +18,36 @@ const (
 	callingCacheTTL        = 6 * time.Hour
 )
 
-// getIVRFlowCached returns an IVR flow by ID, reading from Redis first.
+func (m *Manager) cacheGet(ctx context.Context, key string) (string, bool) {
+	if m.cache == nil {
+		return "", false
+	}
+	v, err := m.cache.Get(ctx, key)
+	if err != nil {
+		return "", false
+	}
+	return string(v), true
+}
+
+func (m *Manager) cacheSet(ctx context.Context, key, val string) {
+	if m.cache != nil {
+		_ = m.cache.Set(ctx, key, []byte(val), callingCacheTTL)
+	}
+}
+
+func (m *Manager) cacheDel(ctx context.Context, keys ...string) {
+	if m.cache != nil {
+		_ = m.cache.Del(ctx, keys...)
+	}
+}
+
+// getIVRFlowCached returns an IVR flow by ID, reading from the cache first.
 func (m *Manager) getIVRFlowCached(flowID uuid.UUID) *models.IVRFlow {
 	ctx := context.Background()
 	key := ivrFlowCachePrefix + flowID.String()
 
 	// Try cache
-	if cached, err := m.redis.Get(ctx, key).Result(); err == nil && cached != "" {
+	if cached, ok := m.cacheGet(ctx, key); ok && cached != "" {
 		var flow models.IVRFlow
 		if json.Unmarshal([]byte(cached), &flow) == nil {
 			return &flow
@@ -39,7 +62,7 @@ func (m *Manager) getIVRFlowCached(flowID uuid.UUID) *models.IVRFlow {
 
 	// Store
 	if data, err := json.Marshal(flow); err == nil {
-		m.redis.Set(ctx, key, string(data), callingCacheTTL)
+		m.cacheSet(ctx, key, string(data))
 	}
 	return &flow
 }
@@ -51,7 +74,7 @@ func (m *Manager) getIVRFlowByConfigCached(orgID uuid.UUID, accountName, configT
 	key := fmt.Sprintf("%s%s:%s:%s", ivrFlowCfgCachePrefix, orgID.String(), accountName, configType)
 
 	// Try cache
-	if cached, err := m.redis.Get(ctx, key).Result(); err == nil {
+	if cached, ok := m.cacheGet(ctx, key); ok {
 		if cached == "null" {
 			return nil // cached miss
 		}
@@ -75,12 +98,12 @@ func (m *Manager) getIVRFlowByConfigCached(orgID uuid.UUID, accountName, configT
 
 	if err := m.db.Where(query, orgID, accountName, true, true).First(&flow).Error; err != nil {
 		// Cache the miss so we don't hit DB again
-		m.redis.Set(ctx, key, "null", callingCacheTTL)
+		m.cacheSet(ctx, key, "null")
 		return nil
 	}
 
 	if data, err := json.Marshal(flow); err == nil {
-		m.redis.Set(ctx, key, string(data), callingCacheTTL)
+		m.cacheSet(ctx, key, string(data))
 	}
 	return &flow
 }
@@ -93,7 +116,7 @@ type cachedOrgSettings struct {
 	Settings            map[string]any `json:"settings,omitempty"`
 }
 
-// getOrgCallingSettingsCached loads org calling overrides with Redis caching.
+// getOrgCallingSettingsCached loads org calling overrides with caching.
 func (m *Manager) getOrgCallingSettingsCached(orgID uuid.UUID) orgCallingSettings {
 	s := orgCallingSettings{
 		TransferTimeoutSecs: m.config.TransferTimeoutSecs,
@@ -108,7 +131,7 @@ func (m *Manager) getOrgCallingSettingsCached(orgID uuid.UUID) orgCallingSetting
 	key := orgSettingsCachePrefix + orgID.String()
 
 	// Try cache
-	if cached, err := m.redis.Get(ctx, key).Result(); err == nil && cached != "" {
+	if cached, ok := m.cacheGet(ctx, key); ok && cached != "" {
 		var cos cachedOrgSettings
 		if json.Unmarshal([]byte(cached), &cos) == nil {
 			m.applyOrgOverrides(&s, cos.Settings)
@@ -120,13 +143,13 @@ func (m *Manager) getOrgCallingSettingsCached(orgID uuid.UUID) orgCallingSetting
 	var org models.Organization
 	if err := m.db.Select("id, settings").Where("id = ?", orgID).First(&org).Error; err != nil || org.Settings == nil {
 		// Cache empty settings so we don't query again
-		m.redis.Set(ctx, key, "{}", callingCacheTTL)
+		m.cacheSet(ctx, key, "{}")
 		return s
 	}
 
 	cos := cachedOrgSettings{Settings: org.Settings}
 	if data, err := json.Marshal(cos); err == nil {
-		m.redis.Set(ctx, key, string(data), callingCacheTTL)
+		m.cacheSet(ctx, key, string(data))
 	}
 
 	m.applyOrgOverrides(&s, org.Settings)
@@ -161,17 +184,16 @@ func (m *Manager) GetIVRFlowByConfig(orgID uuid.UUID, accountName, configType st
 // InvalidateIVRFlowCache removes cached IVR flow data. Called from IVR flow CRUD handlers.
 func (m *Manager) InvalidateIVRFlowCache(flowID uuid.UUID, orgID uuid.UUID, accountName string) {
 	ctx := context.Background()
-	// Invalidate by-ID cache
-	m.redis.Del(ctx, ivrFlowCachePrefix+flowID.String())
-	// Invalidate config-based caches for this org+account
-	m.redis.Del(ctx, fmt.Sprintf("%s%s:%s:call_start", ivrFlowCfgCachePrefix, orgID.String(), accountName))
-	m.redis.Del(ctx, fmt.Sprintf("%s%s:%s:outgoing_end", ivrFlowCfgCachePrefix, orgID.String(), accountName))
+	m.cacheDel(ctx,
+		ivrFlowCachePrefix+flowID.String(),
+		fmt.Sprintf("%s%s:%s:call_start", ivrFlowCfgCachePrefix, orgID.String(), accountName),
+		fmt.Sprintf("%s%s:%s:outgoing_end", ivrFlowCfgCachePrefix, orgID.String(), accountName),
+	)
 }
 
 // InvalidateOrgCallingSettingsCache removes cached org calling settings.
 func (m *Manager) InvalidateOrgCallingSettingsCache(orgID uuid.UUID) {
-	ctx := context.Background()
-	m.redis.Del(ctx, orgSettingsCachePrefix+orgID.String())
+	m.cacheDel(context.Background(), orgSettingsCachePrefix+orgID.String())
 }
 
 // maybeMaskPhone masks a phone number if masking is enabled for the org.

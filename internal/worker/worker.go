@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/contactutil"
+	"github.com/trysoft/whatomate/internal/maintenance"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/templateutil"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/zerodha/logf"
@@ -22,34 +23,27 @@ import (
 type Worker struct {
 	Config    *config.Config
 	DB        *gorm.DB
-	Redis     *redis.Client
 	Log       logf.Logger
 	WhatsApp  *whatsapp.Client
-	Consumer  *queue.RedisConsumer
+	Consumer  queue.Consumer
 	Publisher *queue.Publisher
+	// Gate pauses job handling while a restore runs.
+	Gate *maintenance.Gate
 }
 
 // Ensure Worker implements JobHandler interface
 var _ queue.JobHandler = (*Worker)(nil)
 
 // New creates a new Worker instance
-func New(cfg *config.Config, db *gorm.DB, rdb *redis.Client, log logf.Logger) (*Worker, error) {
-	consumer, err := queue.NewRedisConsumer(rdb, log)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create consumer: %w", err)
-	}
-
-	publisher := queue.NewPublisher(rdb, log)
-
+func New(cfg *config.Config, db *gorm.DB, consumer queue.Consumer, broker store.Broker, log logf.Logger) *Worker {
 	return &Worker{
 		Config:    cfg,
 		DB:        db,
-		Redis:     rdb,
 		Log:       log,
 		WhatsApp:  whatsapp.New(log),
 		Consumer:  consumer,
-		Publisher: publisher,
-	}, nil
+		Publisher: queue.NewPublisher(broker, log),
+	}
 }
 
 // Run starts the worker and processes jobs until context is cancelled
@@ -67,6 +61,10 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // HandleRecipientJob processes a single recipient message job
 func (w *Worker) HandleRecipientJob(ctx context.Context, job *queue.RecipientJob) error {
+	if err := w.Gate.Wait(ctx); err != nil {
+		return err
+	}
+
 	// Check if campaign is still active before sending
 	var campaign models.BulkMessageCampaign
 	if err := w.DB.Where("id = ?", job.CampaignID).Preload("Template").First(&campaign).Error; err != nil {

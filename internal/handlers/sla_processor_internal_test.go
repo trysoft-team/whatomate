@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trysoft/whatomate/internal/models"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/test/testutil"
 )
@@ -19,14 +20,14 @@ func newSLATestApp(t *testing.T) *App {
 	log := testutil.NopLogger()
 	hub := websocket.NewHub(log)
 	go hub.Run()
+	mem := store.NewMemory()
+	t.Cleanup(mem.Close)
 
 	app := &App{
 		DB:    db,
 		Log:   log,
 		WSHub: hub,
-	}
-	if rdb := testutil.SetupTestRedis(t); rdb != nil {
-		app.Redis = rdb
+		Cache: mem,
 	}
 	return app
 }

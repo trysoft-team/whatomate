@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha1" //nolint:gosec // SHA-1 is mandated by the coturn TURN REST API (RFC draft)
 	"encoding/base64"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,9 +29,9 @@ type Config struct {
 	Cookie       CookieConfig       `koanf:"cookie"`
 	Calling      CallingConfig      `koanf:"calling"`
 	TTS          TTSConfig          `koanf:"tts"`
-	Pipecat      PipecatConfig      `koanf:"pipecat"`
 	Google       GoogleConfig       `koanf:"google"`
 	Retention    RetentionConfig    `koanf:"retention"`
+	Backup       BackupConfig       `koanf:"backup"`
 }
 
 // RetentionConfig controls how long log-style tables are kept.
@@ -51,18 +50,6 @@ type TTSConfig struct {
 	PiperBinary   string `koanf:"piper_binary"`   // path to piper executable
 	PiperModel    string `koanf:"piper_model"`    // path to .onnx voice model
 	OpusencBinary string `koanf:"opusenc_binary"` // path to opusenc (defaults to "opusenc")
-}
-
-// PipecatConfig configures the optional realtime AI Call sidecar.
-// When Enabled, ai_call nodes use Pipecat over a private WebSocket instead of
-// the turn-based Whisper/TTS loop. Whatomate still owns WhatsApp WebRTC.
-type PipecatConfig struct {
-	Enabled        bool   `koanf:"enabled"`
-	BaseURL        string `koanf:"base_url"`         // HTTP API e.g. http://127.0.0.1:7860
-	WSURL          string `koanf:"ws_url"`           // WS base e.g. ws://127.0.0.1:7860 (defaults from BaseURL)
-	AuthToken      string `koanf:"auth_token"`       // shared secret for Go↔Pipecat
-	MaxSessionSecs int    `koanf:"max_session_secs"` // hard cap per ai_call session (default 600)
-	CallbackURL    string `koanf:"callback_url"`     // Whatomate base for Pipecat→Go events (e.g. http://127.0.0.1:8080)
 }
 
 // defaultTURNCredentialTTLSecs is the lifetime of generated coturn REST
@@ -123,6 +110,9 @@ type CallingConfig struct {
 	RelayOnly           bool              `koanf:"relay_only"`   // Force all media through TURN relay (no direct UDP)
 	ICEServers          []ICEServerConfig `koanf:"ice_servers"`
 	RecordingEnabled    bool              `koanf:"recording_enabled"` // Enable call recording (S3 or local_path)
+	// TurnBasedAICall disables built-in Gemini Live, so AI Call nodes use the
+	// turn-based speech-to-text → LLM → text-to-speech loop.
+	TurnBasedAICall bool `koanf:"turn_based_ai_call"`
 }
 
 type AppConfig struct {
@@ -151,6 +141,10 @@ const (
 
 // DefaultMaxOpenConns is the connection pool size when max_open_conns is unset.
 const DefaultMaxOpenConns = 25
+
+// DefaultPort is the port whatomate (and its setup wizard) listens on when
+// [server] port is unset.
+const DefaultPort = 4747
 
 type DatabaseConfig struct {
 	Driver          string `koanf:"driver"` // postgres (default), mysql, sqlite, sqlserver
@@ -205,10 +199,20 @@ type StorageConfig struct {
 	S3Secret  string `koanf:"s3_secret"`
 }
 
+// BackupConfig controls where backups are kept and how large an uploaded
+// backup may be.
+type BackupConfig struct {
+	Dir         string `koanf:"dir"`
+	MaxUploadMB int    `koanf:"max_upload_mb"`
+}
+
 type DefaultAdminConfig struct {
 	Email    string `koanf:"email"`
 	Password string `koanf:"password"`
 	FullName string `koanf:"full_name"`
+	// OrganizationName names the organization created with the first admin;
+	// empty means "Default Organization".
+	OrganizationName string `koanf:"organization_name"`
 }
 
 type CookieConfig struct {
@@ -276,7 +280,7 @@ func setDefaults(cfg *Config) {
 		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
+		cfg.Server.Port = DefaultPort
 	}
 	if cfg.Server.ReadTimeout == 0 {
 		cfg.Server.ReadTimeout = 30
@@ -380,22 +384,10 @@ func setDefaults(cfg *Config) {
 	if cfg.Calling.TransferTimeoutSecs == 0 {
 		cfg.Calling.TransferTimeoutSecs = 120
 	}
-	if cfg.Pipecat.MaxSessionSecs <= 0 {
-		cfg.Pipecat.MaxSessionSecs = 600
+	if cfg.Backup.Dir == "" {
+		cfg.Backup.Dir = "backups"
 	}
-	if cfg.Pipecat.BaseURL == "" {
-		cfg.Pipecat.BaseURL = "http://127.0.0.1:7860"
-	}
-	if cfg.Pipecat.WSURL == "" {
-		u := cfg.Pipecat.BaseURL
-		u = strings.Replace(u, "https://", "wss://", 1)
-		u = strings.Replace(u, "http://", "ws://", 1)
-		cfg.Pipecat.WSURL = strings.TrimRight(u, "/")
-	}
-	if cfg.Pipecat.CallbackURL == "" {
-		cfg.Pipecat.CallbackURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port)
-		if cfg.Server.Port == 0 {
-			cfg.Pipecat.CallbackURL = "http://127.0.0.1:8080"
-		}
+	if cfg.Backup.MaxUploadMB == 0 {
+		cfg.Backup.MaxUploadMB = 10240
 	}
 }

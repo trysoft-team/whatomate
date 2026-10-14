@@ -507,7 +507,7 @@ func (a *App) validateStickyAgent(agentID, orgID uuid.UUID) *uuid.UUID {
 	return &agentID
 }
 
-// stickyCallKey returns the Redis key for a pending voice_call sticky
+// stickyCallKey returns the state key for a pending voice_call sticky
 // route. Keyed by (org, caller-phone) because the incoming-call webhook
 // gives us the phone before any contact lookup, and it's the same value
 // the sender writes (contact.PhoneNumber).
@@ -521,34 +521,35 @@ func stickyCallKey(orgID uuid.UUID, phone string) string {
 // call_webhook handler reads this back to route directly to the agent
 // who sent it.
 //
-// Best-effort: a Redis failure logs and degrades to today's default
+// Best-effort: a store failure logs and degrades to today's default
 // (org-wide broadcast + IVR). Doesn't error out a successful send.
 func (a *App) MarkPendingStickyCall(ctx context.Context, orgID uuid.UUID, phone string, agentID uuid.UUID, ttlMinutes int) {
-	if a.Redis == nil || phone == "" {
+	if a.State == nil || phone == "" {
 		return
 	}
 	if ttlMinutes <= 0 {
 		ttlMinutes = 15 // Meta's default for voice_call buttons
 	}
-	if err := a.Redis.Set(ctx, stickyCallKey(orgID, phone), agentID.String(),
-		time.Duration(ttlMinutes)*time.Minute).Err(); err != nil {
-		a.Log.Warn("Failed to mark pending sticky call in Redis",
+	if err := a.State.Set(ctx, stickyCallKey(orgID, phone), []byte(agentID.String()),
+		time.Duration(ttlMinutes)*time.Minute); err != nil {
+		a.Log.Warn("Failed to mark pending sticky call",
 			"error", err, "phone", phone)
 	}
 }
 
-// findStickyAgentInRedis returns the agent id stored when the outbound
+// findStickyAgent returns the agent id stored when the outbound
 // voice_call button was sent (set by MarkPendingStickyCall), or nil if
-// no key, expired, malformed, or Redis is unhealthy. Nil is a graceful
+// no key, expired, malformed, or the store is unavailable. Nil is a graceful
 // signal — the caller falls through to today's default routing.
-func (a *App) findStickyAgentInRedis(ctx context.Context, orgID uuid.UUID, phone string) *uuid.UUID {
-	if a.Redis == nil || phone == "" {
+func (a *App) findStickyAgent(ctx context.Context, orgID uuid.UUID, phone string) *uuid.UUID {
+	if a.State == nil || phone == "" {
 		return nil
 	}
-	val, err := a.Redis.Get(ctx, stickyCallKey(orgID, phone)).Result()
+	raw, err := a.State.Get(ctx, stickyCallKey(orgID, phone))
 	if err != nil {
 		return nil
 	}
+	val := string(raw)
 	agentID, err := uuid.Parse(val)
 	if err != nil {
 		a.Log.Warn("Stored sticky-call agent id is malformed", "value", val)
@@ -563,7 +564,7 @@ func (a *App) findStickyAgentInRedis(ctx context.Context, orgID uuid.UUID, phone
 //  1. The voice_call button's `payload` echoed back by Meta. As of
 //     2026-05, Meta does not surface this on the call webhook; we keep
 //     the parsing for forward-compat in case they add it later.
-//  2. Redis: a key set by MarkPendingStickyCall when the outbound
+//  2. State store: a key set by MarkPendingStickyCall when the outbound
 //     button was sent, with a TTL matching the button's clickable
 //     lifetime.
 //
@@ -571,9 +572,9 @@ func (a *App) findStickyAgentInRedis(ctx context.Context, orgID uuid.UUID, phone
 // must still be in the same org, on-shift, and online. On any failure
 // return nil and let the caller fall back to today's org-wide broadcast.
 //
-// Why Redis instead of a DB lookup: O(1) GET vs an unindexed JSONB scan
-// of `messages`, and the TTL is enforced by Redis natively (no
-// "last 60 min" window math).
+// Why a keyed lookup instead of scanning messages: a primary-key GET vs an
+// unindexed JSONB scan of `messages`, and the TTL is enforced by the
+// store (no "last 60 min" window math).
 func (a *App) resolveStickyAgent(ctx context.Context, rawPayload string, orgID uuid.UUID, callerPhone string) *uuid.UUID {
 	// Source 1: Meta-echoed payload.
 	if suffix, ok := strings.CutPrefix(rawPayload, "agent:"); ok {
@@ -590,9 +591,9 @@ func (a *App) resolveStickyAgent(ctx context.Context, rawPayload string, orgID u
 	}
 
 	// Source 2: pending sticky-call key set when the button was sent.
-	if originator := a.findStickyAgentInRedis(ctx, orgID, callerPhone); originator != nil {
+	if originator := a.findStickyAgent(ctx, orgID, callerPhone); originator != nil {
 		if validated := a.validateStickyAgent(*originator, orgID); validated != nil {
-			a.Log.Info("Sticky-route: matched on Redis pending key",
+			a.Log.Info("Sticky-route: matched on pending key",
 				"agent_id", *originator, "phone", callerPhone)
 			return validated
 		}

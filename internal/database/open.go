@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -20,10 +21,7 @@ import (
 func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 	switch cfg.Driver {
 	case "", config.DriverPostgres:
-		return postgres.Open(fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-			cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Name, cfg.SSLMode,
-		)), nil
+		return postgres.Open(postgresDSN(cfg, cfg.Name)), nil
 	case config.DriverSQLite:
 		if err := createSQLiteFile(cfg.Path); err != nil {
 			return nil, err
@@ -52,10 +50,21 @@ func OpenDialector(cfg *config.DatabaseConfig) (gorm.Dialector, error) {
 			types:     sqliteTypes,
 		}, nil
 	case config.DriverMySQL:
-		return openMySQL(cfg)
+		return openMySQL(cfg, 0)
 	}
 	return nil, fmt.Errorf("database driver %q is not supported yet", cfg.Driver)
 }
+
+// postgresDSN builds a keyword/value DSN for dbname with every value quoted,
+// so empty values and passwords holding spaces, quotes or backslashes survive.
+func postgresDSN(cfg *config.DatabaseConfig, dbname string) string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		pgQuote(cfg.Host), cfg.Port, pgQuote(cfg.User), pgQuote(cfg.Password), pgQuote(dbname), pgQuote(cfg.SSLMode))
+}
+
+var pgQuoter = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+
+func pgQuote(s string) string { return "'" + pgQuoter.Replace(s) + "'" }
 
 // createSQLiteFile creates the database file owner-only if it does not exist yet.
 // SQLite gives the -wal and -shm files the main file's mode. An existing file

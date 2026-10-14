@@ -14,6 +14,7 @@ import (
 	"github.com/trysoft/whatomate/internal/crypto"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/queue"
+	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/internal/templateutil"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 	"github.com/trysoft/whatomate/test/testutil"
@@ -30,11 +31,7 @@ func testWorker(t *testing.T) *Worker {
 		WhatsApp: whatsapp.New(log),
 	}
 
-	// Set up Publisher if Redis is available
-	if rdb := testutil.SetupTestRedis(t); rdb != nil {
-		w.Redis = rdb
-		w.Publisher = queue.NewPublisher(rdb, log)
-	}
+	w.Publisher = queue.NewPublisher(store.NewMemoryBroker(), log)
 
 	return w
 }

@@ -60,7 +60,7 @@ type CallLog struct {
 	RecordingS3Key    string         `gorm:"size:500" json:"recording_s3_key,omitempty"`
 	RecordingDuration int            `gorm:"default:0" json:"recording_duration,omitempty"`
 	RecordingError    string         `gorm:"type:text" json:"recording_error,omitempty"`
-	// AICallArtifacts holds Pipecat/Gemini Live transcripts + per-track recording keys.
+	// AICallArtifacts holds Gemini Live transcripts + per-track recording keys.
 	// Shape: { "transcript":[{"role":"user|assistant","text":"..."}],
 	//          "recordings":{"user":"key","assistant":"key","stereo":"key"} }
 	AICallArtifacts JSONB `gorm:"type:jsonb" json:"ai_call_artifacts,omitempty"`

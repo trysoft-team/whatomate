@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
 )
 
@@ -18,6 +19,11 @@ func UseFlowMediaServerForTest(client *http.Client) (restore func()) {
 	flowMediaURLAllowed = func(string) error { return nil }
 	flowMediaClient = func() *whatsapp.Client { return &whatsapp.Client{HTTPClient: client} }
 	return func() { flowMediaURLAllowed, flowMediaClient = prevAllowed, prevClient }
+}
+
+// FlowEndpointStateKeyForTest exposes flowEndpointStateKey for unit tests.
+func FlowEndpointStateKeyForTest(flowID uuid.UUID, token string) string {
+	return flowEndpointStateKey(flowID, token)
 }
 
 // BuildRoutingModelForTest exposes buildRoutingModel for unit tests.

@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from 'axios'
+import { setupTokenRejected, storedSetupToken } from '@/lib/setup'
 
 // Get base path from server-injected config or fallback
 const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
@@ -54,6 +55,12 @@ api.interceptors.request.use(
     if (selectedOrgId) {
       config.headers['X-Organization-ID'] = selectedOrgId
     }
+    if (config.url?.startsWith('/setup/')) {
+      const setupToken = storedSetupToken()
+      if (setupToken) {
+        config.headers['X-Setup-Token'] = setupToken
+      }
+    }
     return config
   },
   (error: AxiosError) => {
@@ -102,6 +109,12 @@ api.interceptors.response.use(
 
     // Skip token refresh logic for auth endpoints
     const isAuthEndpoint = originalRequest?.url?.startsWith('/auth/')
+
+    // The setup server has no sessions: a 401 means the setup key is missing or wrong
+    if (originalRequest?.url?.startsWith('/setup/')) {
+      if (error.response?.status === 401) setupTokenRejected()
+      return Promise.reject(error)
+    }
 
     // Handle 401 errors - try to refresh token (but not for auth endpoints)
     if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
@@ -1547,6 +1560,207 @@ export const ivrFlowsService = {
   getAudioUrl: (filename: string) => `${api.defaults.baseURL}/ivr-flows/audio/${encodeURIComponent(filename)}`,
   previewGeminiVoice: (data: { text: string; voice: string }) =>
     api.post('/ivr-flows/voice-preview', data, { responseType: 'blob' }),
+}
+
+export interface SetupCandidate {
+  path: string
+  data_dir: string
+  scope: 'user' | 'system' | 'fixed'
+  writable: boolean
+}
+
+export interface SetupStatus {
+  needed: boolean
+  ready?: boolean
+  url?: string
+  version?: string
+  listen_port?: number
+  config_path?: string
+  config_path_fixed?: boolean
+  candidates?: SetupCandidate[]
+  token_required?: boolean
+}
+
+export type CheckStatus = 'pass' | 'warn' | 'fail'
+
+export interface SetupCheck {
+  id: string
+  status: CheckStatus
+  detail: string
+}
+
+export type SetupDriver = 'sqlite' | 'postgres' | 'mysql'
+
+export interface SetupDatabase {
+  driver: SetupDriver
+  path?: string
+  host?: string
+  port?: number
+  user?: string
+  password?: string
+  name?: string
+  ssl_mode?: string
+}
+
+export interface SetupDatabaseResult {
+  ok: boolean
+  database_exists: boolean
+  error?: string
+}
+
+export interface SetupCompleteRequest {
+  config_path: string
+  port: number
+  database: SetupDatabase
+  organization: string
+  admin: { full_name: string; email: string; password: string }
+}
+
+export interface SetupBackupRef {
+  name?: string
+  path?: string
+}
+
+export interface SetupBackupSummary {
+  name: string
+  size: number
+  manifest: BackupManifest
+  target_driver: string
+  key_matches: boolean
+  key_given: boolean
+}
+
+export interface SetupRestoreChoice {
+  backup: SetupBackupRef | null
+  encryptionKey: string
+}
+
+export interface SetupRestoreRequest {
+  config_path: string
+  port: number
+  database: SetupDatabase
+  backup: SetupBackupRef
+  encryption_key: string
+}
+
+export interface SetupRestoreStatus {
+  running: boolean
+  phase: string
+  table?: string
+  done: number
+  total: number
+  finished: boolean
+  failed: boolean
+  files_failed: boolean
+  error?: string
+}
+
+export const setupService = {
+  status: () => api.get<{ data: SetupStatus }>('/setup/status'),
+  checks: (params: { port: number; config_path: string }) =>
+    api.get<{ data: { checks: SetupCheck[] } }>('/setup/checks', { params, timeout: 20000 }),
+  testDatabase: (db: SetupDatabase) => api.post<{ data: SetupDatabaseResult }>('/setup/database/test', db),
+  createDatabase: (db: SetupDatabase) => api.post<{ data: SetupDatabaseResult }>('/setup/database/create', db),
+  complete: (req: SetupCompleteRequest) =>
+    api.post<{ data: { url: string } }>('/setup/complete', req, { timeout: 600000 }),
+  backups: (configPath: string) =>
+    api.get<{ data: { dir: string; backups: BackupInfo[] } }>('/setup/backups', { params: { config_path: configPath } }),
+  startUpload: (configPath: string, name: string, size: number) =>
+    api.post<{ data: { id: string; received: number; chunk_max: number } }>('/setup/backup-uploads', { config_path: configPath, name, size }),
+  putChunk: (id: string, offset: number, chunk: Blob) =>
+    api.put<{ data: { received: number } }>(`/setup/backup-uploads/${id}`, chunk, {
+      params: { offset },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      timeout: 120000,
+    }),
+  // The setup server takes only JSON POST bodies, so send an empty object.
+  finishUpload: (id: string) => api.post<{ data: BackupInfo }>(`/setup/backup-uploads/${id}/finish`, {}, { timeout: 120000 }),
+  cancelUpload: (id: string) => api.delete(`/setup/backup-uploads/${id}`),
+  inspectBackup: (req: { config_path: string; database: SetupDatabase; backup: SetupBackupRef; encryption_key: string }) =>
+    api.post<{ data: SetupBackupSummary }>('/setup/backup/inspect', req, { timeout: 60000 }),
+  restore: (req: SetupRestoreRequest) => api.post<{ data: { started: boolean } }>('/setup/restore', req, { timeout: 120000 }),
+  restoreStatus: () => api.get<{ data: SetupRestoreStatus }>('/setup/restore'),
+}
+
+export interface ServerSettings {
+  port: number
+  config_port: number
+  config_path: string
+  writable: boolean
+}
+
+export const serverSettingsService = {
+  get: () => api.get<{ data: ServerSettings }>('/admin/server-settings'),
+  update: (port: number) => api.put<{ data: ServerSettings }>('/admin/server-settings', { port }),
+}
+
+export interface BackupManifest {
+  format: number
+  app_version: string
+  kind: 'manual' | 'pre-restore' | 'cli'
+  created_at: string
+  source_driver: string
+  key_fingerprint: string
+  include_files: boolean
+  tables: { name: string; rows: number; sha256: string; columns: string[] }[]
+  files?: Record<string, { count: number; bytes: number }>
+}
+
+export interface BackupInfo {
+  name: string
+  size: number
+  manifest?: BackupManifest
+  error?: string
+}
+
+export interface BackupJob {
+  kind: '' | 'backup' | 'restore'
+  running: boolean
+  phase: string
+  table?: string
+  done: number
+  total: number
+  name?: string
+  safety_name?: string
+  error?: string
+  started_at: string
+  finished_at?: string
+}
+
+export interface BackupSummary {
+  name: string
+  size: number
+  manifest: BackupManifest
+  target_driver: string
+  key_matches: boolean
+}
+
+export interface MaintenanceStatus {
+  active: boolean
+  restore?: { running: boolean; phase: string; table?: string; done: number; total: number; finished: boolean; failed: boolean; db_replaced: boolean }
+}
+
+const backupPath = (name: string) => `/admin/backups/${encodeURIComponent(name)}`
+
+export const backupsService = {
+  list: () => api.get<{ data: { dir: string; backups: BackupInfo[]; job: BackupJob } }>('/admin/backups'),
+  create: (includeFiles: boolean) => api.post<{ data: BackupJob }>('/admin/backups', { include_files: includeFiles }),
+  job: () => api.get<{ data: BackupJob }>('/admin/backup-job'),
+  inspect: (name: string) => api.get<{ data: BackupSummary }>(`${backupPath(name)}/inspect`),
+  restore: (name: string) => api.post<{ data: BackupJob }>(`${backupPath(name)}/restore`, { confirm: 'RESTORE' }),
+  remove: (name: string) => api.delete(backupPath(name)),
+  downloadUrl: (name: string) => `${API_BASE_URL}${backupPath(name)}/download`,
+  startUpload: (name: string, size: number) =>
+    api.post<{ data: { id: string; received: number; chunk_max: number } }>('/admin/backup-uploads', { name, size }),
+  putChunk: (id: string, offset: number, chunk: Blob) =>
+    api.put<{ data: { received: number } }>(`/admin/backup-uploads/${id}`, chunk, {
+      params: { offset },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      timeout: 120000,
+    }),
+  finishUpload: (id: string) => api.post<{ data: BackupInfo }>(`/admin/backup-uploads/${id}/finish`, undefined, { timeout: 120000 }),
+  cancelUpload: (id: string) => api.delete(`/admin/backup-uploads/${id}`),
+  maintenance: () => api.get<{ data: MaintenanceStatus }>('/maintenance'),
 }
 
 export default api
