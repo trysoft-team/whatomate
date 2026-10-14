@@ -192,7 +192,7 @@ func (s *server) reusableAdmin(db *gorm.DB, target string) (uuid.UUID, error) {
 	if err := db.Model(&models.User{}).Where("id = ?", s.seeded.userID).Count(&mine).Error; err != nil {
 		return uuid.Nil, fmt.Errorf("check existing users: %w", err)
 	}
-	if mine == 0 {
+	if mine == 0 || n != 1 {
 		return uuid.Nil, errHasUsers
 	}
 	return s.seeded.userID, nil

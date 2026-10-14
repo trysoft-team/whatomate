@@ -151,6 +151,13 @@ type server struct {
 
 	uploads backup.Uploads
 
+	// restore is the background restore's progress. Guarded by stateMu.
+	restore restoreState
+	// restoreSeen is signalled when the page reads a finished restore.
+	restoreSeen chan struct{}
+	// restoreAckWait is how long a finished restore waits for the page.
+	restoreAckWait time.Duration
+
 	// beforeWrite runs just before the config file is written; tests use it.
 	beforeWrite func()
 	// migrate prepares the database; tests replace it to fail part-way.
@@ -167,6 +174,7 @@ func newServer(o Options, listenPort int) *server {
 	return &server{
 		o: o, listenPort: listenPort, frontend: fe, done: make(chan finished, 1),
 		migrate: database.RunMigrationWithProgress, urls: listenURLs,
+		restoreSeen: make(chan struct{}, 1), restoreAckWait: 5 * time.Second,
 	}
 }
 
@@ -207,6 +215,10 @@ func (s *server) handle(ctx *fasthttp.RequestCtx) {
 		s.uploadItem(ctx, strings.TrimPrefix(path, uploadsPath+"/"))
 	case path == "/api/setup/backup/inspect" && ctx.IsPost():
 		s.inspectBackup(ctx)
+	case path == "/api/setup/restore" && ctx.IsPost():
+		s.startRestore(ctx)
+	case path == "/api/setup/restore" && ctx.IsGet():
+		s.restoreStatus(ctx)
 	case strings.HasPrefix(path, "/api/") || path == "/ws":
 		writeError(ctx, fasthttp.StatusNotFound, "whatomate is not set up yet")
 	default:
@@ -373,6 +385,10 @@ func (s *server) complete(ctx *fasthttp.RequestCtx) {
 	defer s.completeMu.Unlock()
 	if s.isFinished() != nil {
 		writeError(ctx, fasthttp.StatusConflict, "setup is already complete")
+		return
+	}
+	if s.getRestore().busy() {
+		writeError(ctx, fasthttp.StatusConflict, "a restore is running")
 		return
 	}
 	var req completeRequest
