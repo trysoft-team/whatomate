@@ -3,18 +3,14 @@ package setup
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/mail"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/trysoft/whatomate/internal/config"
-	"github.com/trysoft/whatomate/internal/database"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/crypto/bcrypt"
@@ -33,10 +29,8 @@ type databaseInput struct {
 }
 
 type completeRequest struct {
-	ConfigPath   string        `json:"config_path"`
-	Port         int           `json:"port"`
-	Database     databaseInput `json:"database"`
-	Organization string        `json:"organization"`
+	targetRequest
+	Organization string `json:"organization"`
 	Admin        struct {
 		FullName string `json:"full_name"`
 		Email    string `json:"email"`
@@ -93,18 +87,8 @@ func validateDatabase(c config.DatabaseConfig) error {
 // config file last, so any failure leaves no config behind. It returns the
 // HTTP status to use with the error.
 func (s *server) finish(req completeRequest, origin string, https bool) (int, error) {
-	cand, ok := s.lookup(req.ConfigPath)
-	if !ok {
-		return fasthttp.StatusBadRequest, errors.New("unknown config location")
-	}
-	if req.Port < 1 || req.Port > 65535 {
-		return fasthttp.StatusBadRequest, errors.New("port must be between 1 and 65535")
-	}
-	if req.Port != s.listenPort && !s.o.Checker.PortFree(req.Port) {
-		return fasthttp.StatusBadRequest, fmt.Errorf("port %d is in use by another program", req.Port)
-	}
-	dbCfg := req.Database.config()
-	if err := validateDatabase(dbCfg); err != nil {
+	tg, err := s.parseTarget(req.targetRequest)
+	if err != nil {
 		return fasthttp.StatusBadRequest, err
 	}
 	org := strings.TrimSpace(req.Organization)
@@ -125,27 +109,17 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 	if len(req.Admin.Password) > 72 {
 		return fasthttp.StatusBadRequest, errors.New("password must be at most 72 bytes")
 	}
-	// A directory counts too: the config file could never be written there.
-	if _, err := os.Lstat(cand.Path); err == nil {
-		return fasthttp.StatusConflict, configExists(cand.Path)
+	if err := tg.checkFree(); err != nil {
+		return fasthttp.StatusConflict, err
 	}
 
-	if dbCfg.Driver == config.DriverSQLite {
-		if err := os.MkdirAll(filepath.Dir(dbCfg.Path), 0o750); err != nil {
-			return fasthttp.StatusInternalServerError, fmt.Errorf("create %s: %w", filepath.Dir(dbCfg.Path), err)
-		}
-	}
-	db, err := database.Open(&dbCfg, false)
+	db, closeDB, code, err := openTarget(tg.db)
 	if err != nil {
-		return fasthttp.StatusBadRequest, fmt.Errorf("connect to the database: %w", err)
+		return code, err
 	}
-	defer func() {
-		if sqlDB, err := db.DB(); err == nil {
-			_ = sqlDB.Close()
-		}
-	}()
-	target := databaseTarget(dbCfg)
-	adminID, err := s.reusableAdmin(db, target)
+	defer closeDB()
+	dbTarget := databaseTarget(tg.db)
+	adminID, err := s.reusableAdmin(db, dbTarget)
 	if errors.Is(err, errHasUsers) {
 		return fasthttp.StatusConflict, err
 	}
@@ -166,7 +140,7 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 		}
 	}
 	if adminID != uuid.Nil {
-		s.seeded = &seededAdmin{target: target, userID: adminID}
+		s.seeded = &seededAdmin{target: dbTarget, userID: adminID}
 	}
 	if migrateErr != nil {
 		return fasthttp.StatusInternalServerError, fmt.Errorf("set up the database: %w", migrateErr)
@@ -174,37 +148,7 @@ func (s *server) finish(req completeRequest, origin string, https bool) (int, er
 	if err := applyAdmin(db, adminID, admin); err != nil {
 		return fasthttp.StatusInternalServerError, err
 	}
-
-	jwtSecret, err := newSecret(48)
-	if err != nil {
-		return fasthttp.StatusInternalServerError, err
-	}
-	encKey, err := newSecret(32)
-	if err != nil {
-		return fasthttp.StatusInternalServerError, err
-	}
-	stored := dbCfg
-	if stored.Driver == config.DriverSQLite {
-		stored.Path = storedDBPath(dbCfg.Path, cand.base)
-	}
-	if err := os.MkdirAll(cand.DataDir, 0o750); err != nil {
-		return fasthttp.StatusInternalServerError, fmt.Errorf("create %s: %w", cand.DataDir, err)
-	}
-	body := Render(Values{
-		Environment: environmentFor(https), Port: req.Port, AllowedOrigins: allowedOrigins(origin, https, s.urls(req.Port)),
-		Database: stored, JWTSecret: jwtSecret, EncryptionKey: encKey,
-	}, time.Now())
-	if s.beforeWrite != nil {
-		s.beforeWrite()
-	}
-	if err := config.WriteFileExclusive(cand.Path, body, 0o600); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return fasthttp.StatusConflict, configExists(cand.Path)
-		}
-		return fasthttp.StatusInternalServerError, fmt.Errorf("write %s: %w", cand.Path, err)
-	}
-	s.o.Log.Info("Setup complete", "config", cand.Path)
-	return fasthttp.StatusOK, nil
+	return s.writeConfig(tg, origin, https, "")
 }
 
 func configExists(path string) error {

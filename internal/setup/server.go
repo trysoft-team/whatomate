@@ -363,10 +363,6 @@ func (s *server) complete(ctx *fasthttp.RequestCtx) {
 		writeError(ctx, code, err.Error())
 		return
 	}
-	f := finished{port: req.Port, url: origin}
-	s.stateMu.Lock()
-	s.finished = &f
-	s.stateMu.Unlock()
-	s.done <- f
+	s.finishSetup(finished{port: req.Port, url: origin})
 	writeData(ctx, map[string]string{"url": origin})
 }
