@@ -98,26 +98,26 @@ func (a *App) getOrgID(r *fastglue.Request) (uuid.UUID, error) {
 	overrideOrgID := string(r.RequestCtx.Request.Header.Peek("X-Organization-ID"))
 	if overrideOrgID != "" {
 		parsedOrgID, err := uuid.Parse(overrideOrgID)
-		if err == nil && parsedOrgID != defaultOrgID {
-			if a.IsSuperAdmin(userID) {
-				// Super admins can access any org
-				var count int64
-				if err := a.DB.Table("organizations").Where("id = ?", parsedOrgID).Count(&count).Error; err == nil && count > 0 {
-					return parsedOrgID, nil
-				}
-			} else {
-				// Non-super-admins can switch if they have membership
-				var count int64
-				if err := a.DB.Table("user_organizations").
-					Where("user_id = ? AND organization_id = ? AND deleted_at IS NULL", userID, parsedOrgID).
-					Count(&count).Error; err == nil && count > 0 {
-					return parsedOrgID, nil
-				}
-			}
+		if err == nil && parsedOrgID != defaultOrgID && a.canSwitchToOrg(userID, parsedOrgID) {
+			return parsedOrgID, nil
 		}
 	}
 
 	return defaultOrgID, nil
+}
+
+// canSwitchToOrg reports whether the user may act in orgID other than their
+// default: super admins may use any existing org, others need a membership.
+func (a *App) canSwitchToOrg(userID, orgID uuid.UUID) bool {
+	var count int64
+	if a.IsSuperAdmin(userID) {
+		err := a.DB.Table("organizations").Where("id = ?", orgID).Count(&count).Error
+		return err == nil && count > 0
+	}
+	err := a.DB.Table("user_organizations").
+		Where("user_id = ? AND organization_id = ? AND deleted_at IS NULL", userID, orgID).
+		Count(&count).Error
+	return err == nil && count > 0
 }
 
 // HealthCheck returns server health status

@@ -184,6 +184,54 @@ func TestApp_ServeMedia_CrossOrgIsolation(t *testing.T) {
 		"users from other orgs must not see another org's media")
 }
 
+// --- ServeMedia: <img> requests carry no X-Organization-ID header ---
+
+func TestApp_ServeMedia_MemberOfMessageOrgWithoutOrgHeader(t *testing.T) {
+	app := newTestApp(t)
+	orgA := testutil.CreateTestOrganization(t, app.DB)
+	orgB := testutil.CreateTestOrganization(t, app.DB)
+	user := testutil.CreateTestUser(t, app.DB, orgA.ID)
+	roleB := testutil.CreateTestRoleWithKeys(t, app.DB, orgB.ID, "media-member-b", []string{"contacts:read"})
+	require.NoError(t, app.DB.Create(&models.UserOrganization{
+		BaseModel:      models.BaseModel{ID: uuid.New()},
+		UserID:         user.ID,
+		OrganizationID: orgB.ID,
+		RoleID:         &roleB.ID,
+	}).Error)
+	contactB := testutil.CreateTestContact(t, app.DB, orgB.ID)
+
+	rel := withStorageDir(t, app, "images/b.jpg", []byte("orgB image"))
+	msg := makeMediaMessage(t, app, orgB.ID, contactB.ID, rel)
+
+	req := testutil.NewGETRequest(t)
+	testutil.SetAuthContext(req, orgA.ID, user.ID)
+	testutil.SetPathParam(req, "message_id", msg.ID.String())
+
+	require.NoError(t, app.ServeMedia(req))
+	require.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req),
+		"a member of the message's org can load its media while another org is the default")
+	assert.Equal(t, "orgB image", string(testutil.GetResponseBody(req)))
+}
+
+func TestApp_ServeMedia_SuperAdminWithoutOrgHeader(t *testing.T) {
+	app := newTestApp(t)
+	orgA := testutil.CreateTestOrganization(t, app.DB)
+	orgB := testutil.CreateTestOrganization(t, app.DB)
+	admin := testutil.CreateTestUser(t, app.DB, orgA.ID, testutil.WithSuperAdmin())
+	contactB := testutil.CreateTestContact(t, app.DB, orgB.ID)
+
+	rel := withStorageDir(t, app, "images/sa.jpg", []byte("super admin view"))
+	msg := makeMediaMessage(t, app, orgB.ID, contactB.ID, rel)
+
+	req := testutil.NewGETRequest(t)
+	testutil.SetAuthContext(req, orgA.ID, admin.ID)
+	testutil.SetPathParam(req, "message_id", msg.ID.String())
+
+	require.NoError(t, app.ServeMedia(req))
+	require.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+	assert.Equal(t, "super admin view", string(testutil.GetResponseBody(req)))
+}
+
 // --- ServeMedia: agent without contacts:read can read assigned contact's media ---
 
 func TestApp_ServeMedia_AgentCanReadAssignedContactMedia(t *testing.T) {

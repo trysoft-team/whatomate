@@ -187,10 +187,18 @@ func (a *App) ServeMedia(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid message ID", nil, "")
 	}
 
-	// Find the message and verify access
-	message, err := findByIDAndOrg[models.Message](a.DB, r, messageID, orgID, "Message")
-	if err != nil {
-		return nil
+	// Media loads through <img>/<audio> src, which can't send X-Organization-ID,
+	// so a user viewing another of their orgs arrives with their default org.
+	// Resolve the org from the message and check the user may act in it.
+	var message models.Message
+	if err := a.DB.Where("id = ?", messageID).First(&message).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Message not found", nil, "")
+	}
+	if message.OrganizationID != orgID {
+		if !a.canSwitchToOrg(userID, message.OrganizationID) {
+			return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Message not found", nil, "")
+		}
+		orgID = message.OrganizationID
 	}
 
 	// Users without contacts:read permission can only access media from contacts
