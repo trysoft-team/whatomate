@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SimulationMessage } from '@/types/flow-preview'
+import { formatWhatsAppText } from '@/lib/whatsappFormat'
 import { Bug, Info } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -29,9 +30,10 @@ const isDebug = computed(() => props.message.type === 'debug')
         class="bg-white dark:bg-[#202c33] rounded-lg rounded-tl-none p-3 shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] dark:shadow-[0_1px_0.5px_rgba(0,0,0,0.5)] ring-1 ring-black/5 dark:ring-white/5"
         :class="{ 'border-l-2 border-red-400': message.isValidationError }"
       >
-        <p class="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
-          {{ message.content }}
-        </p>
+        <p
+          class="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap"
+          v-html="formatWhatsAppText(message.content)"
+        />
         <p class="text-[10px] text-gray-400 text-right mt-1">{{ formattedTime }}</p>
       </div>
 

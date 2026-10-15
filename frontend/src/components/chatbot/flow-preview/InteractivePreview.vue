@@ -59,7 +59,7 @@ watch(
 // Get the last message that has buttons
 const lastButtonMessage = computed(() => {
   if (!isWaitingForInput.value || !currentStep.value) return null
-  if (currentStep.value.message_type !== 'buttons') return null
+  if (currentStep.value.message_type !== 'buttons' && currentStep.value.message_type !== 'list') return null
 
   const lastBotMessage = [...state.messages].reverse().find(m => m.type === 'bot' && m.buttons?.length)
   return lastBotMessage
@@ -216,7 +216,7 @@ function handleGoToStep(stepName: string) {
               >
                 <div class="max-w-[85%]">
                   <PreviewButtonGroup
-                    v-if="lastButtonMessage.buttons.length <= 3"
+                    v-if="!lastButtonMessage.isList && lastButtonMessage.buttons.length <= 3"
                     :buttons="lastButtonMessage.buttons"
                     :disabled="!isWaitingForInput"
                     @select="handleButtonSelect"
@@ -224,6 +224,7 @@ function handleGoToStep(stepName: string) {
                   <PreviewListPicker
                     v-else
                     :buttons="lastButtonMessage.buttons"
+                    :button-text="lastButtonMessage.listButtonText"
                     :disabled="!isWaitingForInput"
                     @select="handleButtonSelect"
                   />
@@ -235,7 +236,7 @@ function handleGoToStep(stepName: string) {
             <!-- Input Bar -->
             <PreviewInputBar
               :input-type="expectedInputType"
-              :disabled="!isWaitingForInput || expectedInputType === 'button' || expectedInputType === 'whatsapp_flow'"
+              :disabled="!isWaitingForInput || expectedInputType === 'whatsapp_flow'"
               @submit="handleTextSubmit"
             />
           </div>

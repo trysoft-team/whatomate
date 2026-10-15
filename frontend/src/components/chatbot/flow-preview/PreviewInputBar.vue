@@ -28,6 +28,8 @@ const inputPlaceholder = computed(() => {
       return 'Enter a date (YYYY-MM-DD)...'
     case 'text':
       return 'Type a message...'
+    case 'button':
+      return 'Tap an option, or type a reply...'
     default:
       return 'Type a message...'
   }
@@ -49,7 +51,7 @@ const inputTypeAttr = computed(() => {
 })
 
 const isEnabled = computed(() => {
-  return !props.disabled && props.inputType && props.inputType !== 'none' && props.inputType !== 'button'
+  return !props.disabled && props.inputType && props.inputType !== 'none'
 })
 
 // Convert input to string (handles number inputs)
