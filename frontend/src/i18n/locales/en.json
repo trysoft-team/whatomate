@@ -249,6 +249,7 @@
   "nav": {
     "dashboard": "Dashboard",
     "chat": "Chat",
+    "unreadMessages": "No unread messages | {count} unread message | {count} unread messages",
     "contacts": "Contacts",
     "analytics": "Analytics",
     "settings": "Settings",
@@ -354,6 +355,7 @@
     "reactions": "Reactions",
     "addReaction": "Add reaction",
     "filterByTags": "Filter by tags",
+    "filterByAccount": "WhatsApp account",
     "noTagsAvailable": "No tags available",
     "paused": "Paused",
     "sessionTimeout": "Session timeout",

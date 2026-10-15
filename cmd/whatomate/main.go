@@ -937,6 +937,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 
 	// Contacts
 	g.GET("/api/contacts", app.ListContacts)
+	g.GET("/api/contacts/unread-count", app.GetUnreadCount)
 	g.POST("/api/contacts", app.CreateContact)
 	g.GET("/api/contacts/{id}", app.GetContact)
 	g.PUT("/api/contacts/{id}", app.UpdateContact)

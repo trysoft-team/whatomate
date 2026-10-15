@@ -98,6 +98,10 @@ export const useContactsStore = defineStore('contacts', () => {
   const selectedTags = ref<string[]>([])
   const replyingTo = ref<Message | null>(null)
   const accountFilter = ref<string | null>(null)
+  // Narrows the contact list to one WhatsApp account; accountFilter above
+  // narrows the open conversation's messages instead.
+  const contactAccountFilter = ref<string | null>(null)
+  const unreadMessagesTotal = ref(0)
 
   // Contacts pagination
   const contactsPage = ref(1)
@@ -126,6 +130,7 @@ export const useContactsStore = defineStore('contacts', () => {
         page: 1,
         limit: contactsLimit.value,
         tags: tagsParam,
+        whatsapp_account: contactAccountFilter.value || undefined,
         search: normalizeContactSearch(searchQuery.value) || undefined,
         ...params
       })
@@ -134,6 +139,7 @@ export const useContactsStore = defineStore('contacts', () => {
       contacts.value = data.contacts || []
       contactsTotal.value = data.total ?? contacts.value.length
       contactsPage.value = 1
+      refreshUnreadCount()
     } catch (error) {
       console.error('Failed to fetch contacts:', error)
     } finally {
@@ -153,6 +159,7 @@ export const useContactsStore = defineStore('contacts', () => {
         page: nextPage,
         limit: contactsLimit.value,
         tags: tagsParam,
+        whatsapp_account: contactAccountFilter.value || undefined,
         search
       })
       const data = response.data.data || response.data
@@ -197,6 +204,8 @@ export const useContactsStore = defineStore('contacts', () => {
       const data = response.data.data || response.data
       messages.value = data.messages || []
       hasMoreMessages.value = data.has_more === true
+      // Opening a chat marks its messages read on the server.
+      refreshUnreadCount()
     } catch (error) {
       console.error('Failed to fetch messages:', error)
     } finally {
@@ -381,6 +390,25 @@ export const useContactsStore = defineStore('contacts', () => {
     accountFilter.value = account
   }
 
+  function setContactAccountFilter(account: string | null) {
+    contactAccountFilter.value = account
+    fetchContacts()
+  }
+
+  let unreadRefreshHandle: ReturnType<typeof setTimeout> | null = null
+  function refreshUnreadCount() {
+    if (unreadRefreshHandle) clearTimeout(unreadRefreshHandle)
+    unreadRefreshHandle = setTimeout(async () => {
+      unreadRefreshHandle = null
+      try {
+        const response = await contactsService.unreadCount()
+        unreadMessagesTotal.value = response.data.data?.messages ?? 0
+      } catch {
+        // Keep the last known count; the next refresh retries.
+      }
+    }, 300)
+  }
+
   function clearMessages() {
     messages.value = []
     hasMoreMessages.value = false
@@ -436,6 +464,8 @@ export const useContactsStore = defineStore('contacts', () => {
     hasMoreMessages,
     searchQuery,
     selectedTags,
+    contactAccountFilter,
+    unreadMessagesTotal,
     replyingTo,
     filteredContacts,
     sortedContacts,
@@ -456,6 +486,8 @@ export const useContactsStore = defineStore('contacts', () => {
     setCurrentContact,
     clearMessages,
     setAccountFilter,
+    setContactAccountFilter,
+    refreshUnreadCount,
     setReplyingTo,
     clearReplyingTo,
     applyBotMutedUntil,

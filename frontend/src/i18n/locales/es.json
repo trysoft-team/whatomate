@@ -301,6 +301,7 @@
     "reactions": "Reacciones",
     "addReaction": "Agregar reacción",
     "filterByTags": "Filtrar por etiquetas",
+    "filterByAccount": "Cuenta de WhatsApp",
     "noTagsAvailable": "No hay etiquetas disponibles",
     "paused": "Pausado",
     "assignedTo": "Asignado a",
