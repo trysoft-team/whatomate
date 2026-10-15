@@ -7,6 +7,7 @@ const (
 	AuditActionCreated AuditAction = "created"
 	AuditActionUpdated AuditAction = "updated"
 	AuditActionDeleted AuditAction = "deleted"
+	AuditActionViewed  AuditAction = "viewed"
 )
 
 // TeamRole represents a user's role within a specific team (not organizational role)
