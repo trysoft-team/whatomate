@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trysoft/whatomate/internal/config"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/store"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -889,4 +890,33 @@ func TestHandleIncomingReaction_StoresReaction(t *testing.T) {
 	var stored models.Message
 	require.NoError(t, app.DB.First(&stored, "id = ?", msg.ID).Error)
 	assert.Equal(t, []any{map[string]any{"emoji": "\u2764", "from_phone": contact.PhoneNumber}}, stored.Metadata["reactions"])
+}
+
+// =============================================================================
+// processIncomingMessageFull without chatbot settings
+// =============================================================================
+
+func TestProcessIncomingMessage_NoChatbotSettingsQueuesForAgents(t *testing.T) {
+	app := newProcessorTestApp(t)
+	app.Config = &config.Config{}
+	org, account := createProcessorTestOrg(t, app)
+	require.NoError(t, app.DB.Where("organization_id = ?", org.ID).Delete(&models.ChatbotSettings{}).Error)
+
+	from := "15550" + uuid.New().String()[:6]
+	msg := IncomingTextMessage{From: from, ID: "wamid.in_" + uuid.New().String()[:8], Type: "text"}
+	msg.Text = &struct {
+		Body string `json:"body"`
+	}{Body: "hello"}
+	app.processIncomingMessageFull(account.PhoneID, msg, "Test User", nil)
+
+	var contact models.Contact
+	require.NoError(t, app.DB.Where("organization_id = ? AND phone_number = ?", org.ID, from).First(&contact).Error)
+	var transfers []models.AgentTransfer
+	require.NoError(t, app.DB.Where("contact_id = ?", contact.ID).Find(&transfers).Error)
+	require.Len(t, transfers, 1, "with the chatbot never configured the message goes to the agent queue")
+	assert.Equal(t, models.TransferSourceChatbotDisabled, transfers[0].Source)
+
+	var sessions int64
+	require.NoError(t, app.DB.Model(&models.ChatbotSession{}).Where("contact_id = ?", contact.ID).Count(&sessions).Error)
+	assert.Zero(t, sessions, "no flow runs while the chatbot is off")
 }

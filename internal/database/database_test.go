@@ -199,6 +199,12 @@ func TestCreateDefaultAdmin_CreatesOrgAndUser(t *testing.T) {
 
 	// Verify the user belongs to the organization
 	assert.Equal(t, org.ID, user.OrganizationID)
+
+	// Chatbot settings exist (disabled) so incoming messages reach the agent queue
+	var settings models.ChatbotSettings
+	require.NoError(t, db.Where("organization_id = ?", org.ID).First(&settings).Error)
+	assert.False(t, settings.IsEnabled)
+	assert.Equal(t, 30, settings.SessionTimeoutMins)
 }
 
 func TestCreateDefaultAdmin_Idempotent(t *testing.T) {
