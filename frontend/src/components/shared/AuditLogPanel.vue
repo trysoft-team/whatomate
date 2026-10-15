@@ -5,7 +5,7 @@ import { formatDateTime, formatLabel } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { History, Plus, Pencil, Trash2, Loader2, ChevronDown } from 'lucide-vue-next'
+import { History, Plus, Pencil, Trash2, Eye, Loader2, ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps<{
   resourceType: string
@@ -22,6 +22,7 @@ const actionConfig: Record<string, { icon: any; color: string; label: string }> 
   created: { icon: Plus, color: 'bg-green-500', label: 'Created' },
   updated: { icon: Pencil, color: 'bg-blue-500', label: 'Updated' },
   deleted: { icon: Trash2, color: 'bg-red-500', label: 'Deleted' },
+  viewed: { icon: Eye, color: 'bg-amber-500', label: 'Viewed' },
 }
 
 function formatValue(val: any): string {
@@ -139,6 +140,12 @@ onMounted(() => loadLogs())
             <div v-else-if="log.action === 'created' && log.changes?.length > 0" class="mt-1">
               <span class="text-xs text-muted-foreground">
                 {{ log.changes.length }} field{{ log.changes.length !== 1 ? 's' : '' }} set
+              </span>
+            </div>
+
+            <div v-else-if="log.action === 'viewed' && log.changes?.length > 0" class="mt-1">
+              <span class="text-xs text-muted-foreground">
+                {{ log.changes.map(c => formatLabel(c.field)).join(', ') }}
               </span>
             </div>
           </div>

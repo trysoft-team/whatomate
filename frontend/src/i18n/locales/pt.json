@@ -1191,6 +1191,7 @@
     "created": "Criado",
     "updated": "Atualizado",
     "deleted": "Excluído",
+    "viewed": "Visualizado",
     "allActivity": "Todas as Atividades",
     "allActivityDesc": "Alterações feitas na plataforma por todos os usuários.",
     "noLogs": "Nenhum registro de auditoria encontrado.",

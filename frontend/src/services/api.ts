@@ -211,6 +211,8 @@ export const accountsService = {
     api.get<{ data: FlowEncryptionStatus }>(`/accounts/${id}/flow-encryption`),
   setupFlowEncryption: (id: string, rotate = false) =>
     api.post<{ data: FlowEncryptionStatus }>(`/accounts/${id}/flow-encryption`, { rotate }),
+  revealFlowPrivateKey: (id: string) =>
+    api.post<{ data: { private_key: string } }>(`/accounts/${id}/flow-encryption/private-key`),
 }
 
 export const contactsService = {
@@ -1115,7 +1117,7 @@ export interface AuditLogEntry {
   resource_id: string
   user_id: string
   user_name: string
-  action: 'created' | 'updated' | 'deleted'
+  action: 'created' | 'updated' | 'deleted' | 'viewed'
   changes: AuditLogChange[]
   created_at: string
 }

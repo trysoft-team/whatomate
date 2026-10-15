@@ -290,6 +290,21 @@ func CreateDefaultAdmin(db *gorm.DB, cfg *config.DefaultAdminConfig) error {
 		return fmt.Errorf("failed to create user organization entry: %w", err)
 	}
 
+	var settingsCount int64
+	if err := db.Model(&models.ChatbotSettings{}).Where("organization_id = ?", org.ID).Count(&settingsCount).Error; err != nil {
+		return fmt.Errorf("failed to check chatbot settings: %w", err)
+	}
+	if settingsCount == 0 {
+		settings := models.ChatbotSettings{
+			OrganizationID:     org.ID,
+			IsEnabled:          false,
+			SessionTimeoutMins: 30,
+		}
+		if err := db.Create(&settings).Error; err != nil {
+			return fmt.Errorf("failed to create chatbot settings: %w", err)
+		}
+	}
+
 	return nil
 }
 

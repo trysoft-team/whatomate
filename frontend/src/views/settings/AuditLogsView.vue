@@ -97,6 +97,7 @@ function actionVariant(action: string): string {
     case 'created': return 'bg-green-500/10 text-green-500 border-green-500/20'
     case 'updated': return 'bg-blue-500/10 text-blue-500 border-blue-500/20'
     case 'deleted': return 'bg-red-500/10 text-red-500 border-red-500/20'
+    case 'viewed': return 'bg-amber-500/10 text-amber-500 border-amber-500/20'
     default: return ''
   }
 }
@@ -154,6 +155,7 @@ onMounted(async () => {
                       <SelectItem value="created">{{ t('auditLogs.created') }}</SelectItem>
                       <SelectItem value="updated">{{ t('auditLogs.updated') }}</SelectItem>
                       <SelectItem value="deleted">{{ t('auditLogs.deleted') }}</SelectItem>
+                      <SelectItem value="viewed">{{ t('auditLogs.viewed') }}</SelectItem>
                     </SelectContent>
                   </Select>
                   <Select v-model="filterResourceType" @update:model-value="applyFilter">

@@ -927,6 +927,7 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.POST("/api/accounts/{id}/subscribe", app.SubscribeApp)
 	g.GET("/api/accounts/{id}/flow-encryption", app.GetFlowEncryption)
 	g.POST("/api/accounts/{id}/flow-encryption", app.SetupFlowEncryption)
+	g.POST("/api/accounts/{id}/flow-encryption/private-key", app.RevealFlowPrivateKey)
 	g.GET("/api/accounts/{id}/business_profile", app.GetBusinessProfile)
 	g.PUT("/api/accounts/{id}/business_profile", app.UpdateBusinessProfile)
 	g.GET("/api/accounts/{id}/display_name", app.GetDisplayName)

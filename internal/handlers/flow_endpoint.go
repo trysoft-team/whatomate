@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/audit"
 	"github.com/trysoft/whatomate/internal/crypto"
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
@@ -404,6 +405,39 @@ func (a *App) GetFlowEncryption(r *fastglue.Request) error {
 		return nil
 	}
 	return r.SendEnvelope(a.flowEncryptionStatus(context.Background(), account))
+}
+
+// RevealFlowPrivateKey returns the decrypted Flow endpoint private key
+// (POST /api/accounts/{id}/flow-encryption/private-key). Each reveal is audited.
+func (a *App) RevealFlowPrivateKey(r *fastglue.Request) error {
+	orgID, userID, err := a.requireAuth(r, models.ResourceAccounts, models.ActionWrite)
+	if err != nil {
+		return nil
+	}
+	id, err := parsePathUUID(r, "id", "account")
+	if err != nil {
+		return nil
+	}
+	account, err := a.resolveWhatsAppAccountByID(r, id, orgID)
+	if err != nil {
+		return nil
+	}
+	if account.FlowPrivateKey == "" {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Flow encryption is not set up for this account", nil, "")
+	}
+	privateKey, err := crypto.Decrypt(account.FlowPrivateKey, a.Config.App.EncryptionKey)
+	if err != nil {
+		a.Log.Error("Failed to decrypt flow private key", "error", err, "account", account.Name)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to decrypt private key", nil, "")
+	}
+
+	a.Log.Info("Flow private key revealed", "account", account.Name, "user_id", userID)
+	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID), "account", account.ID,
+		models.AuditActionViewed, nil, nil,
+		map[string]any{"field": "flow_private_key", "old_value": nil, "new_value": "revealed"})
+
+	r.RequestCtx.Response.Header.Set("Cache-Control", "no-store")
+	return r.SendEnvelope(map[string]string{"private_key": privateKey})
 }
 
 // SetupFlowEncryption creates (or rotates) the account key pair and uploads the

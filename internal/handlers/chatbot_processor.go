@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/websocket"
 	"github.com/trysoft/whatomate/pkg/whatsapp"
+	"gorm.io/gorm"
 )
 
 // contactBotMutedUntil reads Metadata["bot_muted_until"] (RFC3339).
@@ -325,12 +327,17 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 
 	// Check if chatbot is enabled for this account (use cache)
 	settings, err := a.getChatbotSettingsCached(account.OrganizationID, account.Name)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		a.Log.Info("Chatbot has never been configured for this organization, sending message to the agent queue; enable it on the Chatbot page to run flows", "account", account.Name, "org_id", account.OrganizationID)
+		a.createTransferToQueue(account, contact, models.TransferSourceChatbotDisabled)
+		return
+	}
 	if err != nil {
 		a.Log.Error("Failed to load chatbot settings", "error", err, "account", account.Name, "org_id", account.OrganizationID)
 		return
 	}
 	if !settings.IsEnabled {
-		a.Log.Debug("Chatbot not enabled for this account, creating transfer for agent queue", "account", account.Name, "settings_id", settings.ID)
+		a.Log.Info("Chatbot is disabled, sending message to the agent queue; enable it on the Chatbot page to run flows", "account", account.Name, "settings_id", settings.ID)
 		// Create transfer to agent queue when chatbot is disabled
 		a.createTransferToQueue(account, contact, models.TransferSourceChatbotDisabled)
 		return

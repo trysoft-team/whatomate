@@ -47,6 +47,8 @@ import {
   Check,
   X,
   KeyRound,
+  Eye,
+  EyeOff,
 } from 'lucide-vue-next'
 
 interface WhatsAppAccount {
@@ -117,6 +119,9 @@ const flowEncryption = ref<FlowEncryptionStatus | null>(null)
 const flowEncryptionLoading = ref(false)
 const flowEncryptionBusy = ref(false)
 const rotateKeyDialogOpen = ref(false)
+const revealKeyDialogOpen = ref(false)
+const flowPrivateKey = ref('')
+const revealingPrivateKey = ref(false)
 
 const flowKeyOnMeta = computed(() =>
   !!flowEncryption.value?.configured &&
@@ -325,6 +330,7 @@ async function setupFlowEncryption(rotate: boolean) {
   try {
     const response = await accountsService.setupFlowEncryption(account.value.id, rotate)
     flowEncryption.value = response.data.data
+    if (rotate) flowPrivateKey.value = ''
     toast.success(rotate
       ? t('accounts.flowKeyRotated', 'New key generated and uploaded to Meta')
       : t('accounts.flowKeyUploaded', 'Public key uploaded to Meta'))
@@ -333,6 +339,20 @@ async function setupFlowEncryption(rotate: boolean) {
     await loadFlowEncryption()
   } finally {
     flowEncryptionBusy.value = false
+  }
+}
+
+async function revealFlowPrivateKey() {
+  if (!account.value) return
+  revealKeyDialogOpen.value = false
+  revealingPrivateKey.value = true
+  try {
+    const response = await accountsService.revealFlowPrivateKey(account.value.id)
+    flowPrivateKey.value = response.data.data.private_key
+  } catch (e) {
+    toast.error(getErrorMessage(e, t('accounts.flowPrivateKeyFailed', 'Failed to load the private key')))
+  } finally {
+    revealingPrivateKey.value = false
   }
 }
 
@@ -652,6 +672,32 @@ onMounted(async () => {
           </div>
         </details>
 
+        <div v-if="canWrite && flowEncryption?.configured" class="text-xs space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-muted-foreground">{{ $t('accounts.flowPrivateKey', 'Private key') }}</span>
+            <Button
+              v-if="!flowPrivateKey"
+              variant="ghost"
+              size="sm"
+              class="h-7 text-xs"
+              :disabled="revealingPrivateKey"
+              @click="revealKeyDialogOpen = true"
+            >
+              <Loader2 v-if="revealingPrivateKey" class="h-3.5 w-3.5 animate-spin mr-1" />
+              <Eye v-else class="h-3.5 w-3.5 mr-1" />
+              {{ $t('accounts.flowPrivateKeyShow', 'Show private key') }}
+            </Button>
+            <Button v-else variant="ghost" size="sm" class="h-7 text-xs" @click="flowPrivateKey = ''">
+              <EyeOff class="h-3.5 w-3.5 mr-1" />
+              {{ $t('accounts.flowPrivateKeyHide', 'Hide') }}
+            </Button>
+          </div>
+          <div v-if="flowPrivateKey" class="flex items-start gap-2">
+            <pre class="px-2 py-1 bg-muted rounded text-[10px] font-mono flex-1 overflow-x-auto whitespace-pre">{{ flowPrivateKey }}</pre>
+            <IconButton :icon="Copy" label="Copy" @click="copyToClipboard(flowPrivateKey)" />
+          </div>
+        </div>
+
         <div v-if="canWrite" class="flex flex-wrap gap-2">
           <Button
             v-if="!flowEncryption?.configured"
@@ -752,6 +798,22 @@ onMounted(async () => {
       <AlertDialogFooter>
         <AlertDialogCancel>{{ $t('common.cancel') }}</AlertDialogCancel>
         <AlertDialogAction @click="setupFlowEncryption(true)">{{ $t('accounts.flowKeyRotate', 'Rotate key') }}</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
+
+  <!-- Reveal Flow Private Key Confirmation -->
+  <AlertDialog v-model:open="revealKeyDialogOpen">
+    <AlertDialogContent>
+      <AlertDialogHeader>
+        <AlertDialogTitle>{{ $t('accounts.flowPrivateKeyRevealTitle', 'Show the private key?') }}</AlertDialogTitle>
+        <AlertDialogDescription>
+          {{ $t('accounts.flowPrivateKeyRevealConfirm', 'Anyone with this key can decrypt Flow traffic for this number. Only copy it somewhere safe, such as your own Flow endpoint server. This is recorded in the activity log.') }}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel>{{ $t('common.cancel') }}</AlertDialogCancel>
+        <AlertDialogAction @click="revealFlowPrivateKey">{{ $t('accounts.flowPrivateKeyShow', 'Show private key') }}</AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
