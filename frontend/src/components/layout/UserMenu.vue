@@ -174,19 +174,43 @@ const handleLogout = () => {
           ]"
           aria-label="User menu"
         >
-          <Avatar class="h-7 w-7 ring-2 ring-white/[0.1] light:ring-gray-200">
-            <AvatarImage :src="undefined" />
-            <AvatarFallback class="text-xs bg-gradient-to-br from-emerald-500 to-green-600 text-white">
-              {{ getInitials(authStore.user?.full_name || 'U') }}
-            </AvatarFallback>
-          </Avatar>
-          <div v-if="!collapsed" class="flex flex-col items-start text-left">
+          <div class="relative flex-shrink-0">
+            <Avatar class="h-7 w-7 ring-2 ring-white/[0.1] light:ring-gray-200">
+              <AvatarImage :src="undefined" />
+              <AvatarFallback class="text-xs bg-gradient-to-br from-emerald-500 to-green-600 text-white">
+                {{ getInitials(authStore.user?.full_name || 'U') }}
+              </AvatarFallback>
+            </Avatar>
+            <!-- Status dot on avatar (visible when collapsed too) -->
+            <span
+              class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0a0a0b] light:border-white"
+              :class="authStore.isAvailable ? 'bg-emerald-500' : 'bg-amber-500'"
+              :title="authStore.isAvailable ? $t('userMenu.available') : $t('userMenu.away')"
+              aria-hidden="true"
+            />
+          </div>
+          <div v-if="!collapsed" class="flex flex-col items-start text-left min-w-0">
             <span class="text-[13px] font-medium truncate max-w-[140px] text-white light:text-gray-900">
               {{ authStore.user?.full_name }}
             </span>
             <span class="text-[11px] text-white/40 light:text-gray-500 truncate max-w-[140px]">
               {{ authStore.user?.email }}
             </span>
+            <div class="flex items-center gap-1 mt-0.5">
+              <Badge
+                :class="'text-[10px] px-1.5 py-0 ' + (authStore.isAvailable
+                    ? 'bg-emerald-500/20 text-emerald-400 light:bg-emerald-100 light:text-emerald-700'
+                    : 'bg-white/[0.08] text-white/50 light:bg-gray-100 light:text-gray-500')"
+              >
+                {{ authStore.isAvailable ? $t('userMenu.available') : $t('userMenu.away') }}
+              </Badge>
+              <span
+                v-if="!authStore.isAvailable && breakDuration"
+                class="text-[10px] text-white/40 light:text-gray-400"
+              >
+                {{ breakDuration }}
+              </span>
+            </div>
           </div>
         </Button>
       </PopoverTrigger>
