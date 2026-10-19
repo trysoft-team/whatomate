@@ -2577,6 +2577,7 @@
     "permissionDeclined": "Permissão negada",
     "noPermission": "Sem permissão de chamada para este contato",
     "callFailed": "Falha ao iniciar chamada",
+    "eligibilityPaymentIssue": "As chamadas do WhatsApp não estão ativas nesta conta comercial (erro Meta 131044). Adicione um método de pagamento e ative as chamadas no Meta Business Manager.",
     "permissionSent": "Solicitação de permissão para chamada enviada",
     "permissionSentDesc": "O contato precisa aceitar a permissão de chamada no WhatsApp antes de poder realizar ligações. Tente novamente depois que aceitar."
   }

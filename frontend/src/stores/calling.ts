@@ -240,15 +240,22 @@ export const useCallingStore = defineStore('calling', () => {
     }
 
     // Send offer to server, get answer
-    const response = await callTransfersService.connect(id, sdpOffer)
-    const data = response.data as any
-    const sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
-
-    // Set remote description
-    await pc.setRemoteDescription(new RTCSessionDescription({
-      type: 'answer',
-      sdp: sdpAnswer
-    }))
+    let sdpAnswer: string
+    try {
+      const response = await callTransfersService.connect(id, sdpOffer)
+      const data = response.data as any
+      sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
+      if (typeof sdpAnswer !== 'string' || !sdpAnswer.trim().startsWith('v=')) {
+        throw new Error('Server returned an invalid SDP answer')
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription({
+        type: 'answer',
+        sdp: sdpAnswer,
+      }))
+    } catch (err) {
+      cleanup()
+      throw err
+    }
 
     // Transfer is now connected — use the snapshot taken before the API call
     if (transfer) {
@@ -327,21 +334,30 @@ export const useCallingStore = defineStore('calling', () => {
       throw new Error('Failed to generate SDP offer')
     }
 
-    // Send to server
-    const response = await outgoingCallsService.initiate({
-      contact_id: contactId,
-      whatsapp_account: whatsappAccount,
-      sdp_offer: sdpOffer,
-    })
-    const data = response.data as any
-    const callLogId = data.data?.call_log_id ?? data.call_log_id
-    const sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
-
-    // Set remote description
-    await pc.setRemoteDescription(new RTCSessionDescription({
-      type: 'answer',
-      sdp: sdpAnswer,
-    }))
+    // Send to server — tear down local WebRTC if Meta/API rejects the call
+    // or returns a bad SDP (empty answer → browser "Expect line: v=").
+    let callLogId: string
+    let sdpAnswer: string
+    try {
+      const response = await outgoingCallsService.initiate({
+        contact_id: contactId,
+        whatsapp_account: whatsappAccount,
+        sdp_offer: sdpOffer,
+      })
+      const data = response.data as any
+      callLogId = data.data?.call_log_id ?? data.call_log_id
+      sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
+      if (typeof sdpAnswer !== 'string' || !sdpAnswer.trim().startsWith('v=')) {
+        throw new Error('Server returned an invalid SDP answer')
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription({
+        type: 'answer',
+        sdp: sdpAnswer,
+      }))
+    } catch (err) {
+      cleanup()
+      throw err
+    }
 
     // Update state
     outgoingCallLogId.value = callLogId

@@ -3097,6 +3097,7 @@
     "permissionDeclined": "Permission declined",
     "noPermission": "No call permission for this contact",
     "callFailed": "Failed to initiate call",
+    "eligibilityPaymentIssue": "WhatsApp calling is not enabled for this business account (Meta error 131044). Add a payment method and enable calling in Meta Business Manager, then try again.",
     "permissionSent": "Call permission request sent",
     "permissionSentDesc": "The contact needs to accept the call permission on WhatsApp before you can call them. Try again after they accept."
   },
