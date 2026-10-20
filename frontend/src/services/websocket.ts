@@ -7,6 +7,11 @@ import { contactsService } from '@/services/api'
 import { toast } from 'vue-sonner'
 import router from '@/router'
 import { i18n } from '@/i18n'
+import {
+  dismissCallAlert,
+  showIncomingCallRingingAlert,
+  showIncomingTransferAlert,
+} from '@/lib/callAlert'
 
 // Notification sound
 let notificationSound: HTMLAudioElement | null = null
@@ -540,34 +545,42 @@ class WebSocketService {
 
   private handleCallIncoming(payload: any) {
     const callingStore = useCallingStore()
+    const authStore = useAuthStore()
     callingStore.handleCallEvent('call_incoming', payload)
 
-    const contactName = payload.caller_phone || 'Unknown'
-    playNotificationSound()
-    toast.info('Incoming Call', {
-      description: `Call from ${contactName}`,
-      duration: 5000,
-      action: {
-        label: 'View',
-        onClick: () => router.push('/calling/logs')
-      }
-    })
+    // Ring only while Available and not already on a call. Answer happens
+    // later via call_transfer_waiting once IVR/sticky routing offers it.
+    if (authStore.isAvailable && !callingStore.isOnCall) {
+      showIncomingCallRingingAlert(payload)
+    }
   }
 
   private handleCallTransferWaiting(payload: any) {
     const callingStore = useCallingStore()
+    const authStore = useAuthStore()
     callingStore.handleCallEvent('call_transfer_waiting', payload)
 
-    const contactName = payload.caller_phone || 'Unknown'
-    playNotificationSound()
-    toast.info('Incoming Call Transfer', {
-      description: `Call from ${contactName} waiting for an agent`,
-      duration: 10000,
-      action: {
-        label: 'Accept',
-        onClick: () => {
-          router.push('/calling/transfers')
-        }
+    if (!authStore.isAvailable || callingStore.isOnCall) {
+      return
+    }
+
+    // Sticky/early ringing toast for the same call — replace with Answer toast.
+    if (payload.whatsapp_call_id) {
+      dismissCallAlert(payload.whatsapp_call_id)
+    }
+    if (payload.call_log_id) {
+      dismissCallAlert(payload.call_log_id)
+    }
+
+    showIncomingTransferAlert(payload, async (transferId) => {
+      try {
+        await callingStore.acceptTransfer(transferId)
+        toast.success(i18n.global.t('callTransfers.callConnected'))
+      } catch (err: any) {
+        const serverMsg = err.response?.data?.message || err.message || ''
+        toast.error(i18n.global.t('callTransfers.acceptFailed'), {
+          description: serverMsg,
+        })
       }
     })
   }

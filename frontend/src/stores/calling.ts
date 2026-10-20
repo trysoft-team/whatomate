@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { callLogsService, ivrFlowsService, callTransfersService, outgoingCallsService, type CallLog, type IVRFlow, type CallTransfer } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { i18n } from '@/i18n'
+import { dismissAllCallAlerts, dismissCallAlert } from '@/lib/callAlert'
+import { useAuthStore } from '@/stores/auth'
 
 export const useCallingStore = defineStore('calling', () => {
   // Call Logs state
@@ -470,9 +472,29 @@ export const useCallingStore = defineStore('calling', () => {
     callPermissions.set(contactId, { status: 'pending' })
   }
 
+  // Silence ringing toasts when the agent goes Away or starts another call.
+  const authStore = useAuthStore()
+  watch(
+    () => authStore.isAvailable,
+    (available) => {
+      if (!available) dismissAllCallAlerts()
+    },
+  )
+  watch(isOnCall, (onCall) => {
+    if (onCall) dismissAllCallAlerts()
+  })
+
   // WebSocket handler for call events
   function handleCallEvent(type: string, payload: any) {
     switch (type) {
+      case 'call_incoming':
+        // Toast/ringtone handled in websocket service for Available agents.
+        break
+      case 'call_answered':
+        // Consumer connected / IVR picked up — stop early ringing toast.
+        if (payload?.call_id) dismissCallAlert(payload.call_id)
+        if (payload?.call_log_id) dismissCallAlert(payload.call_log_id)
+        break
       case 'call_transfer_waiting':
         // Deduplicate: only add if this transfer ID isn't already in the list
         if (!waitingTransfers.value.some(t => t.id === payload.id)) {
@@ -482,11 +504,13 @@ export const useCallingStore = defineStore('calling', () => {
       case 'call_transfer_connected':
         // Another agent accepted this transfer — remove from our waiting list
         waitingTransfers.value = waitingTransfers.value.filter(t => t.id !== payload.id)
+        if (payload?.id) dismissCallAlert(payload.id)
         break
       case 'call_transfer_completed':
       case 'call_transfer_abandoned':
       case 'call_transfer_no_answer':
         waitingTransfers.value = waitingTransfers.value.filter(t => t.id !== payload.id)
+        if (payload?.id) dismissCallAlert(payload.id)
         if (activeTransfer.value?.id === payload.id) {
           cleanup()
         }
@@ -503,6 +527,8 @@ export const useCallingStore = defineStore('calling', () => {
         break
       case 'call_ended':
         // If the agent is on a call that just ended, clean up
+        if (payload?.call_id) dismissCallAlert(payload.call_id)
+        if (payload?.call_log_id) dismissCallAlert(payload.call_log_id)
         if (isOnCall.value) {
           cleanup()
         }
