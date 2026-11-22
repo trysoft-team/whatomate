@@ -40,7 +40,7 @@ func (a *App) GetSharedMetaApp(r *fastglue.Request) error {
 // UpdateSharedMetaApp upserts the platform shared Meta App credential pool.
 // Super admin only.
 func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
-	_, userID, err := a.requireSuperAdmin(r)
+	orgID, userID, err := a.requireSuperAdmin(r)
 	if err != nil {
 		return nil
 	}
@@ -68,6 +68,7 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 		}
 	}
 
+	previousAppID := row.AppID
 	if req.AppID != nil {
 		row.AppID = strings.TrimSpace(*req.AppID)
 	}
@@ -81,6 +82,13 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to encrypt app secret", nil, "")
 		}
 		row.AppSecretEncrypted = enc
+	} else if enc := a.orgMetaSecretForAppID(orgID, row.AppID); enc != "" {
+		// Password field is left blank to keep the saved secret. Share that
+		// actual secret with the pool when it belongs to this App ID.
+		row.AppSecretEncrypted = enc
+	} else if req.AppID != nil && previousAppID != "" && row.AppID != previousAppID {
+		// App ID changed and this org has no secret for the new app.
+		row.AppSecretEncrypted = ""
 	}
 	if req.ShareMode != nil {
 		mode := models.NormalizeMetaAppShareMode(*req.ShareMode)
@@ -95,10 +103,11 @@ func (a *App) UpdateSharedMetaApp(r *fastglue.Request) error {
 			if id == "" {
 				continue
 			}
-			if _, err := uuid.Parse(id); err != nil {
+			parsed, err := uuid.Parse(id)
+			if err != nil {
 				return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "shared_org_ids must be valid UUIDs", nil, "")
 			}
-			arr = append(arr, id)
+			arr = append(arr, parsed.String())
 		}
 		row.SharedOrgIDs = arr
 	}

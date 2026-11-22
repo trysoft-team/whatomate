@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import DetailPageLayout from '@/components/shared/DetailPageLayout.vue'
 import IVRPathTree from '@/components/calling/IVRPathTree.vue'
+import CallRecordingPlayer from '@/components/calling/CallRecordingPlayer.vue'
 import { formatDateTime, formatLabel } from '@/lib/utils'
 import {
   formatCallDuration,
@@ -39,6 +40,9 @@ const aiRecordingURLs = ref<Partial<Record<'user' | 'assistant' | 'stereo', stri
 const aiRecordingLoading = ref(false)
 
 const displayName = computed(() => log.value?.contact?.profile_name || log.value?.caller_phone || t('calling.callDetail'))
+const recordingLabel = computed(() =>
+  log.value?.recording_s3_key?.includes('/voicemail-') ? t('calling.voicemail') : t('calling.recording'),
+)
 
 const initials = computed(() => {
   const name = log.value?.contact?.profile_name
@@ -276,16 +280,16 @@ watch(callId, load)
             <div v-else class="space-y-3">
               <div v-if="aiRecordingURLs.stereo" class="rounded-lg bg-muted/40 p-3">
                 <p class="mb-2 text-xs font-medium text-muted-foreground">{{ t('calling.aiRecordingStereo') }}</p>
-                <audio :src="aiRecordingURLs.stereo" controls preload="none" class="w-full" />
+                <CallRecordingPlayer :src="aiRecordingURLs.stereo" />
               </div>
               <div v-if="aiRecordingURLs.user || aiRecordingURLs.assistant" class="grid gap-3 sm:grid-cols-2">
                 <div v-if="aiRecordingURLs.user" class="rounded-lg bg-muted/40 p-3">
                   <p class="mb-2 text-xs font-medium text-muted-foreground">{{ t('calling.aiRecordingUser') }}</p>
-                  <audio :src="aiRecordingURLs.user" controls preload="none" class="w-full" />
+                  <CallRecordingPlayer :src="aiRecordingURLs.user" />
                 </div>
                 <div v-if="aiRecordingURLs.assistant" class="rounded-lg bg-muted/40 p-3">
                   <p class="mb-2 text-xs font-medium text-muted-foreground">{{ t('calling.aiRecordingAssistant') }}</p>
-                  <audio :src="aiRecordingURLs.assistant" controls preload="none" class="w-full" />
+                  <CallRecordingPlayer :src="aiRecordingURLs.assistant" />
                 </div>
               </div>
             </div>
@@ -330,7 +334,7 @@ watch(callId, load)
         <CardHeader class="pb-3">
           <div class="flex items-center gap-2">
             <Mic class="h-4 w-4 text-muted-foreground" />
-            <CardTitle class="text-sm font-medium">{{ t('calling.recording') }}</CardTitle>
+            <CardTitle class="text-sm font-medium">{{ recordingLabel }}</CardTitle>
             <span v-if="log.recording_duration" class="ml-auto text-xs text-muted-foreground tabular-nums">
               {{ formatCallDuration(log.recording_duration) }}
             </span>
@@ -341,7 +345,7 @@ watch(callId, load)
             <Loader2 class="h-4 w-4 animate-spin" />
             {{ t('common.loading') }}
           </div>
-          <audio v-else-if="recordingURL" :src="recordingURL" controls preload="none" class="w-full" />
+          <CallRecordingPlayer v-else-if="recordingURL" :src="recordingURL" />
         </CardContent>
       </Card>
 

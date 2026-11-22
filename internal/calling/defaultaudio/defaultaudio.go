@@ -11,13 +11,14 @@ import (
 	"path/filepath"
 )
 
-// HoldMusicFile and RingbackFile are the bundled files' names.
+// HoldMusicFile, RingbackFile, and BeepFile are the bundled files' names.
 const (
 	HoldMusicFile = "hold_music.opus"
 	RingbackFile  = "ringback.opus"
+	BeepFile      = "beep.opus"
 )
 
-//go:embed hold_music.opus ringback.opus
+//go:embed hold_music.opus ringback.opus beep.opus
 var files embed.FS
 
 // Install writes the bundled files into dir, creating it if needed. Files
@@ -28,7 +29,7 @@ func Install(dir string) ([]string, error) {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
 	var written []string
-	for _, name := range []string{HoldMusicFile, RingbackFile} {
+	for _, name := range []string{HoldMusicFile, RingbackFile, BeepFile} {
 		data, err := files.ReadFile(name)
 		if err != nil {
 			return written, err

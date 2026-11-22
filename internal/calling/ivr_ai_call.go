@@ -103,7 +103,7 @@ func (m *Manager) executeAICallTurnBased(session *CallSession, node *IVRNode, ct
 		}
 
 		// Listen
-		path, terminated, err := m.recordCallerAudio(session, player, time.Duration(listenSecs)*time.Second, exitDigit, false)
+		path, terminated, _, err := m.recordCallerAudio(session, player, time.Duration(listenSecs)*time.Second, exitDigit, false)
 		if err != nil {
 			m.log.Warn("IVR ai_call record failed", "error", err, "call_id", session.ID)
 			return "error"

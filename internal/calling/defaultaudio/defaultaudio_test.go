@@ -13,7 +13,7 @@ func TestInstall_WritesBundledFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "audio")
 	written, err := Install(dir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{HoldMusicFile, RingbackFile}, written)
+	assert.Equal(t, []string{HoldMusicFile, RingbackFile, BeepFile}, written)
 	for _, name := range written {
 		want, err := files.ReadFile(name)
 		require.NoError(t, err)
@@ -31,7 +31,7 @@ func TestInstall_KeepsExistingFiles(t *testing.T) {
 
 	written, err := Install(dir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{RingbackFile}, written)
+	assert.Equal(t, []string{RingbackFile, BeepFile}, written)
 	got, err := os.ReadFile(custom)
 	require.NoError(t, err)
 	assert.Equal(t, "my hold music", string(got))

@@ -187,7 +187,7 @@ curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts
 The script:
 
 1. Downloads the latest release for the server's CPU (`amd64`, `arm64` or `armv7`), checks it against `checksums.txt` and installs it to `/usr/local/bin/whatomate`.
-2. Offers to install `ffmpeg`, `opus-tools` and `espeak-ng` for calling and spoken IVR greetings (apt, dnf, yum, zypper, pacman or apk).
+2. Installs Piper TTS and the `en_US-lessac-medium` voice under `/opt/piper` (spoken IVR greetings), then offers to install `ffmpeg`, `opus-tools` and `espeak-ng` (apt, dnf, yum, zypper, pacman or apk).
 3. Creates a `whatomate` system user and the folders `/etc/whatomate` (config), `/var/lib/whatomate` (data) and `/var/whatomate` (uploads and call audio).
 4. When the server's public IP isn't on any of its network interfaces (AWS, GCP, Azure), offers to set it for call media (`WHATOMATE_CALLING__PUBLIC_IP` in the service).
 5. Writes a systemd service (`whatomate.service`) that runs as the `whatomate` user and starts at boot.
@@ -205,7 +205,7 @@ Run it again to upgrade: it replaces the binary and restarts the service, and ke
 | `--email ADDRESS` | Email for the Let's Encrypt certificate |
 | `--no-tls` | Don't request a certificate |
 | `--no-firewall` | Don't change firewall rules |
-| `--no-voice` | Don't install ffmpeg, opus-tools and espeak-ng |
+| `--no-voice` | Don't install Piper TTS, ffmpeg, opus-tools or espeak-ng |
 | `-y`, `--yes` | Use the defaults instead of asking |
 
 Pass options after `bash -s --`, for example:
@@ -231,10 +231,19 @@ Each [GitHub release](https://github.com/trysoft-team/whatomate/releases) includ
 | Windows | `amd64`, `arm64` |
 | FreeBSD | `amd64`, `arm64` |
 
-Extract the archive and run `whatomate`; the [setup wizard](#first-run) creates the config. It needs a database: SQLite works out of the box, or point it at a PostgreSQL or MySQL/MariaDB server. Voice features also use `ffmpeg`, and the IVR text-to-speech uses Piper, `espeak-ng` and `opus-tools`. The Docker image includes all of these; on a bare server, install them yourself.
+Extract the archive and run `whatomate`; the [setup wizard](#first-run) creates the config. It needs a database: SQLite works out of the box, or point it at a PostgreSQL or MySQL/MariaDB server. Voice features use `ffmpeg`, and spoken IVR greetings use Piper, `espeak-ng` and `opus-tools`. The Docker image and the Linux install script include Piper. On a Mac or Windows PC, install them as below.
 
 <Aside type="note">
-  **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the dependencies with Homebrew: `brew install ffmpeg espeak-ng opus-tools`, plus `postgresql@16` or `mysql` unless you use SQLite or an existing server.
+  **macOS:** release binaries are signed and notarized when the project's Apple credentials are configured. If macOS says the developer can't be verified, the binary was built without them; allow it under System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine ./whatomate`. Install the voice dependencies with Homebrew, then Piper (there is no Homebrew formula for Piper):
+
+  ```bash
+  brew install ffmpeg espeak-ng opus-tools
+  curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.sh | bash
+  ```
+
+  Piper and the `en_US-lessac-medium` voice land in `~/.local/share/piper`. This Piper build is Intel; Apple Silicon Macs run it with Rosetta 2. Also install `postgresql@16` or `mysql` unless you use SQLite or an existing server.
+
+  **Windows:** in PowerShell, `irm https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.ps1 | iex`. That installs ffmpeg with winget and Piper under `%LOCALAPPDATA%\whatomate\piper`. Install [opus-tools](https://opus-codec.org/downloads/) if `opusenc` is not on `PATH`.
 </Aside>
 
 ### Homebrew
@@ -245,7 +254,7 @@ On macOS and Linux, install the release binary from the project's tap:
 brew install trysoft-team/tap/whatomate
 ```
 
-This also installs `ffmpeg` and `opus-tools`. The database is not installed automatically, so you can point Whatomate at a server you already run, or use SQLite, which needs no server. Redis is optional.
+This also installs `ffmpeg`, `espeak-ng` and `opus-tools`. Piper is installed with `scripts/install-piper.sh` (see the macOS note above). The database is not installed automatically, so you can point Whatomate at a server you already run, or use SQLite, which needs no server. Redis is optional.
 
 Then run `whatomate` and finish the [setup wizard](#first-run). On macOS it saves the config to `$(brew --prefix)/etc/whatomate/config.toml`. Upgrade with `brew upgrade whatomate`.
 

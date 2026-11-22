@@ -50,7 +50,7 @@ type App struct {
 	CallManager *calling.Manager
 	// TTS generates audio from text for IVR greetings (nil when not configured)
 	TTS tts.Synthesizer
-	// S3Client for serving call recording presigned URLs (nil when not configured)
+	// S3Client reads call recordings when object storage is configured (nil otherwise).
 	S3Client *storage.S3Client
 	// Maintenance is on while a restore runs; background work skips its ticks.
 	Maintenance *maintenance.Gate

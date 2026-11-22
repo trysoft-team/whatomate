@@ -361,12 +361,58 @@ func (a *App) IsCallingEnabledForOrg(orgID any) bool {
 	if err := a.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
 		return false
 	}
-	if org.Settings != nil {
-		if v, ok := org.Settings["calling_enabled"].(bool); ok {
-			return v
-		}
+	enabled, explicit := callingToggle(org.Settings)
+	return explicit && enabled
+}
+
+// incomingCallAllowed reports whether an incoming WhatsApp call should be
+// answered. An explicit org switch wins. When the switch has never been set,
+// an active call-start flow is enough: that flow is what the caller hears.
+func (a *App) incomingCallAllowed(orgID any, hasCallStartFlow bool) bool {
+	if a.CallManager == nil {
+		return false
 	}
-	return false
+	var org models.Organization
+	if err := a.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
+		return false
+	}
+	return incomingCallAllowed(org.Settings, hasCallStartFlow)
+}
+
+// callingToggle reads calling_enabled. explicit is false when the key was never saved.
+func callingToggle(settings models.JSONB) (enabled bool, explicit bool) {
+	if settings == nil {
+		return false, false
+	}
+	v, ok := settings["calling_enabled"]
+	if !ok || v == nil {
+		return false, false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case float64:
+		return t != 0, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true", "1":
+			return true, true
+		case "false", "0":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
+	}
+}
+
+func incomingCallAllowed(settings models.JSONB, hasCallStartFlow bool) bool {
+	enabled, explicit := callingToggle(settings)
+	if explicit {
+		return enabled
+	}
+	return hasCallStartFlow
 }
 
 // requireCallingEnabled checks if calling is enabled for the org and returns an error

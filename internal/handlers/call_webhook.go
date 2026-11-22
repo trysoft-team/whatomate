@@ -147,23 +147,23 @@ func (a *App) processCallWebhook(phoneNumberID string, call any) {
 
 	case "connect":
 		// "connect" carries the SDP offer from the consumer in session.sdp.
-		// Extract SDP and start WebRTC negotiation.
+		// Meta sometimes omits sdp_type; a non-empty SDP on connect is the offer.
 		sdpOffer := ""
-		if ce.Session != nil && ce.Session.SDPType == "offer" {
-			sdpOffer = ce.Session.SDP
+		sdpType := ""
+		if ce.Session != nil {
+			sdpType = strings.ToLower(strings.TrimSpace(ce.Session.SDPType))
+			if ce.Session.SDP != "" && (sdpType == "" || sdpType == "offer") {
+				sdpOffer = ce.Session.SDP
+			}
 		}
 
-		// Update call status to answered
-		a.DB.Model(callLog).Updates(map[string]any{
-			"status":      models.CallStatusAnswered,
-			"answered_at": now,
-		})
+		allowed := a.incomingCallAllowed(account.OrganizationID, callLog.IVRFlowID != nil)
+		if allowed && sdpOffer != "" {
+			a.DB.Model(callLog).Updates(map[string]any{
+				"status":      models.CallStatusAnswered,
+				"answered_at": now,
+			})
 
-		// Delegate to CallManager with the SDP offer. Resolve the sticky
-		// agent again here — Meta echoes biz_opaque_callback_data on every
-		// call event, so we don't need to plumb state across the ringing →
-		// connect gap.
-		if a.IsCallingEnabledForOrg(account.OrganizationID) && sdpOffer != "" {
 			session := a.CallManager.GetSession(ce.ID)
 			if session == nil {
 				stickyAgentID := a.resolveStickyAgent(context.Background(), ce.BizOpaqueCallbackData, account.OrganizationID, contact.PhoneNumber)
@@ -171,13 +171,22 @@ func (a *App) processCallWebhook(phoneNumberID string, call any) {
 			} else {
 				a.CallManager.HandleCallEvent(ce.ID, ce.Event)
 			}
+
+			a.broadcastCallEvent(account.OrganizationID, websocket.TypeCallAnswered, map[string]any{
+				"call_id":     ce.ID,
+				"contact_id":  contact.ID.String(),
+				"answered_at": now.Format(time.RFC3339),
+			})
+			break
 		}
 
-		a.broadcastCallEvent(account.OrganizationID, websocket.TypeCallAnswered, map[string]any{
-			"call_id":     ce.ID,
-			"contact_id":  contact.ID.String(),
-			"answered_at": now.Format(time.RFC3339),
-		})
+		a.Log.Warn("Incoming call was not answered",
+			"call_id", ce.ID,
+			"calling_allowed", allowed,
+			"has_call_start_flow", callLog.IVRFlowID != nil,
+			"has_sdp_offer", sdpOffer != "",
+			"sdp_type", sdpType,
+		)
 
 	case "in_call":
 		// Update call status to answered

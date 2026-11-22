@@ -127,8 +127,8 @@ api_max_requests = 200        # Cap across all /api routes, keyed by user (IP wh
 api_window_seconds = 60
 
 [tts]
-# piper_binary = "/usr/local/bin/piper"
-# piper_model = "/opt/piper/models/en_US-lessac-high.onnx"
+# piper_binary = "/opt/piper/piper"
+# piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
 # opusenc_binary = "opusenc"
 
 [calling]
@@ -318,8 +318,8 @@ Implemented as fixed-window counters, kept in memory or in Redis when `[redis] h
 Optional, only used when an IVR step needs to synthesize speech (welcome prompt, menu read-out). All three keys are paths to external binaries / models:
 
 - `piper_binary` — [piper](https://github.com/rhasspy/piper) standalone TTS executable.
-- `piper_model` — `.onnx` voice model from [piper-voices](https://huggingface.co/rhasspy/piper-voices). Pair it with the matching `.onnx.json` next to the model. For US English IVR, `en_US-lessac-high` is the highest-quality single speaker; the Docker image ships `en_US-lessac-medium`.
-- `opusenc_binary` — `opusenc` from `opus-tools` (`apt install opus-tools` / `dnf install opus-tools`). Defaults to looking up `opusenc` in `PATH`.
+- `piper_model` — `.onnx` voice model from [piper-voices](https://huggingface.co/rhasspy/piper-voices). Pair it with the matching `.onnx.json` next to the model. Installers and the Docker image ship `en_US-lessac-medium`. `en_US-lessac-high` is the larger US English voice.
+- `opusenc_binary` — `opusenc` from `opus-tools` (`apt install opus-tools`, `dnf install opus-tools`, or `brew install opus-tools`). Defaults to looking up `opusenc` in `PATH`. Linux `scripts/install.sh` installs Piper by default. macOS: `brew install ffmpeg espeak-ng opus-tools` then `scripts/install-piper.sh`. Windows: `scripts/install-piper.ps1`.
 
 The Docker image sets `LD_LIBRARY_PATH=/usr/local/lib` so Piper uses its bundled `libespeak-ng` 1.52 instead of Debian's 1.51. See [Calling → Text-to-Speech](/whatomate/features/calling/#text-to-speech-ivr-greetings).
 

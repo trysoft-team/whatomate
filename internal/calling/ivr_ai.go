@@ -37,7 +37,7 @@ func (m *Manager) executeAIVoice(session *CallSession, node *IVRNode, ctx *IVRCo
 		if prompt != "" && m.config.AudioDir != "" && player != nil {
 			m.playInterruptible(session, player, filepath.Join(m.config.AudioDir, prompt))
 		}
-		path, _, err := m.recordCallerAudio(session, player, time.Duration(listenSecs)*time.Second, "#", false)
+		path, _, _, err := m.recordCallerAudio(session, player, time.Duration(listenSecs)*time.Second, "#", false)
 		if err == nil {
 			defer func() { _ = os.Remove(path) }()
 			if key := m.resolveOpenAIKey(session.OrganizationID); key != "" {

@@ -37,7 +37,7 @@ Usage: install.sh [options]
   --email ADDRESS   Email for the Let's Encrypt certificate
   --no-tls          Don't request a Let's Encrypt certificate
   --no-firewall     Don't change firewall rules
-  --no-voice        Don't install ffmpeg, opus-tools and espeak-ng
+  --no-voice        Don't install Piper TTS, ffmpeg, opus-tools or espeak-ng
   -y, --yes         Use the defaults instead of asking
   -h, --help        Show this help
 EOF
@@ -178,8 +178,29 @@ ok "Installed $("$BIN" version 2>/dev/null | head -1 || echo "$VERSION") to $BIN
 
 # --- 2. voice tools ----------------------------------------------------------
 
+# Piper TTS (binary, libraries and the default English voice). Same layout as
+# the Docker image: everything lives under /opt/piper so the binary finds its
+# libraries beside itself.
+load_install_piper() {
+	local sibling
+	sibling="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-piper.sh"
+	if [ -f "$sibling" ]; then
+		# shellcheck disable=SC1090
+		. "$sibling"
+		return 0
+	fi
+	curl -fsSL -o "$tmp/install-piper.sh" \
+		"https://raw.githubusercontent.com/${REPO}/main/scripts/install-piper.sh" ||
+		die "could not download scripts/install-piper.sh"
+	# shellcheck disable=SC1091
+	. "$tmp/install-piper.sh"
+}
+
 if [ "$DO_VOICE" = 1 ]; then
 	step "Voice tools (WhatsApp calling and spoken IVR greetings)"
+	info "Installing Piper TTS (required for spoken greetings)"
+	load_install_piper
+	PIPER_PREFIX=/opt/piper install_piper
 	missing=()
 	for t in ffmpeg opusenc espeak-ng; do have "$t" || missing+=("$t"); done
 	if [ ${#missing[@]} = 0 ]; then
@@ -589,12 +610,35 @@ if [ "$SYSTEMD" = 1 ]; then
 	fi
 fi
 
+if [ "$DO_VOICE" = 1 ]; then
+	tts_cfg=""
+	for f in "$CONFIG_DIR/config.toml" "$DATA_DIR/.config/whatomate/config.toml"; do
+		[ -f "$f" ] && tts_cfg=$f && break
+	done
+	if [ -n "$tts_cfg" ] && ! grep -q '^piper_binary' "$tts_cfg" && ! grep -q '^\[tts\]' "$tts_cfg"; then
+		cat >>"$tts_cfg" <<'EOF'
+
+[tts]
+piper_binary = "/opt/piper/piper"
+piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
+opusenc_binary = "opusenc"
+EOF
+		ok "Added Piper TTS settings to $tts_cfg"
+	elif [ -n "$tts_cfg" ] && ! grep -q '^piper_binary' "$tts_cfg"; then
+		warn "$tts_cfg has a [tts] section. Set piper_binary and piper_model to /opt/piper."
+	fi
+fi
+
 echo
 if [ "$upgrade" = 1 ]; then
 	ok "whatomate $VERSION is installed (upgrade)."
 	[ "$was_running" = 1 ] || [ "$SYSTEMD" = 0 ] || info "It is now running as a service."
 else
 	ok "whatomate $VERSION is installed."
+fi
+if [ "$DO_VOICE" = 1 ]; then
+	info "Piper:  /opt/piper/piper"
+	info "Voice:  /opt/piper/models/en_US-lessac-medium.onnx"
 fi
 info "Logs:    journalctl -u whatomate -f"
 info "Config:  whatomate config path   (as $SVC_USER: sudo -u $SVC_USER whatomate config path)"

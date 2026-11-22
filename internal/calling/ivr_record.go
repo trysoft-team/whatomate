@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/trysoft/whatomate/internal/calling/defaultaudio"
 	"github.com/trysoft/whatomate/internal/crypto"
 	"github.com/trysoft/whatomate/internal/models"
 )
@@ -21,15 +22,14 @@ import (
 // recordCallerAudio captures Opus from the caller track into an OGG file until
 // maxDuration elapses or a terminator DTMF digit arrives.
 // terminated is true only when the caller pressed the terminator digit.
-func (m *Manager) recordCallerAudio(session *CallSession, player *AudioPlayer, maxDuration time.Duration, terminator string, beep bool) (path string, terminated bool, err error) {
+func (m *Manager) recordCallerAudio(session *CallSession, player *AudioPlayer, maxDuration time.Duration, terminator string, beep bool) (path string, terminated bool, packets int, err error) {
 	rec, err := NewCallRecorder()
 	if err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 
 	if beep && player != nil {
-		// Short silence acts as a "beep" pause when no beep file is configured.
-		player.PlaySilence(400 * time.Millisecond)
+		m.playRecordBeep(player)
 	}
 
 	session.mu.Lock()
@@ -71,13 +71,109 @@ loop:
 	path, count, stopErr := rec.Stop()
 	if stopErr != nil {
 		_ = os.Remove(path)
-		return "", terminated, stopErr
+		return "", terminated, 0, stopErr
 	}
 	if count == 0 {
 		_ = os.Remove(path)
-		return "", terminated, fmt.Errorf("no audio captured")
+		return "", terminated, 0, fmt.Errorf("no audio captured")
 	}
-	return path, terminated, nil
+	return path, terminated, count, nil
+}
+
+// recordedSeconds converts 20ms Opus packets into a duration the call log can store.
+func recordedSeconds(packets int) int {
+	if packets <= 0 {
+		return 0
+	}
+	secs := packets * 20 / 1000
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
+// attachVoicemailRecording points the call log at the uploaded voicemail when
+// the log has no call recording yet. The call-log player reads recording_s3_key.
+func (m *Manager) attachVoicemailRecording(callLogID uuid.UUID, key string, packets int) {
+	if m == nil || m.db == nil || callLogID == uuid.Nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	updates := map[string]any{"recording_s3_key": key}
+	if secs := recordedSeconds(packets); secs > 0 {
+		updates["recording_duration"] = secs
+	}
+	if err := m.db.Model(&models.CallLog{}).
+		Where("id = ? AND (recording_s3_key = '' OR recording_s3_key IS NULL)", callLogID).
+		Updates(updates).Error; err != nil {
+		m.log.Warn("Failed to attach voicemail to call log", "error", err, "call_log_id", callLogID)
+	}
+}
+
+// playRecordBeep plays the bundled beep into the call. A missing file falls
+// back to a short silence so recording still starts.
+func (m *Manager) playRecordBeep(player *AudioPlayer) {
+	if player == nil {
+		return
+	}
+	if m != nil && m.config != nil && m.config.AudioDir != "" {
+		path := filepath.Join(m.config.AudioDir, defaultaudio.BeepFile)
+		_, err := player.PlayFile(path)
+		if err == nil {
+			return
+		}
+		m.log.Warn("Voicemail beep failed", "error", err, "path", path)
+	}
+	player.PlaySilence(400 * time.Millisecond)
+}
+
+// voicemailBeepEnabled is true unless the node turns the beep off.
+// A missing key stays on: the editor treats that as on, and prompts say
+// "after the beep".
+func voicemailBeepEnabled(config map[string]any) bool {
+	if config == nil {
+		return true
+	}
+	v, ok := config["beep"]
+	if !ok || v == nil {
+		return true
+	}
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "false", "0", "no", "off":
+			return false
+		default:
+			return true
+		}
+	default:
+		return true
+	}
+}
+
+// voicemailRecordSettings reads the editor keys (max_seconds, terminator)
+// and the aliases saved by older flows (max_duration_seconds, finish_on_key).
+func voicemailRecordSettings(config map[string]any) (seconds int, terminator string) {
+	seconds = getConfigInt(config, "max_seconds", 0)
+	if seconds == 0 {
+		seconds = getConfigInt(config, "max_duration_seconds", 60)
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > 300 {
+		seconds = 300
+	}
+	terminator, _ = config["terminator"].(string)
+	if strings.TrimSpace(terminator) == "" {
+		terminator, _ = config["finish_on_key"].(string)
+	}
+	terminator = strings.TrimSpace(terminator)
+	if terminator == "" {
+		terminator = "#"
+	}
+	return seconds, terminator
 }
 
 func (m *Manager) uploadIVRRecording(session *CallSession, localPath, purpose string) (string, error) {
@@ -107,28 +203,18 @@ func (m *Manager) uploadIVRRecording(session *CallSession, localPath, purpose st
 // executeVoicemail records caller audio, uploads it, stores key in a variable.
 // Outcomes: default, timeout (no audio), error.
 func (m *Manager) executeVoicemail(session *CallSession, node *IVRNode, ctx *IVRContext, player *AudioPlayer) string {
-	secs := getConfigInt(node.Config, "max_seconds", 60)
-	if secs < 1 {
-		secs = 1
-	}
-	if secs > 300 {
-		secs = 300
-	}
-	terminator, _ := node.Config["terminator"].(string)
-	if terminator == "" {
-		terminator = "#"
-	}
+	secs, terminator := voicemailRecordSettings(node.Config)
 	storeAs, _ := node.Config["store_as"].(string)
 	if storeAs == "" {
 		storeAs = "voicemail_key"
 	}
-	beep, _ := node.Config["beep"].(bool)
+	beep := voicemailBeepEnabled(node.Config)
 	prompt := m.resolvePromptAudio(node, ctx)
 	if prompt != "" && m.config.AudioDir != "" && player != nil {
 		_, _ = player.PlayFile(filepath.Join(m.config.AudioDir, prompt))
 	}
 
-	path, _, err := m.recordCallerAudio(session, player, time.Duration(secs)*time.Second, terminator, beep)
+	path, _, packets, err := m.recordCallerAudio(session, player, time.Duration(secs)*time.Second, terminator, beep)
 	if err != nil {
 		m.log.Warn("IVR voicemail capture failed", "error", err, "call_id", session.ID)
 		return "timeout"
@@ -144,6 +230,7 @@ func (m *Manager) executeVoicemail(session *CallSession, node *IVRNode, ctx *IVR
 		ctx.Variables = map[string]string{}
 	}
 	ctx.Variables[storeAs] = key
+	m.attachVoicemailRecording(session.CallLogID, key, packets)
 	m.log.Info("IVR voicemail saved", "call_id", session.ID, "key", key)
 	return "default"
 }
@@ -168,7 +255,7 @@ func (m *Manager) executeSpeechInput(session *CallSession, node *IVRNode, ctx *I
 		_, _ = player.PlayFile(filepath.Join(m.config.AudioDir, prompt))
 	}
 
-	path, _, err := m.recordCallerAudio(session, player, time.Duration(secs)*time.Second, terminator, false)
+	path, _, _, err := m.recordCallerAudio(session, player, time.Duration(secs)*time.Second, terminator, false)
 	if err != nil {
 		m.log.Warn("IVR speech_input capture failed", "error", err, "call_id", session.ID)
 		return "timeout"

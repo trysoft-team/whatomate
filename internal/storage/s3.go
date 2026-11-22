@@ -59,3 +59,17 @@ func (s *S3Client) GetPresignedURL(ctx context.Context, key string, expiry time.
 	}
 	return req.URL, nil
 }
+
+// Download reads an object into memory so the API can serve it without handing
+// the browser a storage URL.
+func (s *S3Client) Download(ctx context.Context, key string) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
+}

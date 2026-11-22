@@ -76,6 +76,15 @@ Release archives for Linux, macOS, Windows and FreeBSD are on the [releases page
 brew install trysoft-team/tap/whatomate
 ```
 
+The cask also installs `ffmpeg`, `espeak-ng` and `opus-tools`. Piper itself is not a Homebrew formula. On a Mac, install it with:
+
+```bash
+brew install ffmpeg espeak-ng opus-tools
+curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.sh | bash
+```
+
+That puts Piper and the `en_US-lessac-medium` voice in `~/.local/share/piper`. Apple Silicon Macs need Rosetta 2 for this Piper build.
+
 #### Linux
 
 The install script sets up everything on a server in one go:
@@ -86,7 +95,7 @@ curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts
 
 What it does:
 
-- installs the latest release for your CPU (checksum verified) and, if you agree, `ffmpeg`, `opus-tools` and `espeak-ng`;
+- installs the latest release for your CPU (checksum verified), Piper TTS with the `en_US-lessac-medium` voice, and, if you agree, `ffmpeg`, `opus-tools` and `espeak-ng`;
 - creates a `whatomate` service user and a systemd service that starts at boot;
 - detects **Apache, nginx or Caddy**, asks for your domain and adds a reverse-proxy site (WebSockets included), then offers a free Let's Encrypt certificate (Caddy gets its own);
 - opens the firewall with ufw, firewalld or iptables: TCP 80/443 behind the proxy, otherwise TCP 4747, plus UDP 10000–10100 for calls;
@@ -103,8 +112,10 @@ tar -xzf whatomate_${VERSION}_linux_amd64.tar.gz
 sudo install -m 755 whatomate /usr/local/bin/whatomate
 whatomate version
 
-# Optional, for WhatsApp calling and spoken IVR greetings (Debian/Ubuntu)
+# Spoken IVR greetings: Piper TTS, ffmpeg, opus-tools and espeak-ng (Debian/Ubuntu).
+# scripts/install.sh does this for you. By hand:
 sudo apt install ffmpeg opus-tools espeak-ng
+curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.sh | sudo bash
 ```
 
 To keep it running after you log out and start it at boot, create `/etc/systemd/system/whatomate.service`:
@@ -140,7 +151,22 @@ journalctl -u whatomate -f   # the setup link appears here on the first run
 
    If Windows SmartScreen says it protected your PC, choose **More info → Run anyway**.
 
-For WhatsApp calling, install `ffmpeg` (`winget install Gyan.FFmpeg`) and [opus-tools](https://opus-codec.org/downloads/), and make sure both are on your `PATH`. The setup wizard saves the config to `%AppData%\whatomate\config.toml`.
+For WhatsApp calling and spoken IVR greetings, install Piper, ffmpeg and opus-tools, and make sure they are on your `PATH`. In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.ps1 | iex
+```
+
+That downloads Piper and the `en_US-lessac-medium` voice into `%LOCALAPPDATA%\whatomate\piper` and installs ffmpeg with winget. Install [opus-tools](https://opus-codec.org/downloads/) separately if `opusenc` is not already on your `PATH`. The setup wizard saves the config to `%AppData%\whatomate\config.toml`. Add:
+
+```toml
+[tts]
+piper_binary = "C:/Users/YOU/AppData/Local/whatomate/piper/piper.exe"
+piper_model = "C:/Users/YOU/AppData/Local/whatomate/piper/models/en_US-lessac-medium.onnx"
+opusenc_binary = "opusenc"
+```
+
+The script prints the exact paths.
 
 #### From source
 
@@ -166,7 +192,11 @@ With no config file, whatomate opens the **setup wizard** at `http://localhost:4
 The wizard writes the config file and starts whatomate on the same port. Then connect your WhatsApp Business Account under **Settings → Accounts** (see [WhatsApp configuration](https://trysoft-team.github.io/whatomate/getting-started/quickstart/#whatsapp-configuration)).
 
 > [!TIP]
-> Voice features use `ffmpeg` and `opus-tools`; text-to-speech also uses Piper and `espeak-ng`. Homebrew installs `ffmpeg` and `opus-tools` for you.
+> Voice features use `ffmpeg` and `opus-tools`. Spoken IVR greetings also use Piper and `espeak-ng`.
+>
+> - **Linux:** `scripts/install.sh` installs Piper and the `en_US-lessac-medium` voice under `/opt/piper` unless you pass `--no-voice`.
+> - **macOS:** `brew install ffmpeg espeak-ng opus-tools`, then `bash scripts/install-piper.sh` (Homebrew has no Piper formula). The script installs Piper to `~/.local/share/piper`.
+> - **Windows:** `scripts/install-piper.ps1` (winget for ffmpeg, Piper under `%LOCALAPPDATA%\whatomate\piper`).
 
 ### 3. Open port 4747
 
