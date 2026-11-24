@@ -301,6 +301,7 @@
     "reactions": "प्रतिक्रियाएं",
     "addReaction": "प्रतिक्रिया जोड़ें",
     "filterByTags": "टैग द्वारा फ़िल्टर करें",
+    "filterByAccount": "WhatsApp खाता",
     "noTagsAvailable": "कोई टैग उपलब्ध नहीं",
     "paused": "रुका हुआ",
     "assignedTo": "को सौंपा गया",
@@ -2250,6 +2251,7 @@
     "permissionDeclined": "अस्वीकृत",
     "noPermission": "नहीं है",
     "callFailed": "विफल",
+    "eligibilityPaymentIssue": "इस बिज़नेस खाते के लिए WhatsApp कॉलिंग सक्षम नहीं है (Meta error 131044)। Meta Business Manager में भुगतान विधि जोड़ें और कॉलिंग चालू करें।",
     "permissionSent": "अनुरोध भेजा",
     "permissionSentDesc": "WhatsApp पर स्वीकार करना होगा।"
   }

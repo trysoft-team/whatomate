@@ -696,6 +696,16 @@ function clearTagFilter() {
   contactsStore.fetchContacts()
 }
 
+function toggleContactAccountFilter(accountName: string) {
+  contactsStore.setContactAccountFilter(
+    contactsStore.contactAccountFilter === accountName ? null : accountName,
+  )
+}
+
+const activeContactFilterCount = computed(() =>
+  contactsStore.selectedTags.length + (contactsStore.contactAccountFilter ? 1 : 0),
+)
+
 async function executeCustomAction(action: CustomAction) {
   if (!contactsStore.currentContact || executingActionId.value) return
 
@@ -837,6 +847,7 @@ function onUserActive() {
   if (contactsStore.currentContact) {
     contactsService.markRead(contactsStore.currentContact.id)
       .catch(() => { /* non-critical */ })
+      .finally(() => contactsStore.refreshUnreadCount())
   }
   nextTick(() => {
     const el = document.getElementById(`message-${firstUnreadId.value}`)
@@ -2247,11 +2258,11 @@ async function sendMediaMessage() {
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8 shrink-0 relative"
-                :class="contactsStore.selectedTags.length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-white/40 hover:text-white hover:bg-white/[0.08] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-100'"
+                :class="activeContactFilterCount > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-white/40 hover:text-white hover:bg-white/[0.08] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-100'"
               >
                 <Filter class="h-4 w-4" />
-                <span v-if="contactsStore.selectedTags.length > 0" class="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-emerald-500 text-[10px] text-white flex items-center justify-center">
-                  {{ contactsStore.selectedTags.length }}
+                <span v-if="activeContactFilterCount > 0" class="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-emerald-500 text-[10px] text-white flex items-center justify-center">
+                  {{ activeContactFilterCount }}
                 </span>
               </Button>
             </PopoverTrigger>
@@ -2289,12 +2300,54 @@ async function sendMediaMessage() {
                     />
                   </button>
                 </div>
+
+                <template v-if="orgAccounts.length > 1">
+                  <Separator />
+                  <div class="flex items-center justify-between px-1">
+                    <span class="text-sm font-medium">{{ $t('chat.filterByAccount', 'WhatsApp account') }}</span>
+                    <Button
+                      v-if="contactsStore.contactAccountFilter"
+                      variant="ghost"
+                      size="sm"
+                      class="h-6 px-2 text-xs"
+                      @click="contactsStore.setContactAccountFilter(null)"
+                    >
+                      {{ $t('common.clear', 'Clear') }}
+                    </Button>
+                  </div>
+                  <div class="space-y-1 max-h-40 overflow-y-auto">
+                    <button
+                      v-for="account in orgAccounts"
+                      :key="account.name"
+                      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm hover:bg-white/[0.08] light:hover:bg-gray-100 transition-colors"
+                      :class="contactsStore.contactAccountFilter === account.name && 'bg-white/[0.08] light:bg-gray-100'"
+                      @click="toggleContactAccountFilter(account.name)"
+                    >
+                      <Phone class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span class="flex-1 text-left truncate">{{ account.name }}</span>
+                      <Check
+                        v-if="contactsStore.contactAccountFilter === account.name"
+                        class="h-4 w-4 text-emerald-400 shrink-0"
+                      />
+                    </button>
+                  </div>
+                </template>
               </div>
             </PopoverContent>
           </Popover>
         </div>
-        <!-- Active tag filters -->
-        <div v-if="contactsStore.selectedTags.length > 0" class="flex flex-wrap gap-1 mt-2">
+        <!-- Active filters -->
+        <div v-if="activeContactFilterCount > 0" class="flex flex-wrap gap-1 mt-2">
+          <Badge
+            v-if="contactsStore.contactAccountFilter"
+            variant="outline"
+            class="cursor-pointer hover:opacity-80 h-5 text-[11px] gap-1"
+            @click="contactsStore.setContactAccountFilter(null)"
+          >
+            <Phone class="h-3 w-3" />
+            {{ contactsStore.contactAccountFilter }}
+            <X class="h-3 w-3" />
+          </Badge>
           <TagBadge
             v-for="tagName in contactsStore.selectedTags"
             :key="tagName"

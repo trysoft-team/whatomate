@@ -1001,7 +1001,7 @@ function updateAICallToolHTTP(index: number, key: string, value: string) {
       </div>
       <div class="flex items-center gap-2">
         <Switch :checked="config.beep !== false" @update:checked="(v: boolean) => updateConfig('beep', v)" />
-        <Label class="text-xs">Beep pause before record</Label>
+        <Label class="text-xs">Play a beep before recording</Label>
       </div>
     </template>
 

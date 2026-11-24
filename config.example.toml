@@ -96,13 +96,13 @@ trust_proxy = false            # Trust X-Forwarded-For / X-Real-IP headers (set 
 api_max_requests = 200         # Max requests per IP per window for all /api/ routes (0 = 200)
 api_window_seconds = 60        # Time window for global API rate limit (0 = 60)
 
-# Text-to-Speech for IVR greetings (optional, requires piper + opusenc installed)
-# Download piper: https://github.com/rhasspy/piper/releases (standalone binary)
-# Download voice models: https://huggingface.co/rhasspy/piper-voices
-# Install opusenc: apt install opus-tools (Debian/Ubuntu) / dnf install opus-tools (Fedora)
+# Text-to-Speech for IVR greetings (Piper + opusenc).
+# Linux install.sh installs these by default. On macOS: brew install ffmpeg espeak-ng opus-tools
+# and scripts/install-piper.sh. On Windows: scripts/install-piper.ps1.
+# Paths below match a root Linux install. macOS uses ~/.local/share/piper/.
 [tts]
-# piper_binary = "/usr/local/bin/piper"
-# piper_model = "/opt/piper/models/en_US-lessac-high.onnx"  # Docker image also ships en_US-lessac-medium
+# piper_binary = "/opt/piper/piper"
+# piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 
 # WhatsApp Calling / WebRTC

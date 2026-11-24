@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { callLogsService, ivrFlowsService, callTransfersService, outgoingCallsService, type CallLog, type IVRFlow, type CallTransfer } from '@/services/api'
 import { toast } from 'vue-sonner'
 import { i18n } from '@/i18n'
+import { dismissAllCallAlerts, dismissCallAlert, stopAllCallRingtones } from '@/lib/callAlert'
+import { useAuthStore } from '@/stores/auth'
 
 export const useCallingStore = defineStore('calling', () => {
   // Call Logs state
@@ -240,15 +242,22 @@ export const useCallingStore = defineStore('calling', () => {
     }
 
     // Send offer to server, get answer
-    const response = await callTransfersService.connect(id, sdpOffer)
-    const data = response.data as any
-    const sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
-
-    // Set remote description
-    await pc.setRemoteDescription(new RTCSessionDescription({
-      type: 'answer',
-      sdp: sdpAnswer
-    }))
+    let sdpAnswer: string
+    try {
+      const response = await callTransfersService.connect(id, sdpOffer)
+      const data = response.data as any
+      sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
+      if (typeof sdpAnswer !== 'string' || !sdpAnswer.trim().startsWith('v=')) {
+        throw new Error('Server returned an invalid SDP answer')
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription({
+        type: 'answer',
+        sdp: sdpAnswer,
+      }))
+    } catch (err) {
+      cleanup()
+      throw err
+    }
 
     // Transfer is now connected — use the snapshot taken before the API call
     if (transfer) {
@@ -327,21 +336,30 @@ export const useCallingStore = defineStore('calling', () => {
       throw new Error('Failed to generate SDP offer')
     }
 
-    // Send to server
-    const response = await outgoingCallsService.initiate({
-      contact_id: contactId,
-      whatsapp_account: whatsappAccount,
-      sdp_offer: sdpOffer,
-    })
-    const data = response.data as any
-    const callLogId = data.data?.call_log_id ?? data.call_log_id
-    const sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
-
-    // Set remote description
-    await pc.setRemoteDescription(new RTCSessionDescription({
-      type: 'answer',
-      sdp: sdpAnswer,
-    }))
+    // Send to server — tear down local WebRTC if Meta/API rejects the call
+    // or returns a bad SDP (empty answer → browser "Expect line: v=").
+    let callLogId: string
+    let sdpAnswer: string
+    try {
+      const response = await outgoingCallsService.initiate({
+        contact_id: contactId,
+        whatsapp_account: whatsappAccount,
+        sdp_offer: sdpOffer,
+      })
+      const data = response.data as any
+      callLogId = data.data?.call_log_id ?? data.call_log_id
+      sdpAnswer = data.data?.sdp_answer ?? data.sdp_answer
+      if (typeof sdpAnswer !== 'string' || !sdpAnswer.trim().startsWith('v=')) {
+        throw new Error('Server returned an invalid SDP answer')
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription({
+        type: 'answer',
+        sdp: sdpAnswer,
+      }))
+    } catch (err) {
+      cleanup()
+      throw err
+    }
 
     // Update state
     outgoingCallLogId.value = callLogId
@@ -390,6 +408,17 @@ export const useCallingStore = defineStore('calling', () => {
       }
     }
     cleanup()
+  }
+
+  /** Hang up a waiting transfer before the agent has answered. */
+  async function hangupWaitingTransfer(id: string) {
+    waitingTransfers.value = waitingTransfers.value.filter(t => t.id !== id)
+    stopAllCallRingtones()
+    try {
+      await callTransfersService.hangup(id)
+    } catch {
+      // Best effort — call may already have rotated or ended
+    }
   }
 
   function toggleMute() {
@@ -454,9 +483,26 @@ export const useCallingStore = defineStore('calling', () => {
     callPermissions.set(contactId, { status: 'pending' })
   }
 
+  // Stop ringtone when the agent goes Away or starts another call.
+  const authStore = useAuthStore()
+  watch(
+    () => authStore.isAvailable,
+    (available) => {
+      if (!available) dismissAllCallAlerts()
+    },
+  )
+  watch(isOnCall, (onCall) => {
+    if (onCall) dismissAllCallAlerts()
+  })
+
   // WebSocket handler for call events
   function handleCallEvent(type: string, payload: any) {
     switch (type) {
+      case 'call_incoming':
+        // Panel + ringtone start when call_transfer_waiting is offered.
+        break
+      case 'call_answered':
+        break
       case 'call_transfer_waiting':
         // Deduplicate: only add if this transfer ID isn't already in the list
         if (!waitingTransfers.value.some(t => t.id === payload.id)) {
@@ -466,11 +512,13 @@ export const useCallingStore = defineStore('calling', () => {
       case 'call_transfer_connected':
         // Another agent accepted this transfer — remove from our waiting list
         waitingTransfers.value = waitingTransfers.value.filter(t => t.id !== payload.id)
+        if (payload?.id) dismissCallAlert(payload.id)
         break
       case 'call_transfer_completed':
       case 'call_transfer_abandoned':
       case 'call_transfer_no_answer':
         waitingTransfers.value = waitingTransfers.value.filter(t => t.id !== payload.id)
+        if (payload?.id) dismissCallAlert(payload.id)
         if (activeTransfer.value?.id === payload.id) {
           cleanup()
         }
@@ -486,7 +534,8 @@ export const useCallingStore = defineStore('calling', () => {
         }
         break
       case 'call_ended':
-        // If the agent is on a call that just ended, clean up
+        if (payload?.call_id) dismissCallAlert(payload.call_id)
+        if (payload?.call_log_id) dismissCallAlert(payload.call_log_id)
         if (isOnCall.value) {
           cleanup()
         }
@@ -560,6 +609,7 @@ export const useCallingStore = defineStore('calling', () => {
     isOnHold,
     fetchWaitingTransfers,
     acceptTransfer,
+    hangupWaitingTransfer,
     endCall,
     toggleMute,
     holdCall,

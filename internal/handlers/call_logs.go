@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/trysoft/whatomate/internal/models"
 	"github.com/trysoft/whatomate/internal/storage"
@@ -148,27 +151,14 @@ func (a *App) GetCallLog(r *fastglue.Request) error {
 	})
 }
 
-// GetCallRecording returns a playback URL for a call recording.
-// S3-backed recordings get a 15-minute presigned URL. Local recordings get an
-// authenticated same-origin URL served by ServeCallRecordingFile.
+// GetCallRecording returns the same-origin playback path for a call recording.
+// The bytes are served by ServeCallRecordingFile. A storage URL is never returned,
+// so the browser has no file it can save from the network panel.
 // Users without call_logs:read permission can only access recordings for their own calls.
 func (a *App) GetCallRecording(r *fastglue.Request) error {
-	callLog, key, err := a.loadCallLogForRecording(r)
+	callLog, _, err := a.loadCallLogForRecording(r)
 	if err != nil {
 		return nil
-	}
-
-	if a.S3Client != nil {
-		url, err := a.S3Client.GetPresignedURL(r.RequestCtx, key, 15*time.Minute)
-		if err != nil {
-			a.Log.Error("Failed to generate presigned URL", "error", err, "call_log_id", callLog.ID)
-			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to generate recording URL", nil, "")
-		}
-		return r.SendEnvelope(map[string]any{
-			"url":      url,
-			"duration": callLog.RecordingDuration,
-			"kind":     recordingKindParam(r),
-		})
 	}
 
 	base := strings.TrimSuffix(a.Config.Server.BasePath, "/")
@@ -184,43 +174,82 @@ func (a *App) GetCallRecording(r *fastglue.Request) error {
 	})
 }
 
-// ServeCallRecordingFile streams a locally stored recording. Used when storage
-// type is local (or S3 is not configured). Same permission rules as GetCallRecording.
+// playbackMaskHeader carries the per-response key. Saving the body from the
+// network panel does not include this header, so the saved bytes are not audio.
+const playbackMaskHeader = "X-Playback-Mask"
+
+// ServeCallRecordingFile sends a masked recording for the in-app player.
+// Same permission rules as GetCallRecording. The body is not a playable file.
 func (a *App) ServeCallRecordingFile(r *fastglue.Request) error {
 	_, key, err := a.loadCallLogForRecording(r)
 	if err != nil {
 		return nil
 	}
 
-	fs := storage.NewLocalFS(a.Config.Storage.LocalPath)
-	fullPath, err := fs.Resolve(key)
-	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "No recording for this call", nil, "")
-	}
-
-	info, err := os.Lstat(fullPath)
-	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Recording file not found", nil, "")
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	data, err := a.readCallRecording(r.RequestCtx, key)
+	if errors.Is(err, os.ErrInvalid) {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid file path", nil, "")
 	}
-
-	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		a.Log.Error("Failed to read recording file", "path", fullPath, "error", err)
+		a.Log.Error("Failed to read recording file", "error", err, "key", key)
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Recording file not found", nil, "")
+	}
+
+	mask, err := newPlaybackMask()
+	if err != nil {
+		a.Log.Error("Failed to mask recording", "error", err)
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to read recording", nil, "")
 	}
 
-	ct := "audio/ogg"
-	if strings.HasSuffix(strings.ToLower(key), ".wav") {
-		ct = "audio/wav"
-	}
-	r.RequestCtx.Response.Header.Set("Cache-Control", "private, max-age=3600")
-	r.RequestCtx.SetContentType(ct)
-	r.RequestCtx.SetBody(data)
+	r.RequestCtx.Response.Header.Set(playbackMaskHeader, base64.StdEncoding.EncodeToString(mask))
+	r.RequestCtx.Response.Header.Set("Cache-Control", "no-store")
+	r.RequestCtx.Response.Header.Set("Content-Disposition", "inline")
+	r.RequestCtx.Response.Header.Set("X-Content-Type-Options", "nosniff")
+	r.RequestCtx.SetContentType("application/octet-stream")
+	r.RequestCtx.SetBody(maskPlayback(data, mask))
 	r.RequestCtx.SetStatusCode(fasthttp.StatusOK)
 	return nil
+}
+
+func (a *App) readCallRecording(ctx context.Context, key string) ([]byte, error) {
+	if a.S3Client != nil {
+		return a.S3Client.Download(ctx, key)
+	}
+
+	fs := storage.NewLocalFS(a.Config.Storage.LocalPath)
+	fullPath, err := fs.Resolve(key)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, os.ErrInvalid
+	}
+	return os.ReadFile(fullPath)
+}
+
+func newPlaybackMask() ([]byte, error) {
+	mask := make([]byte, 16)
+	if _, err := rand.Read(mask); err != nil {
+		return nil, err
+	}
+	return mask, nil
+}
+
+// maskPlayback XORs data with a repeating mask. Applying it twice restores the original.
+func maskPlayback(data, mask []byte) []byte {
+	out := make([]byte, len(data))
+	if len(mask) == 0 {
+		copy(out, data)
+		return out
+	}
+	for i := range data {
+		out[i] = data[i] ^ mask[i%len(mask)]
+	}
+	return out
 }
 
 func recordingKindParam(r *fastglue.Request) string {

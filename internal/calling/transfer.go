@@ -137,15 +137,7 @@ func (m *Manager) initiateTransfer(session *CallSession, waAccount string, teamT
 		session.TransferAccepted = make(chan struct{})
 		session.mu.Unlock()
 
-		payload := map[string]any{
-			"id":               transfer.ID.String(),
-			"call_log_id":      transfer.CallLogID.String(),
-			"whatsapp_call_id": transfer.WhatsAppCallID,
-			"caller_phone":     m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
-			"contact_id":       transfer.ContactID.String(),
-			"whatsapp_account": transfer.WhatsAppAccount,
-			"transferred_at":   transfer.TransferredAt.Format(time.RFC3339),
-		}
+		payload := m.transferWaitingPayload(session, &transfer, nil)
 		m.wsHub.BroadcastToUser(session.OrganizationID, *assignedAgentID, websocket.WSMessage{
 			Type:    websocket.TypeCallTransferWaiting,
 			Payload: payload,
@@ -216,15 +208,7 @@ func (m *Manager) initiateTransfer(session *CallSession, waAccount string, teamT
 
 		go m.waitForTransferTimeout(ctx, session, transfer.ID)
 
-		payload := map[string]any{
-			"id":               transfer.ID.String(),
-			"call_log_id":      transfer.CallLogID.String(),
-			"whatsapp_call_id": transfer.WhatsAppCallID,
-			"caller_phone":     m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
-			"contact_id":       transfer.ContactID.String(),
-			"whatsapp_account": transfer.WhatsAppAccount,
-			"transferred_at":   transfer.TransferredAt.Format(time.RFC3339),
-		}
+		payload := m.transferWaitingPayload(session, &transfer, nil)
 		m.broadcastEvent(transfer.OrganizationID, websocket.TypeCallTransferWaiting, payload)
 	}
 
@@ -398,16 +382,9 @@ func (m *Manager) InitiateAgentTransfer(callLogID, initiatingAgentID uuid.UUID, 
 
 		go m.waitForTransferTimeout(ctx, session, transfer.ID)
 
-		payload := map[string]any{
-			"id":                  transfer.ID.String(),
-			"call_log_id":         transfer.CallLogID.String(),
-			"whatsapp_call_id":    transfer.WhatsAppCallID,
-			"caller_phone":        m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
-			"contact_id":          transfer.ContactID.String(),
-			"whatsapp_account":    transfer.WhatsAppAccount,
+		payload := m.transferWaitingPayload(session, &transfer, map[string]any{
 			"initiating_agent_id": initiatingAgentID.String(),
-			"transferred_at":      transfer.TransferredAt.Format(time.RFC3339),
-		}
+		})
 		m.wsHub.BroadcastToUser(session.OrganizationID, *targetAgentID, websocket.WSMessage{
 			Type:    websocket.TypeCallTransferWaiting,
 			Payload: payload,
@@ -430,16 +407,9 @@ func (m *Manager) InitiateAgentTransfer(callLogID, initiatingAgentID uuid.UUID, 
 
 		go m.waitForTransferTimeout(ctx, session, transfer.ID)
 
-		payload := map[string]any{
-			"id":                  transfer.ID.String(),
-			"call_log_id":         transfer.CallLogID.String(),
-			"whatsapp_call_id":    transfer.WhatsAppCallID,
-			"caller_phone":        m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
-			"contact_id":          transfer.ContactID.String(),
-			"whatsapp_account":    transfer.WhatsAppAccount,
+		payload := m.transferWaitingPayload(session, &transfer, map[string]any{
 			"initiating_agent_id": initiatingAgentID.String(),
-			"transferred_at":      transfer.TransferredAt.Format(time.RFC3339),
-		}
+		})
 		m.broadcastEvent(session.OrganizationID, websocket.TypeCallTransferWaiting, payload)
 	}
 
@@ -852,19 +822,11 @@ func (m *Manager) runTransferRotation(session *CallSession, transfer models.Call
 	session.mu.Unlock()
 
 	// Build the base WS payload once
-	basePayload := map[string]any{
-		"id":               transfer.ID.String(),
-		"call_log_id":      transfer.CallLogID.String(),
-		"whatsapp_call_id": transfer.WhatsAppCallID,
-		"caller_phone":     m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
-		"contact_id":       transfer.ContactID.String(),
-		"whatsapp_account": transfer.WhatsAppAccount,
-		"team_id":          teamID.String(),
-		"transferred_at":   transfer.TransferredAt.Format(time.RFC3339),
-	}
+	extras := map[string]any{}
 	if transfer.InitiatingAgentID != nil {
-		basePayload["initiating_agent_id"] = transfer.InitiatingAgentID.String()
+		extras["initiating_agent_id"] = transfer.InitiatingAgentID.String()
 	}
+	basePayload := m.transferWaitingPayload(session, &transfer, extras)
 
 	for totalCtx.Err() == nil {
 		session.mu.Lock()
@@ -1235,6 +1197,41 @@ func (m *Manager) fireTransferCallback(session *CallSession, hook *TransferHTTPC
 			m.log.Info("Transfer callback completed", "call_id", session.ID, "hook_url", url, "status", result.StatusCode)
 		}
 	}()
+}
+
+// transferWaitingPayload builds the WebSocket payload agents see for a
+// waiting transfer toast (phone, name, account, optional team).
+func (m *Manager) transferWaitingPayload(session *CallSession, transfer *models.CallTransfer, extras map[string]any) map[string]any {
+	payload := map[string]any{
+		"id":               transfer.ID.String(),
+		"call_log_id":      transfer.CallLogID.String(),
+		"whatsapp_call_id": transfer.WhatsAppCallID,
+		"caller_phone":     m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
+		"contact_id":       transfer.ContactID.String(),
+		"whatsapp_account": transfer.WhatsAppAccount,
+		"transferred_at":   transfer.TransferredAt.Format(time.RFC3339),
+		"status":           "waiting",
+	}
+	if session != nil && session.CallerName != "" {
+		payload["contact_name"] = session.CallerName
+		payload["contact"] = map[string]any{
+			"id":           transfer.ContactID.String(),
+			"phone_number": m.maybeMaskPhone(transfer.OrganizationID, transfer.CallerPhone),
+			"profile_name": session.CallerName,
+		}
+	}
+	if transfer.TeamID != nil {
+		payload["team_id"] = transfer.TeamID.String()
+		var team models.Team
+		if err := m.db.Select("id", "name").Where("id = ?", *transfer.TeamID).First(&team).Error; err == nil {
+			payload["team_name"] = team.Name
+			payload["team"] = map[string]any{"id": team.ID.String(), "name": team.Name}
+		}
+	}
+	for k, v := range extras {
+		payload[k] = v
+	}
+	return payload
 }
 
 // withCallerName copies the session's WhatsApp profile name onto transfer

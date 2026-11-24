@@ -32,6 +32,19 @@ function interpolate(template: string, vars: Record<string, any>): string {
   })
 }
 
+// Seed built-in template variables so preview matches what the backend's
+// runChatGraph will produce (phone_number is always populated server-side
+// from the session).
+function builtinVariables(): Record<string, any> {
+  return { phone_number: '+15555550100', contact_name: 'Preview User' }
+}
+
+// Outcomes produced by the user's reply. When no edge handles one, the
+// backend restarts the graph from its entry node instead of ending it.
+function isUserDrivenOutcome(outcome: string): boolean {
+  return outcome === 'unmatched' || outcome === 'max_retries' || outcome.startsWith('button:')
+}
+
 /**
  * useFlowGraphSimulation walks a v2 ChatFlowGraph node by node, mirroring
  * the backend runChatGraph executor. It powers the in-browser flow preview
@@ -86,10 +99,12 @@ export function useFlowGraphSimulation(
     if (!node) return null
     switch (node.type) {
       case 'buttons':
+      case 'list':
         return 'button'
       case 'whatsapp_flow':
         return 'whatsapp_flow'
       case 'prompt':
+      case 'wa_template':
         return 'text'
       default:
         return null
@@ -175,10 +190,7 @@ export function useFlowGraphSimulation(
     }
 
     state.status = 'running'
-    // Seed built-in template variables so preview matches what the
-    // backend's runChatGraph will produce (phone_number is always
-    // populated server-side from the session).
-    state.variables = { phone_number: '+15555550100', contact_name: 'Preview User' }
+    state.variables = builtinVariables()
     state.messages = []
     state.executionLog = []
     state.currentRetryCount = 0
@@ -261,6 +273,8 @@ export function useFlowGraphSimulation(
         return execMessage(node)
       case 'buttons':
         return execButtons(node)
+      case 'list':
+        return execList(node)
       case 'end':
         return execEnd(node)
       case 'condition':
@@ -288,6 +302,32 @@ export function useFlowGraphSimulation(
       case 'webhook':
         addMessage('system', '[webhook] simulated — request not sent in preview')
         return 'default'
+      case 'wa_template':
+        return execWATemplate(node)
+      case 'delay':
+        return execDelay(node)
+      case 'reset_session':
+        state.variables = builtinVariables()
+        state.currentRetryCount = 0
+        addMessage('system', '[reset_session] variables cleared')
+        return 'default'
+      case 'set_labels':
+        return execSetLabels(node)
+      case 'disable_bot':
+        return execDisableBot(node)
+      case 'send_email': {
+        const subject = interpolate(stringField(node, 'subject'), state.variables)
+        addMessage('system', `[send_email] "${subject}" simulated — email not sent in preview`)
+        return 'default'
+      }
+      case 'phonebook': {
+        const action = stringField(node, 'action').toLowerCase() === 'remove' ? 'remove the contact from' : 'add the contact to'
+        addMessage('system', `[phonebook] would ${action} a phonebook list`)
+        return 'default'
+      }
+      case 'google_service':
+        addMessage('system', `[google_service] ${stringField(node, 'action') || 'sheets_append'} simulated — Google not called in preview`)
+        return 'default'
       default:
         addMessage('system', `Unknown node type "${node.type}"`)
         return '__end__'
@@ -308,6 +348,74 @@ export function useFlowGraphSimulation(
     addMessage('bot', body, { stepName: node.id, buttons })
     state.status = 'waiting_input'
     return '__yield__'
+  }
+
+  function execList(node: ChatNode): string {
+    const body = interpolate(stringField(node, 'body', 'message', 'text') || node.label, state.variables)
+    const rows: ButtonConfig[] = []
+    for (const section of (node.config?.sections as any[] | undefined) || []) {
+      for (const row of section?.rows || []) {
+        if (!row?.id || !row?.title) continue
+        rows.push({
+          id: String(row.id),
+          title: interpolate(String(row.title), state.variables),
+          description: row.description ? interpolate(String(row.description), state.variables) : undefined,
+        })
+      }
+    }
+    if (rows.length === 0) {
+      addMessage('system', `List "${node.id}" has no rows configured`)
+      state.status = 'error'
+      return '__yield__'
+    }
+    addMessage('bot', body, {
+      stepName: node.id,
+      buttons: rows,
+      isList: true,
+      listButtonText: interpolate(stringField(node, 'button', 'button_text'), state.variables) || undefined,
+    })
+    state.status = 'waiting_input'
+    return '__yield__'
+  }
+
+  function execWATemplate(node: ChatNode): string {
+    const name = stringField(node, 'template_name', 'name') || stringField(node, 'template_id') || '?'
+    addMessage('system', `[wa_template] would send template "${name}"`)
+    if (node.config?.wait_for_reply) {
+      state.status = 'waiting_input'
+      return '__yield__'
+    }
+    return 'default'
+  }
+
+  async function execDelay(node: ChatNode): Promise<string> {
+    const seconds = Math.min(Number(node.config?.seconds) || 0, 3600)
+    if (seconds <= 0) return 'default'
+    // Real runs park the session; preview waits at most 3s so long delays stay testable.
+    addMessage('system', `[delay] waiting ${seconds}s`)
+    await delay(Math.min(seconds, 3) * 1000)
+    return 'default'
+  }
+
+  function execSetLabels(node: ChatNode): string {
+    const add = stringList(node.config?.add ?? node.config?.labelsToAdd)
+    const remove = stringList(node.config?.remove ?? node.config?.labelsToRemove)
+    const tags = new Set(stringList(state.variables.tags))
+    remove.forEach((t) => tags.delete(t))
+    add.forEach((t) => tags.add(t))
+    setVariable('tags', [...tags].sort())
+    const changes = [...add.map((t) => `+${t}`), ...remove.map((t) => `-${t}`)]
+    addMessage('system', `[labels] ${changes.join(' ') || 'no changes'}`)
+    return 'default'
+  }
+
+  function execDisableBot(node: ChatNode): string {
+    const hours = Number(node.config?.hours) || 0
+    const minutes = Number(node.config?.minutes) || 0
+    if (hours * 60 + minutes > 0) {
+      addMessage('system', `[disable_bot] auto-replies paused for this contact for ${hours}h ${minutes}m`)
+    }
+    return 'default'
   }
 
   function execEnd(node: ChatNode): string {
@@ -335,6 +443,27 @@ export function useFlowGraphSimulation(
   }
 
   function execCondition(node: ChatNode): string {
+    const rules = (node.config?.rules as any[] | undefined) || []
+    const mode = stringField(node, 'mode')
+    if (mode === 'rules' || (mode === '' && rules.length > 0)) {
+      const varName = stringField(node, 'variable', 'input_variable') || 'senderMessage'
+      let left = state.variables[varName]
+      if (left == null && varName === 'senderMessage') {
+        left = [...state.messages].reverse().find((m) => m.type === 'user')?.content
+      }
+      const leftStr = left == null ? '' : String(left)
+      for (const rule of rules) {
+        if (!rule || typeof rule !== 'object') continue
+        if (matchConditionRule(rule, leftStr)) {
+          const handle = rule.handle || slugHandle(String(rule.name || '')) || 'matched'
+          log('condition_eval', node.id, { variable: varName, value: leftStr, matched: handle })
+          return handle
+        }
+      }
+      log('condition_eval', node.id, { variable: varName, value: leftStr, matched: 'else' })
+      return 'else'
+    }
+
     const expression = stringField(node, 'expression')
     if (!expression) return 'false'
     const result = evalCondition(expression, state.variables)
@@ -361,17 +490,19 @@ export function useFlowGraphSimulation(
   }
 
   async function execApiCall(node: ChatNode): Promise<string> {
-    log('api_call', node.id, { url: node.config?.url, method: node.config?.method })
-    addMessage('system', `Calling API: ${node.config?.method || 'GET'} ${node.config?.url || ''}`)
+    const method = stringField(node, 'method') || 'GET'
+    const url = interpolate(stringField(node, 'url'), state.variables)
+    log('api_call', node.id, { url, method })
+    addMessage('system', `Calling API: ${method} ${url}`)
 
     const fakeStep: any = {
       step_name: node.id,
       message: stringField(node, 'message_template') || '',
       api_config: {
-        url: stringField(node, 'url'),
-        method: stringField(node, 'method') || 'GET',
+        url,
+        method,
         headers: (node.config?.headers as Record<string, string>) || {},
-        body: stringField(node, 'body'),
+        body: interpolate(stringField(node, 'body'), state.variables),
         response_mapping: (node.config?.response_mapping as Record<string, string>) || {},
         fallback_message: stringField(node, 'fallback_message'),
       },
@@ -450,12 +581,20 @@ export function useFlowGraphSimulation(
         await advance(node, 'default')
         return
       }
-      // Treat free-text into a buttons node as no-op (re-yield).
-      state.status = 'waiting_input'
+      if (node.type === 'wa_template') {
+        await advance(node, 'default')
+        return
+      }
+      // Free text into a buttons/list node matches no option.
+      await advance(node, 'unmatched')
     } else {
       const btn = input
       addMessage('user', btn.title)
       log('branch', node.id, { buttonId: btn.id })
+      if (node.type === 'list') {
+        const storeAs = stringField(node, 'store_as')
+        if (storeAs) setVariable(storeAs, btn.title || btn.id)
+      }
       await advance(node, `button:${btn.id}`)
     }
   }
@@ -474,6 +613,14 @@ export function useFlowGraphSimulation(
     const next = resolveEdge(node.id, outcome)
     log('step_exit', node.id, { outcome, next })
     if (!next) {
+      const entry = graph.value?.entry_node
+      if (entry && isUserDrivenOutcome(outcome)) {
+        addMessage('system', 'No branch for this reply — restarting from the start')
+        state.status = 'running'
+        await delay(150)
+        await runFrom(entry)
+        return
+      }
       complete()
       return
     }
@@ -599,6 +746,8 @@ function nodeTypeToMessageType(t: string): string {
       return 'text'
     case 'buttons':
       return 'buttons'
+    case 'list':
+      return 'list'
     case 'api_call':
       return 'api_fetch'
     case 'whatsapp_flow':
@@ -611,6 +760,76 @@ function nodeTypeToMessageType(t: string): string {
       return 'prompt'
     default:
       return t
+  }
+}
+
+function stringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  return v.filter((t): t is string => typeof t === 'string' && t !== '')
+}
+
+// Mirrors the backend's slugHandle: rule names become edge handles.
+function slugHandle(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[ \-_]/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/^_+|_+$/g, '')
+}
+
+function parseConditionNumber(s: string): number | null {
+  const n = parseFloat(s.trim())
+  return Number.isNaN(n) ? null : n
+}
+
+// Mirrors the backend's matchConditionRule operators.
+function matchConditionRule(rule: Record<string, any>, left: string): boolean {
+  const op = String(rule.operator || rule.type || '').trim().toLowerCase()
+  const right = String(rule.value ?? '')
+  const caseSensitive = !!(rule.case_sensitive || rule.caseSensitive)
+  const l = caseSensitive ? left : left.toLowerCase()
+  const r = caseSensitive ? right : right.toLowerCase()
+  const nums = (): [number | null, number | null] => [parseConditionNumber(left), parseConditionNumber(right)]
+
+  switch (op) {
+    case 'text_contains':
+    case 'contains':
+      return l.includes(r)
+    case 'text_starts_with':
+    case 'starts_with':
+    case 'startswith':
+      return l.startsWith(r)
+    case 'text_ends_with':
+    case 'ends_with':
+    case 'endswith':
+      return l.endsWith(r)
+    case 'number_equals':
+    case 'number_eq': {
+      const [a, b] = nums()
+      return a != null && b != null && a === b
+    }
+    case 'number_greater':
+    case 'number_gt':
+    case 'gt': {
+      const [a, b] = nums()
+      return a != null && b != null && a > b
+    }
+    case 'number_less':
+    case 'number_lt':
+    case 'lt': {
+      const [a, b] = nums()
+      return a != null && b != null && a < b
+    }
+    case 'number_between':
+    case 'between': {
+      const [a, from] = nums()
+      const to = parseConditionNumber(String(rule.value_to ?? rule.to ?? ''))
+      return a != null && from != null && to != null && a >= from && a <= to
+    }
+    default:
+      // text_exact and unknown operators: exact match so misconfigs don't silently match.
+      return l === r
   }
 }
 

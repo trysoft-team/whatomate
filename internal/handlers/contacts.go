@@ -100,6 +100,7 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 	pg := parsePagination(r)
 	search := string(r.RequestCtx.QueryArgs().Peek("search"))
 	tagsParam := string(r.RequestCtx.QueryArgs().Peek("tags"))
+	accountParam := strings.TrimSpace(string(r.RequestCtx.QueryArgs().Peek("whatsapp_account")))
 
 	var contacts []models.Contact
 	query := a.ScopeToOrg(a.DB, userID, orgID)
@@ -137,6 +138,10 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 		if len(conditions) > 0 {
 			query = query.Where("("+strings.Join(conditions, " OR ")+")", args...)
 		}
+	}
+
+	if accountParam != "" {
+		query = query.Where("whats_app_account = ?", accountParam)
 	}
 
 	// Order by last message time (most recent first)
@@ -203,6 +208,33 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(listEnvelope("contacts", response, total, pg))
+}
+
+// GetUnreadCount returns unread incoming messages, and the chats they are in,
+// across the contacts the user can see (GET /api/contacts/unread-count).
+func (a *App) GetUnreadCount(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+
+	visible := a.scopeAssignedContact(
+		a.ScopeToOrg(a.DB.Model(&models.Contact{}), userID, orgID), userID, orgID,
+	).Select("id")
+	unread := a.DB.Model(&models.Message{}).
+		Where("organization_id = ? AND direction = ? AND status != ? AND contact_id IN (?)",
+			orgID, models.DirectionIncoming, models.MessageStatusRead, visible)
+
+	var messages, chats int64
+	if err := unread.Session(&gorm.Session{}).Count(&messages).Error; err != nil {
+		a.Log.Error("Failed to count unread messages", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to count unread messages", nil, "")
+	}
+	if err := unread.Session(&gorm.Session{}).Distinct("contact_id").Count(&chats).Error; err != nil {
+		a.Log.Error("Failed to count unread chats", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to count unread messages", nil, "")
+	}
+	return r.SendEnvelope(map[string]int64{"messages": messages, "chats": chats})
 }
 
 // scopeAssignedContact narrows a contact query for users who lack the

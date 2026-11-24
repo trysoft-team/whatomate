@@ -216,8 +216,10 @@ export const accountsService = {
 }
 
 export const contactsService = {
-  list: (params?: { search?: string; page?: number; limit?: number; tags?: string }) =>
+  list: (params?: { search?: string; page?: number; limit?: number; tags?: string; whatsapp_account?: string }) =>
     api.get('/contacts', { params }),
+  unreadCount: () =>
+    api.get<{ data: { messages: number; chats: number } }>('/contacts/unread-count'),
   get: (id: string) => api.get(`/contacts/${id}`),
   create: (data: any) => api.post('/contacts', data),
   update: (id: string, data: any) => api.put(`/contacts/${id}`, data),
@@ -1452,6 +1454,10 @@ export interface CallTransfer {
   caller_phone: string
   contact_id: string
   whatsapp_account: string
+  /** Denormalized name from WS transfer payload (optional). */
+  contact_name?: string
+  /** Denormalized team name from WS transfer payload (optional). */
+  team_name?: string
   status: 'waiting' | 'connected' | 'completed' | 'abandoned' | 'no_answer'
   team_id?: string
   agent_id?: string

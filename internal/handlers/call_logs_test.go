@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,8 +90,18 @@ func TestServeCallRecordingFile_Success(t *testing.T) {
 
 	require.NoError(t, app.ServeCallRecordingFile(req))
 	require.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
-	assert.Equal(t, "audio/ogg", string(req.RequestCtx.Response.Header.Peek("Content-Type")))
-	assert.Equal(t, payload, testutil.GetResponseBody(req))
+	assert.Equal(t, "application/octet-stream", string(req.RequestCtx.Response.Header.Peek("Content-Type")))
+	assert.Equal(t, "no-store", string(req.RequestCtx.Response.Header.Peek("Cache-Control")))
+	body := testutil.GetResponseBody(req)
+	assert.NotEqual(t, payload, body)
+	mask, err := base64.StdEncoding.DecodeString(string(req.RequestCtx.Response.Header.Peek("X-Playback-Mask")))
+	require.NoError(t, err)
+	require.NotEmpty(t, mask)
+	restored := make([]byte, len(body))
+	for i := range body {
+		restored[i] = body[i] ^ mask[i%len(mask)]
+	}
+	assert.Equal(t, payload, restored)
 }
 
 func TestServeCallRecordingFile_AgentOwnCallOnly(t *testing.T) {

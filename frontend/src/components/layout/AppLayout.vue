@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
+import { useContactsStore } from '@/stores/contacts'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -27,6 +28,23 @@ const router = useRouter()
 const authStore = useAuthStore()
 const isCollapsed = ref(false)
 const isMobileMenuOpen = ref(false)
+
+const contactsStore = useContactsStore()
+const chatUnread = computed(() => contactsStore.unreadMessagesTotal)
+let unreadPoll: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  if (authStore.isAuthenticated && authStore.hasPermission('chat', 'read')) {
+    contactsStore.refreshUnreadCount()
+    // New messages refresh the count over the WebSocket; this catches
+    // anything read elsewhere, e.g. by another agent.
+    unreadPoll = setInterval(() => contactsStore.refreshUnreadCount(), 60_000)
+  }
+})
+
+onUnmounted(() => {
+  if (unreadPoll) clearInterval(unreadPoll)
+})
 
 // Refresh user data and connect WebSocket on mount
 onMounted(() => {
@@ -198,7 +216,7 @@ const handleLogout = async () => {
                 <RouterLink
                   :to="item.path"
                   :class="[
-                    'nav-active-indicator btn-press flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-200',
+                    'nav-active-indicator btn-press relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-200',
                     item.active
                       ? 'bg-white/[0.08] text-white light:bg-gray-100 light:text-gray-900'
                       : 'text-white/50 hover:text-white hover:bg-white/[0.06] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-50',
@@ -211,6 +229,16 @@ const handleLogout = async () => {
                 >
                   <component :is="item.icon" class="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span :class="isCollapsed && 'md:sr-only'">{{ $t(item.name) }}</span>
+                  <span
+                    v-if="item.path === '/chat' && chatUnread > 0"
+                    :class="[
+                      'ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-white text-[10px] font-semibold leading-[18px] text-center tabular-nums',
+                      isCollapsed && 'md:absolute md:top-0.5 md:right-0.5 md:ml-0'
+                    ]"
+                    :aria-label="$t('nav.unreadMessages', { count: chatUnread }, chatUnread)"
+                  >
+                    {{ chatUnread > 99 ? '99+' : chatUnread }}
+                  </span>
                 </RouterLink>
 
                 <!-- Submenu items -->

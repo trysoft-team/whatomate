@@ -481,27 +481,17 @@ Whatomate uses [Piper](https://github.com/OHF-Voice/piper1-gpl) for offline text
 
 ### Install Dependencies
 
-Piper requires the `espeak-ng` shared library at runtime, and `opusenc` is needed to convert WAV output to OGG/Opus:
+Piper ships its own `espeak-ng` data next to the binary. `opusenc` converts the WAV into OGG/Opus, and `ffmpeg` is used for call audio.
 
-```bash
-# Debian/Ubuntu
-sudo apt install espeak-ng opus-tools
-
-# Fedora
-sudo dnf install espeak-ng opus-tools
-```
+| OS | What to run |
+|---|---|
+| Linux | `scripts/install.sh` installs Piper under `/opt/piper` by default, and offers `ffmpeg`, `opus-tools` and `espeak-ng`. Or: `sudo bash scripts/install-piper.sh` after `sudo apt install ffmpeg opus-tools espeak-ng` (Fedora: `sudo dnf install ffmpeg opus-tools espeak-ng`). |
+| macOS | `brew install ffmpeg espeak-ng opus-tools`, then `bash scripts/install-piper.sh`. Piper goes to `~/.local/share/piper`. Apple Silicon needs Rosetta 2 for this Piper build. |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts/install-piper.ps1` (ffmpeg via winget, Piper under `%LOCALAPPDATA%\whatomate\piper`). Install [opus-tools](https://opus-codec.org/downloads/) if `opusenc` is not on `PATH`. |
 
 ### Install Piper
 
-```bash
-# Download Piper binary (Linux x86_64)
-wget https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
-tar xf piper_linux_x86_64.tar.gz
-sudo mv piper/piper /usr/local/bin/
-# Also install Piper's bundled libs (required; see espeak-ng note below)
-sudo cp piper/lib*.so* /usr/local/lib/
-sudo ldconfig
-```
+The scripts above download Piper `2023.11.14-2` and keep the binary, its libraries and `espeak-ng-data` in one directory, then download `en_US-lessac-medium` (the same voice the Docker image ships). Do not copy only the `piper` binary to another folder: it will not find its libraries.
 
 ### Download a Voice Model
 
@@ -513,39 +503,31 @@ Piper voices are available at [huggingface.co/rhasspy/piper-voices](https://hugg
 - For a consistent US English IVR voice, **`en_US-lessac-high`** is the best quality (~109MB). `en_US-lessac-medium` (~63MB) is the default shipped in the Docker image and is fine for testing.
 - Skip multi-speaker LibriTTS models for IVR — they vary speaker identity between prompts.
 
-```bash
-mkdir -p /opt/piper/models
-
-# Recommended: high-quality Lessac
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx \
-  -O /opt/piper/models/en_US-lessac-high.onnx
-wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high/en_US-lessac-high.onnx.json \
-  -O /opt/piper/models/en_US-lessac-high.onnx.json
-```
+The installer uses `en_US-lessac-medium`. For a larger US English voice, download `en_US-lessac-high` the same way (`.onnx` and `.onnx.json`) into the `models` directory and point `piper_model` at it.
 
 ### Configure TTS
 
-Add to your `config.toml`:
+Add to your `config.toml` (Linux paths; the install script prints the paths for macOS and Windows):
 
 ```toml
 [tts]
-piper_binary = "/usr/local/bin/piper"
-piper_model = "/opt/piper/models/en_US-lessac-high.onnx"
+piper_binary = "/opt/piper/piper"
+piper_model = "/opt/piper/models/en_US-lessac-medium.onnx"
 # opusenc_binary = "opusenc"  # defaults to finding in PATH
 ```
 
 ### Test TTS
 
 ```bash
-echo "Press 1 for sales, press 2 for support." | piper \
-  --model /opt/piper/models/en_US-lessac-high.onnx \
+echo "Press 1 for sales, press 2 for support." | /opt/piper/piper \
+  --model /opt/piper/models/en_US-lessac-medium.onnx \
   --output_file test.wav
 opusenc --bitrate 24 test.wav test.ogg
 # Play: aplay test.wav  OR  ffplay test.ogg
 ```
 
 <Aside type="caution">
-  Piper 2023.11.14 ships `libespeak-ng` 1.52 (`espeak_TextToPhonemesWithTerminator`). Debian Bookworm's `espeak-ng` is 1.51 and will win the dynamic linker lookup, causing `symbol lookup error` at generation time. The Docker image sets `LD_LIBRARY_PATH=/usr/local/lib` so Piper's bundled library is used. For a host install, copy Piper's `lib*.so*` into `/usr/local/lib` and export the same variable (or run Piper without the distro `libespeak-ng1` on the linker path).
+  Piper 2023.11.14 ships `libespeak-ng` 1.52. Debian and Ubuntu's `espeak-ng` 1.51 will win the dynamic linker lookup if you move the binary away from its libraries, causing `symbol lookup error`. Leave the extracted tree intact (`/opt/piper` on Linux). The Docker image sets `LD_LIBRARY_PATH=/usr/local/lib` for the same reason.
 </Aside>
 
 <Aside type="tip">

@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -114,6 +115,99 @@ func TestResolveMetaAppCreds_Order(t *testing.T) {
 	assert.Equal(t, "shared-app", id)
 	assert.Equal(t, "shared-secret", secret)
 	assert.Equal(t, "shared-config", cfg)
+}
+
+func TestUpdateSharedMetaApp_CopiesOrgSecretWhenBlank(t *testing.T) {
+	app := newTestApp(t)
+	resetSharedMetaApp(t, app)
+	app.Config.WhatsApp.AppID = "toml-app"
+	app.Config.WhatsApp.AppSecret = "toml-secret"
+	app.Config.WhatsApp.ConfigID = "toml-config"
+
+	org := testutil.CreateTestOrganization(t, app.DB)
+	selected := testutil.CreateTestOrganization(t, app.DB)
+	outsider := testutil.CreateTestOrganization(t, app.DB)
+	admin := testutil.CreateTestUser(t, app.DB, org.ID,
+		testutil.WithEmail(testutil.UniqueEmail("meta-copy-admin")),
+		testutil.WithSuperAdmin(),
+	)
+
+	enc, err := crypto.Encrypt("actual-secret", app.Config.App.EncryptionKey)
+	require.NoError(t, err)
+	org.Settings = models.JSONB{
+		"meta_app_id":               "actual-app",
+		"meta_config_id":            "actual-config",
+		"meta_app_secret_encrypted": enc,
+	}
+	require.NoError(t, app.DB.Save(org).Error)
+
+	// Blank secret: share the org's saved App ID, Config ID, and Secret.
+	req := testutil.NewJSONRequest(t, map[string]any{
+		"app_id":         "actual-app",
+		"config_id":      "actual-config",
+		"share_mode":     "selected",
+		"shared_org_ids": []string{strings.ToUpper(selected.ID.String())},
+	})
+	testutil.SetAuthContext(req, org.ID, admin.ID)
+	require.NoError(t, app.UpdateSharedMetaApp(req))
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
+
+	var resp struct {
+		Data struct {
+			Settings handlers.SharedMetaAppResponse `json:"settings"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+	assert.True(t, resp.Data.Settings.HasAppSecret)
+	assert.Equal(t, []string{selected.ID.String()}, resp.Data.Settings.SharedOrgIDs)
+
+	id, secret, cfg, err := app.ResolveMetaAppCredsForTest(selected.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "actual-app", id)
+	assert.Equal(t, "actual-secret", secret)
+	assert.Equal(t, "actual-config", cfg)
+
+	// Not selected → server defaults, not the shared secret.
+	id, secret, cfg, err = app.ResolveMetaAppCredsForTest(outsider.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "toml-app", id)
+	assert.Equal(t, "toml-secret", secret)
+	assert.Equal(t, "toml-config", cfg)
+
+	// Same App ID with only IDs stored still inherits the shared secret.
+	partial := testutil.CreateTestOrganization(t, app.DB)
+	partial.Settings = models.JSONB{
+		"meta_app_id":    "actual-app",
+		"meta_config_id": "actual-config",
+	}
+	require.NoError(t, app.DB.Save(partial).Error)
+	// partial is not in the selected list
+	id, secret, _, err = app.ResolveMetaAppCredsForTest(partial.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "toml-app", id)
+	assert.Equal(t, "toml-secret", secret)
+
+	// Global share: partial override keeps its IDs and inherits the secret.
+	globalReq := testutil.NewJSONRequest(t, map[string]any{
+		"app_id":     "actual-app",
+		"config_id":  "actual-config",
+		"share_mode": "global",
+	})
+	testutil.SetAuthContext(globalReq, org.ID, admin.ID)
+	require.NoError(t, app.UpdateSharedMetaApp(globalReq))
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(globalReq))
+
+	id, secret, cfg, err = app.ResolveMetaAppCredsForTest(partial.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "actual-app", id)
+	assert.Equal(t, "actual-secret", secret)
+	assert.Equal(t, "actual-config", cfg)
+
+	id, secret, cfg, err = app.ResolveMetaAppCredsForTest(outsider.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "actual-app", id)
+	assert.Equal(t, "actual-secret", secret)
+	assert.Equal(t, "actual-config", cfg)
 }
 
 func TestGetSharedMetaApp_RequiresSuperAdmin(t *testing.T) {

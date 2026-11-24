@@ -240,7 +240,7 @@ watch(phoneSearch, () => {
           <template #cell-duration="{ item: log }">
             <span class="inline-flex items-center gap-1.5">
               {{ formatCallDuration(log.duration) }}
-              <Mic v-if="log.recording_s3_key || hasAICallArtifacts(log)" class="h-3.5 w-3.5 text-muted-foreground" :title="t('calling.recording')" />
+              <Mic v-if="log.recording_s3_key || hasAICallArtifacts(log)" class="h-3.5 w-3.5 text-muted-foreground" :title="log.recording_s3_key?.includes('/voicemail-') ? t('calling.voicemail') : t('calling.recording')" />
             </span>
           </template>
           <template #cell-agent="{ item: log }">

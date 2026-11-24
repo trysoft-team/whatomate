@@ -541,35 +541,12 @@ class WebSocketService {
   private handleCallIncoming(payload: any) {
     const callingStore = useCallingStore()
     callingStore.handleCallEvent('call_incoming', payload)
-
-    const contactName = payload.caller_phone || 'Unknown'
-    playNotificationSound()
-    toast.info('Incoming Call', {
-      description: `Call from ${contactName}`,
-      duration: 5000,
-      action: {
-        label: 'View',
-        onClick: () => router.push('/calling/logs')
-      }
-    })
+    // Ringtone + Answer/Hangup live in ActiveCallPanel once a transfer is offered.
   }
 
   private handleCallTransferWaiting(payload: any) {
     const callingStore = useCallingStore()
     callingStore.handleCallEvent('call_transfer_waiting', payload)
-
-    const contactName = payload.caller_phone || 'Unknown'
-    playNotificationSound()
-    toast.info('Incoming Call Transfer', {
-      description: `Call from ${contactName} waiting for an agent`,
-      duration: 10000,
-      action: {
-        label: 'Accept',
-        onClick: () => {
-          router.push('/calling/transfers')
-        }
-      }
-    })
   }
 
   private handleCampaignStatsUpdate(payload: any) {

@@ -627,19 +627,47 @@ func (a *App) resolveMetaAppCreds(orgID uuid.UUID) (string, string, string, erro
 	appSecret := a.Config.WhatsApp.AppSecret
 	configID := a.Config.WhatsApp.ConfigID
 
-	if orgHasMetaOverride(org.Settings) {
-		overlayOrgMetaCreds(org.Settings, a.Config.App.EncryptionKey, &appID, &appSecret, &configID, a)
-		return appID, appSecret, configID, nil
-	}
-
 	shared, err := a.loadSharedMetaApp()
 	if err != nil {
 		a.Log.Error("Failed to load shared meta app for resolve", "error", err, "organization_id", orgID)
-	} else if shared != nil && shared.AppliesToOrg(orgID) {
+	}
+	sharedApplies := err == nil && shared != nil && shared.AppliesToOrg(orgID) && shared.HasCredentials()
+	if sharedApplies {
 		overlaySharedMetaCreds(shared, a.Config.App.EncryptionKey, &appID, &appSecret, &configID, a)
 	}
 
+	if orgHasMetaOverride(org.Settings) {
+		orgAppID, _ := org.Settings["meta_app_id"].(string)
+		orgAppID = strings.TrimSpace(orgAppID)
+		// A private App ID for a different app must not keep the shared secret.
+		if orgAppID != "" && shared != nil && strings.TrimSpace(shared.AppID) != "" && orgAppID != strings.TrimSpace(shared.AppID) {
+			appID = a.Config.WhatsApp.AppID
+			appSecret = a.Config.WhatsApp.AppSecret
+			configID = a.Config.WhatsApp.ConfigID
+		}
+		overlayOrgMetaCreds(org.Settings, a.Config.App.EncryptionKey, &appID, &appSecret, &configID, a)
+	}
+
 	return appID, appSecret, configID, nil
+}
+
+// orgMetaSecretForAppID returns the org's stored Meta App secret ciphertext
+// when that org's private App ID matches appID.
+func (a *App) orgMetaSecretForAppID(orgID uuid.UUID, appID string) string {
+	appID = strings.TrimSpace(appID)
+	if a == nil || appID == "" || orgID == uuid.Nil {
+		return ""
+	}
+	var org models.Organization
+	if err := a.DB.Where("id = ?", orgID).First(&org).Error; err != nil || org.Settings == nil {
+		return ""
+	}
+	storedID, _ := org.Settings["meta_app_id"].(string)
+	if strings.TrimSpace(storedID) != appID {
+		return ""
+	}
+	enc, _ := org.Settings["meta_app_secret_encrypted"].(string)
+	return strings.TrimSpace(enc)
 }
 
 func overlayOrgMetaCreds(settings models.JSONB, encKey string, appID, appSecret, configID *string, a *App) {

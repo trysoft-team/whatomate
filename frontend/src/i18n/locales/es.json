@@ -301,6 +301,7 @@
     "reactions": "Reacciones",
     "addReaction": "Agregar reacción",
     "filterByTags": "Filtrar por etiquetas",
+    "filterByAccount": "Cuenta de WhatsApp",
     "noTagsAvailable": "No hay etiquetas disponibles",
     "paused": "Pausado",
     "assignedTo": "Asignado a",
@@ -2244,6 +2245,7 @@
     "permissionDeclined": "Permiso denegado",
     "noPermission": "Sin permiso de llamada para este contacto",
     "callFailed": "Error al iniciar la llamada",
+    "eligibilityPaymentIssue": "Las llamadas de WhatsApp no están habilitadas para esta cuenta comercial (error Meta 131044). Añade un método de pago y activa las llamadas en Meta Business Manager.",
     "permissionSent": "Solicitud de permiso de llamada enviada",
     "permissionSentDesc": "El contacto necesita aceptar el permiso de llamada en WhatsApp antes de que pueda llamarlo. Intente de nuevo después de que acepte."
   }

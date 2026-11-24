@@ -170,6 +170,7 @@ homebrew_casks:
     commit_msg_template: "whatomate {{ .Tag }}"
     dependencies:
       - formula: ffmpeg
+      - formula: espeak-ng
       - formula: opus-tools
     caveats: |
       Start whatomate and finish setup in your browser:
@@ -179,6 +180,12 @@ homebrew_casks:
       #{HOMEBREW_PREFIX}/etc/whatomate/config.toml on macOS
       (~/.config/whatomate/config.toml on Linux).
       Until setup is finished, anyone who can reach this port can complete it.
+
+      Spoken IVR greetings need Piper TTS. This cask installs ffmpeg,
+      espeak-ng and opus-tools. Install Piper and the default voice with:
+        curl -fsSL https://raw.githubusercontent.com/trysoft-team/whatomate/main/scripts/install-piper.sh | bash
+      Then set [tts] piper_binary and piper_model in config.toml
+      (macOS default: ~/.local/share/piper/piper).
 
       Redis is optional: set [redis] host in config.toml to use one.
       {{- if not (isEnvSet "MACOS_SIGN_P12") }}

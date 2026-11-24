@@ -11,6 +11,8 @@ export interface ButtonConfig {
   /** flow only: the Meta flow to launch and the first screen to open. */
   flow_id?: string
   screen?: string
+  /** list rows only: secondary line under the row title. */
+  description?: string
 }
 
 export interface ApiConfig {
@@ -78,6 +80,9 @@ export interface SimulationMessage {
   inputConfig?: Record<string, any>
   isValidationError?: boolean
   isApiMessage?: boolean
+  /** WhatsApp list message: buttons are rows behind a single picker button. */
+  isList?: boolean
+  listButtonText?: string
 }
 
 export interface SimulationSnapshot {

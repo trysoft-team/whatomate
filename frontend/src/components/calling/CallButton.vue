@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useCallingStore } from '@/stores/calling'
 import { outgoingCallsService } from '@/services/api'
+import { getErrorMessage } from '@/lib/api-utils'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Phone, Loader2, Clock, X } from 'lucide-vue-next'
@@ -50,6 +51,16 @@ const tooltipText = computed(() => {
   return t('outgoingCalls.callButton')
 })
 
+// Meta 131044 means the WABA isn't billable/eligible for Cloud API calling —
+// surface that clearly instead of a raw API string or a WebRTC SDP parse error.
+function formatCallError(err: unknown): string {
+  const raw = getErrorMessage(err, t('outgoingCalls.callFailed'))
+  if (/131044|Business eligibility payment issue/i.test(raw)) {
+    return t('outgoingCalls.eligibilityPaymentIssue')
+  }
+  return raw
+}
+
 async function handleCall() {
   if (store.isOnCall || isInitiating.value) return
 
@@ -90,9 +101,9 @@ async function handleCall() {
         description: t('outgoingCalls.permissionSentDesc'),
       })
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     toast.error(t('outgoingCalls.callFailed'), {
-      description: err.message || String(err),
+      description: formatCallError(err),
     })
   } finally {
     isInitiating.value = false
