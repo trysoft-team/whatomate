@@ -83,3 +83,5 @@ CLAUDE.md
 *.db
 .beads-credential-key
 *.gate.lock*
+# Local prod-data restore (contains prod encryption key)
+config.prod-local.toml

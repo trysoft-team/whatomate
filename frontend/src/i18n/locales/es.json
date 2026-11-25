@@ -1288,6 +1288,8 @@
     "fromPrevious7Days": "de los 7 días anteriores",
     "fromPrevious30Days": "de los 30 días anteriores",
     "fromLastMonth": "del mes pasado",
+    "fromPrevious3Months": "de los 3 meses anteriores",
+    "fromLastYear": "del año pasado",
     "fromPreviousPeriod": "del período anterior",
     "justNow": "Ahora mismo",
     "minutesAgo": "hace {count}m",

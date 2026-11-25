@@ -37,8 +37,9 @@ const flowCategories = [
 const componentsWithoutId = [
   'TextHeading', 'TextSubheading', 'TextBody', 'TextCaption', 'RichText',
   'TextInput', 'TextArea', 'Dropdown', 'RadioButtonsGroup', 'CheckboxGroup',
-  'OptIn', 'DatePicker', 'CalendarPicker', 'PhotoPicker', 'DocumentPicker',
-  'Image', 'EmbeddedLink', 'If', 'Switch', 'Footer',
+  'ChipsSelector', 'NavigationList', 'OptIn', 'DatePicker', 'CalendarPicker',
+  'PhotoPicker', 'DocumentPicker', 'Image', 'ImageCarousel', 'EmbeddedLink',
+  'If', 'Switch', 'Footer',
 ]
 
 const isCreate = computed(() => route.name === 'flow-new' || !route.params.id)
@@ -219,6 +220,11 @@ async function save() {
   }
   if (form.value.endpoint_enabled && form.value.endpoint_mode === 'proxy' && !form.value.endpoint_proxy_url.trim()) {
     toast.error(t('flows.endpointProxyUrlRequired', 'Enter the URL to forward endpoint requests to'))
+    return
+  }
+  if (flowBuilderRef.value?.hasBlockingErrors?.()) {
+    const first = flowBuilderRef.value.getValidationIssues?.()?.find((i: any) => i.severity === 'error')
+    toast.error(first?.message || t('flows.fixMetaRules', 'Fix Meta Flow component rule errors before saving'))
     return
   }
 
@@ -466,7 +472,12 @@ function accountDisplay(account: Account) {
     </div>
 
     <div v-else class="flex-1 min-h-0 p-4">
-      <FlowBuilder ref="flowBuilderRef" v-model="builderData" :endpoint-enabled="form.endpoint_enabled" />
+      <FlowBuilder
+        ref="flowBuilderRef"
+        v-model="builderData"
+        :endpoint-enabled="form.endpoint_enabled"
+        :json-version="form.json_version"
+      />
     </div>
   </div>
 </template>

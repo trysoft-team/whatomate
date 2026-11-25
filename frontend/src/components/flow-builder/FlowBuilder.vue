@@ -48,6 +48,11 @@ import {
   HelpCircle,
   Flag,
   RotateCcw,
+  List,
+  Tags,
+  GalleryHorizontal,
+  AlertCircle,
+  AlertTriangle,
 } from 'lucide-vue-next'
 import {
   DropdownMenu,
@@ -61,6 +66,15 @@ import { toast } from 'vue-sonner'
 import draggable from 'vuedraggable'
 import FlowComponentPreview from '@/components/flow-builder/FlowComponentPreview.vue'
 import { useColorMode } from '@/composables/useColorMode'
+import { normalizeScreensForBuilder, screensNeedNormalize, wrapScreensForMeta } from '@/lib/whatsappFlowNormalize'
+import { resolveVisibleFlowComponents, type FlowFormValues } from '@/lib/flowCondition'
+import {
+  hasBlockingErrors,
+  issuesForComponent,
+  issuesForScreen,
+  validateFlowScreens,
+  type FlowIssue,
+} from '@/lib/flowValidation'
 
 // Component types available in WhatsApp Flows (Meta Flow JSON)
 const componentTypes = [
@@ -74,12 +88,15 @@ const componentTypes = [
   { type: 'Dropdown', label: 'Dropdown', icon: ChevronDown },
   { type: 'RadioButtonsGroup', label: 'Radio Buttons', icon: CircleDot },
   { type: 'CheckboxGroup', label: 'Checkboxes', icon: CheckSquare },
+  { type: 'ChipsSelector', label: 'Chips', icon: Tags },
   { type: 'OptIn', label: 'Opt-In', icon: ShieldCheck },
   { type: 'DatePicker', label: 'Date Picker', icon: Calendar },
   { type: 'CalendarPicker', label: 'Calendar', icon: CalendarRange },
   { type: 'PhotoPicker', label: 'Photo Upload', icon: Camera },
   { type: 'DocumentPicker', label: 'Doc Upload', icon: FileUp },
   { type: 'Image', label: 'Image', icon: Image },
+  { type: 'ImageCarousel', label: 'Carousel', icon: GalleryHorizontal },
+  { type: 'NavigationList', label: 'Nav List', icon: List },
   { type: 'EmbeddedLink', label: 'Link', icon: Link2 },
   { type: 'If', label: 'If', icon: GitBranch },
   { type: 'Switch', label: 'Switch', icon: Split },
@@ -95,7 +112,15 @@ const nestableComponentTypes = [
   { type: 'EmbeddedLink', label: 'Link' },
   { type: 'OptIn', label: 'Opt-In' },
   { type: 'TextInput', label: 'Text Input' },
+  { type: 'TextArea', label: 'Text Area' },
   { type: 'Dropdown', label: 'Dropdown' },
+  { type: 'RadioButtonsGroup', label: 'Radio Buttons' },
+  { type: 'CheckboxGroup', label: 'Checkboxes' },
+  { type: 'ChipsSelector', label: 'Chips' },
+  { type: 'DatePicker', label: 'Date Picker' },
+  { type: 'Image', label: 'Image' },
+  // Footer allowed in outermost If (must be in both then and else).
+  { type: 'Footer', label: 'Footer Button' },
 ]
 
 interface FlowComponent {
@@ -116,6 +141,10 @@ interface FlowScreen {
   id: string
   title: string
   data: Record<string, any>
+  /** Meta Form.name preserved when unwrapping synced flows. */
+  formName?: string
+  /** Terminal screens finish the flow; NavigationList is not allowed. */
+  terminal?: boolean
   layout: {
     type: string
     children: FlowComponent[]
@@ -126,11 +155,14 @@ interface Props {
   modelValue?: { screens: FlowScreen[] }
   /** Flow has a data endpoint, so Footers may use data_exchange. */
   endpointEnabled?: boolean
+  /** Flow JSON version (affects RichText + Footer exclusivity). */
+  jsonVersion?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
   modelValue: () => ({ screens: [] }),
   endpointEnabled: false,
+  jsonVersion: '6.1',
 })
 
 /** Select value for "no next screen": the endpoint completes the flow. */
@@ -142,15 +174,19 @@ const emit = defineEmits<{
 
 const { isDark } = useColorMode()
 
-const screens = ref<FlowScreen[]>(props.modelValue?.screens || [])
+const screens = ref<FlowScreen[]>(normalizeScreensForBuilder(props.modelValue?.screens || []) as FlowScreen[])
 const selectedScreenIndex = ref<number>(0)
 const selectedComponentIndex = ref<number | null>(null)
 /** Nested child under If/Switch currently being edited in the properties panel. */
 const selectedNested = ref<{ branch: 'then' | 'else' | 'case'; caseKey?: string; index: number } | null>(null)
 
 watch(() => props.modelValue, (newVal) => {
-  if (newVal?.screens) {
-    screens.value = newVal.screens
+  if (!newVal?.screens) return
+  // Only re-normalize Meta Form wrappers / missing ids — avoid emit loops on flat screens.
+  if (screensNeedNormalize(newVal.screens)) {
+    screens.value = normalizeScreensForBuilder(newVal.screens) as FlowScreen[]
+  } else if (newVal.screens !== screens.value) {
+    screens.value = newVal.screens as FlowScreen[]
   }
 }, { deep: true })
 
@@ -164,6 +200,159 @@ const selectedComponent = computed(() => {
   return selectedScreen.value.layout.children[selectedComponentIndex.value]
 })
 
+/** Live Meta component-rule validation (updates as the builder edits). */
+const flowIssues = computed((): FlowIssue[] =>
+  validateFlowScreens(screens.value as any, {
+    endpointEnabled: props.endpointEnabled,
+    jsonVersion: props.jsonVersion,
+  }),
+)
+const blockingErrorCount = computed(() => flowIssues.value.filter(i => i.severity === 'error').length)
+const warningCount = computed(() => flowIssues.value.filter(i => i.severity === 'warning').length)
+const selectedScreenIssues = computed(() => issuesForScreen(flowIssues.value, selectedScreenIndex.value))
+const validationPanelOpen = ref(true)
+
+function componentHasIssues(componentId?: string): boolean {
+  return issuesForComponent(flowIssues.value, componentId).some(i => i.severity === 'error')
+}
+
+function screenHasIssues(index: number): boolean {
+  return issuesForScreen(flowIssues.value, index).some(i => i.severity === 'error')
+}
+
+function focusIssue(issue: FlowIssue) {
+  selectedScreenIndex.value = issue.screenIndex
+  selectedNested.value = null
+  const screen = screens.value[issue.screenIndex]
+  if (!screen || !issue.componentId) {
+    selectedComponentIndex.value = null
+    return
+  }
+  const idx = screen.layout.children.findIndex(c => c.id === issue.componentId)
+  if (idx >= 0) {
+    selectedComponentIndex.value = idx
+    return
+  }
+  // Nested under If/Switch
+  for (let i = 0; i < screen.layout.children.length; i++) {
+    const c = screen.layout.children[i]
+    if (c.type === 'If') {
+      const thenIdx = (c.then || []).findIndex((n: FlowComponent) => n.id === issue.componentId)
+      if (thenIdx >= 0) {
+        selectedComponentIndex.value = i
+        selectedNested.value = { branch: 'then', index: thenIdx }
+        return
+      }
+      const elseIdx = (c.else || []).findIndex((n: FlowComponent) => n.id === issue.componentId)
+      if (elseIdx >= 0) {
+        selectedComponentIndex.value = i
+        selectedNested.value = { branch: 'else', index: elseIdx }
+        return
+      }
+    }
+    if (c.type === 'Switch' && c.cases) {
+      for (const [caseKey, branch] of Object.entries(c.cases)) {
+        const nIdx = (branch as FlowComponent[]).findIndex(n => n.id === issue.componentId)
+        if (nIdx >= 0) {
+          selectedComponentIndex.value = i
+          selectedNested.value = { branch: 'case', caseKey, index: nIdx }
+          return
+        }
+      }
+    }
+  }
+  selectedComponentIndex.value = null
+}
+
+function countTypesDeep(comps: FlowComponent[] | undefined, type: string): number {
+  if (!Array.isArray(comps)) return 0
+  let n = 0
+  for (const c of comps) {
+    if (c.type === type) n++
+    if (Array.isArray(c.then)) n += countTypesDeep(c.then, type)
+    if (Array.isArray(c.else)) n += countTypesDeep(c.else, type)
+    if (c.cases) {
+      for (const branch of Object.values(c.cases)) {
+        n += countTypesDeep(branch as FlowComponent[], type)
+      }
+    }
+  }
+  return n
+}
+
+function countAllDeep(comps: FlowComponent[] | undefined): number {
+  if (!Array.isArray(comps)) return 0
+  let n = 0
+  for (const c of comps) {
+    n++
+    if (Array.isArray(c.then)) n += countAllDeep(c.then)
+    if (Array.isArray(c.else)) n += countAllDeep(c.else)
+    if (c.cases) {
+      for (const branch of Object.values(c.cases)) {
+        n += countAllDeep(branch as FlowComponent[])
+      }
+    }
+  }
+  return n
+}
+
+/** Soft-block palette adds that would immediately violate Meta exclusivity rules. */
+function canAddComponentType(type: string): { ok: boolean; reason?: string } {
+  const children = selectedScreen.value?.layout.children || []
+  const total = countAllDeep(children)
+  if (total >= 50) return { ok: false, reason: 'Screens allow at most 50 components' }
+
+  const hasNav = countTypesDeep(children, 'NavigationList') > 0
+  if (hasNav && type !== 'NavigationList') {
+    return { ok: false, reason: 'NavigationList cannot share a screen with other components' }
+  }
+  if (type === 'NavigationList' && children.length > 0) {
+    return { ok: false, reason: 'NavigationList must be alone on the screen' }
+  }
+  if (type === 'NavigationList' && countTypesDeep(children, 'NavigationList') >= 2) {
+    return { ok: false, reason: 'At most 2 NavigationList components per screen' }
+  }
+  if (type === 'NavigationList' && selectedScreen.value?.terminal) {
+    return { ok: false, reason: 'NavigationList cannot be used on a terminal screen' }
+  }
+
+  const hasRich = countTypesDeep(children, 'RichText') > 0
+  if (hasRich && type !== 'RichText' && type !== 'Footer') {
+    return { ok: false, reason: 'RichText may only share a screen with Footer' }
+  }
+  if (type === 'RichText' && children.some(c => c.type !== 'Footer' && c.type !== 'RichText')) {
+    return { ok: false, reason: 'Clear other components before adding RichText' }
+  }
+
+  if (type === 'Footer' && countTypesDeep(children, 'Footer') >= 1) {
+    return { ok: false, reason: 'Only one Footer is allowed per screen' }
+  }
+  if ((type === 'PhotoPicker' || type === 'DocumentPicker') &&
+      (countTypesDeep(children, 'PhotoPicker') + countTypesDeep(children, 'DocumentPicker')) >= 1) {
+    return { ok: false, reason: 'Only one PhotoPicker or DocumentPicker per screen' }
+  }
+  if (type === 'Image' && countTypesDeep(children, 'Image') >= 3) {
+    return { ok: false, reason: 'At most 3 Images per screen' }
+  }
+  if (type === 'OptIn' && countTypesDeep(children, 'OptIn') >= 5) {
+    return { ok: false, reason: 'At most 5 OptIns per screen' }
+  }
+  if (type === 'EmbeddedLink' && countTypesDeep(children, 'EmbeddedLink') >= 2) {
+    return { ok: false, reason: 'At most 2 EmbeddedLinks per screen' }
+  }
+  if (type === 'ImageCarousel') {
+    if (countTypesDeep(children, 'ImageCarousel') >= 2) {
+      return { ok: false, reason: 'At most 2 ImageCarousels per screen' }
+    }
+    const flowCarousels = screens.value.reduce(
+      (sum, s) => sum + countTypesDeep(s.layout?.children, 'ImageCarousel'),
+      0,
+    )
+    if (flowCarousels >= 3) return { ok: false, reason: 'At most 3 ImageCarousels per flow' }
+  }
+  return { ok: true }
+}
+
 const selectedNestedComponent = computed(() => {
   if (!selectedComponent.value || !selectedNested.value) return null
   const nest = selectedNested.value
@@ -176,6 +365,11 @@ const selectedNestedComponent = computed(() => {
     return list[nest.index] || null
   }
   return null
+})
+
+const selectedComponentIssues = computed(() => {
+  const id = selectedNestedComponent.value?.id || selectedComponent.value?.id
+  return issuesForComponent(flowIssues.value, id)
 })
 
 const switchCaseKeys = computed(() => {
@@ -206,6 +400,8 @@ function generateFieldName(type: string): string {
                  type === 'Dropdown' ? 'dropdown' :
                  type === 'RadioButtonsGroup' ? 'radio' :
                  type === 'CheckboxGroup' ? 'checkbox' :
+                 type === 'ChipsSelector' ? 'chips' :
+                 type === 'NavigationList' ? 'nav_list' :
                  type === 'DatePicker' ? 'date' :
                  type === 'CalendarPicker' ? 'calendar' :
                  type === 'PhotoPicker' ? 'photo_picker' :
@@ -322,6 +518,48 @@ function createDefaultComponent(type: string): FlowComponent {
         { id: 'option_b', title: 'Option 2' }
       ]
       break
+    case 'ChipsSelector':
+      component.name = generateFieldName(type)
+      component.label = 'Personalize your experience'
+      component.description = 'Choose one or more options'
+      component.required = false
+      component['max-selected-items'] = 2
+      component['data-source'] = [
+        { id: 'option_a', title: 'Option 1' },
+        { id: 'option_b', title: 'Option 2' },
+        { id: 'option_c', title: 'Option 3' },
+      ]
+      break
+    case 'NavigationList':
+      component.name = generateFieldName(type)
+      component.label = 'Choose an option'
+      component.description = ''
+      component['media-size'] = 'regular'
+      component['list-items'] = [
+        {
+          id: 'item_a',
+          'main-content': { title: 'Item 1', description: 'Details' },
+          tags: ['Tag'],
+        },
+        {
+          id: 'item_b',
+          'main-content': { title: 'Item 2', description: 'Details' },
+        },
+      ]
+      component['on-click-action'] = {
+        name: 'navigate',
+        next: { type: 'screen', name: '' },
+        payload: {},
+      }
+      break
+    case 'ImageCarousel':
+      component['aspect-ratio'] = '4:3'
+      component['scale-type'] = 'contain'
+      component.images = [
+        { src: '', 'alt-text': 'Image 1' },
+        { src: '', 'alt-text': 'Image 2' },
+      ]
+      break
     case 'OptIn':
       component.name = generateFieldName(type)
       component.label = 'I agree to the terms and conditions'
@@ -400,6 +638,11 @@ function createDefaultComponent(type: string): FlowComponent {
 
 function addComponent(type: string) {
   if (!selectedScreen.value) return
+  const gate = canAddComponentType(type)
+  if (!gate.ok) {
+    toast.error(gate.reason || 'Cannot add this component')
+    return
+  }
   selectedScreen.value.layout.children.push(createDefaultComponent(type))
   selectedComponentIndex.value = selectedScreen.value.layout.children.length - 1
   selectedNested.value = null
@@ -537,15 +780,70 @@ function isComponentSelected(comp: FlowComponent | null | undefined) {
   return !!comp?.id && selectedComponent.value?.id === comp.id
 }
 
-const playgroundBodyComponents = computed(() => {
+/** Live form values for Meta-like If/Switch evaluation in the phone preview. */
+const playgroundFormValues = ref<FlowFormValues>({})
+
+function setPlaygroundFormValue(name: string, value: unknown) {
+  if (!name) return
+  playgroundFormValues.value = { ...playgroundFormValues.value, [name]: value }
+}
+
+function seedPlaygroundDefaults(children: FlowComponent[]) {
+  const next: FlowFormValues = { ...playgroundFormValues.value }
+  const walk = (list: FlowComponent[]) => {
+    for (const c of list) {
+      if (c.name && !(c.name in next)) {
+        if (c.type === 'Dropdown' || c.type === 'RadioButtonsGroup') {
+          const first = Array.isArray(c['data-source']) ? c['data-source'][0]?.id : undefined
+          if (first != null) next[c.name] = first
+        } else if (c.type === 'CheckboxGroup' || c.type === 'ChipsSelector') {
+          next[c.name] = []
+        } else if (c.type === 'OptIn') {
+          next[c.name] = false
+        } else if (c['init-value'] != null) {
+          next[c.name] = c['init-value']
+        }
+      }
+      if (Array.isArray(c.then)) walk(c.then)
+      if (Array.isArray(c.else)) walk(c.else)
+      if (c.cases) {
+        for (const branch of Object.values(c.cases)) {
+          if (Array.isArray(branch)) walk(branch)
+        }
+      }
+    }
+  }
+  walk(children)
+  playgroundFormValues.value = next
+}
+
+watch(
+  () => selectedScreen.value?.id,
+  () => {
+    playgroundFormValues.value = {}
+    if (selectedScreen.value?.layout?.children) {
+      seedPlaygroundDefaults(selectedScreen.value.layout.children)
+    }
+  },
+  { immediate: true },
+)
+
+const playgroundResolvedComponents = computed(() => {
   if (!selectedScreen.value) return [] as FlowComponent[]
-  return selectedScreen.value.layout.children.filter(c => c.type !== 'Footer')
+  return resolveVisibleFlowComponents(
+    selectedScreen.value.layout.children,
+    playgroundFormValues.value,
+    selectedScreen.value.data || {},
+  ) as FlowComponent[]
 })
 
-const playgroundFooter = computed(() => {
-  if (!selectedScreen.value) return null
-  return selectedScreen.value.layout.children.find(c => c.type === 'Footer') || null
-})
+const playgroundBodyComponents = computed(() =>
+  playgroundResolvedComponents.value.filter(c => c.type !== 'Footer'),
+)
+
+const playgroundFooter = computed(() =>
+  playgroundResolvedComponents.value.find(c => c.type === 'Footer') || null,
+)
 
 const playgroundProgress = computed(() => {
   const total = screens.value.length
@@ -593,12 +891,16 @@ function copyFlowJson() {
 function restartPreview() {
   previewSent.value = false
   playgroundNavMenuOpen.value = false
+  playgroundFormValues.value = {}
   previewKey.value += 1
   // Reset to first screen for multi-screen preview feel
   if (screens.value.length > 0) {
     selectedScreenIndex.value = 0
     selectedComponentIndex.value = null
     selectedNested.value = null
+  }
+  if (selectedScreen.value?.layout?.children) {
+    seedPlaygroundDefaults(selectedScreen.value.layout.children)
   }
 }
 
@@ -770,6 +1072,102 @@ function updateOption(index: number, key: string, value: string) {
   target['data-source'][index][key] = value
 }
 
+function addNavListItem() {
+  if (!selectedComponent.value || selectedComponent.value.type !== 'NavigationList') return
+  if (!Array.isArray(selectedComponent.value['list-items'])) {
+    selectedComponent.value['list-items'] = []
+  }
+  selectedComponent.value['list-items'].push({
+    id: generateId(),
+    'main-content': { title: 'New item', description: '' },
+    tags: [],
+  })
+}
+
+function removeNavListItem(index: number) {
+  selectedComponent.value?.['list-items']?.splice(index, 1)
+}
+
+function updateNavListItem(index: number, path: string, value: string) {
+  const item = selectedComponent.value?.['list-items']?.[index]
+  if (!item) return
+  if (path.startsWith('main-content.')) {
+    if (!item['main-content']) item['main-content'] = { title: '' }
+    item['main-content'][path.slice('main-content.'.length)] = value
+  } else if (path.startsWith('end.')) {
+    if (!item.end) item.end = {}
+    item.end[path.slice('end.'.length)] = value
+  } else if (path === 'tags') {
+    item.tags = value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 3)
+  } else {
+    item[path] = value
+  }
+}
+
+async function onNavItemImageSelected(index: number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const item = selectedComponent.value?.['list-items']?.[index]
+  if (!file || !item) return
+  if (!IMAGE_ACCEPT.split(',').includes(file.type) && !/\.(jpe?g|png)$/i.test(file.name)) {
+    toast.error('Use a JPEG or PNG image')
+    return
+  }
+  if (file.size > 100 * 1024) {
+    toast.error('Nav list images must be under 100KB')
+    return
+  }
+  try {
+    const dataUrl = await readFileAsDataURL(file)
+    item.start = {
+      image: stripImageDataUrl(dataUrl),
+      'alt-text': file.name.replace(/\.[^.]+$/, ''),
+    }
+  } catch {
+    toast.error('Failed to read image')
+  }
+}
+
+function addCarouselImage() {
+  if (!selectedComponent.value || selectedComponent.value.type !== 'ImageCarousel') return
+  if (!Array.isArray(selectedComponent.value.images)) selectedComponent.value.images = []
+  if (selectedComponent.value.images.length >= 3) {
+    toast.error('ImageCarousel supports at most 3 images')
+    return
+  }
+  selectedComponent.value.images.push({ src: '', 'alt-text': `Image ${selectedComponent.value.images.length + 1}` })
+}
+
+function removeCarouselImage(index: number) {
+  selectedComponent.value?.images?.splice(index, 1)
+}
+
+async function onCarouselImageSelected(index: number, event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const images = selectedComponent.value?.images
+  if (!file || !images?.[index]) return
+  if (!IMAGE_ACCEPT.split(',').includes(file.type) && !/\.(jpe?g|png)$/i.test(file.name)) {
+    toast.error('Use a JPEG or PNG image')
+    return
+  }
+  if (file.size > IMAGE_MAX_BYTES) {
+    toast.error(`Image must be under 300KB`)
+    return
+  }
+  try {
+    const dataUrl = await readFileAsDataURL(file)
+    images[index].src = stripImageDataUrl(dataUrl)
+    if (!images[index]['alt-text']) {
+      images[index]['alt-text'] = file.name.replace(/\.[^.]+$/, '')
+    }
+  } catch {
+    toast.error('Failed to read image')
+  }
+}
+
 async function onOptionImageSelected(index: number, event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -835,12 +1233,15 @@ const componentsWithoutId = [
   'Dropdown',
   'RadioButtonsGroup',
   'CheckboxGroup',
+  'ChipsSelector',
+  'NavigationList',
   'OptIn',
   'DatePicker',
   'CalendarPicker',
   'PhotoPicker',
   'DocumentPicker',
   'Image',
+  'ImageCarousel',
   'EmbeddedLink',
   'If',
   'Switch',
@@ -890,6 +1291,56 @@ function sanitizeComponent(comp: FlowComponent): Record<string, any> {
     if (!cleaned.description) delete cleaned.description
   }
 
+  if (comp.type === 'ChipsSelector') {
+    if (!cleaned.description) delete cleaned.description
+    if (cleaned['max-selected-items'] === '' || cleaned['max-selected-items'] == null) delete cleaned['max-selected-items']
+    if (cleaned['min-selected-items'] === '' || cleaned['min-selected-items'] == null) delete cleaned['min-selected-items']
+  }
+
+  if (comp.type === 'NavigationList') {
+    if (!cleaned.description) delete cleaned.description
+    if (!cleaned.label) delete cleaned.label
+    if (Array.isArray(cleaned['list-items'])) {
+      cleaned['list-items'] = cleaned['list-items'].map((item: any) => {
+        const next: Record<string, any> = {
+          id: item.id,
+          'main-content': {
+            title: item['main-content']?.title || '',
+          },
+        }
+        if (item['main-content']?.description) next['main-content'].description = item['main-content'].description
+        if (item['main-content']?.metadata) next['main-content'].metadata = item['main-content'].metadata
+        if (item.start?.image) {
+          next.start = {
+            image: stripImageDataUrl(String(item.start.image)),
+          }
+          if (item.start['alt-text']) next.start['alt-text'] = item.start['alt-text']
+        }
+        if (item.end && (item.end.title || item.end.description || item.end.metadata)) {
+          next.end = {}
+          if (item.end.title) next.end.title = item.end.title
+          if (item.end.description) next.end.description = item.end.description
+          if (item.end.metadata) next.end.metadata = item.end.metadata
+        }
+        if (item.badge) next.badge = item.badge
+        if (Array.isArray(item.tags) && item.tags.length) next.tags = item.tags.filter(Boolean).slice(0, 3)
+        if (item['on-click-action']) next['on-click-action'] = item['on-click-action']
+        return next
+      })
+    }
+  }
+
+  if (comp.type === 'ImageCarousel') {
+    if (Array.isArray(cleaned.images)) {
+      cleaned.images = cleaned.images
+        .filter((img: any) => img && (img.src || img['alt-text']))
+        .map((img: any) => ({
+          src: stripImageDataUrl(String(img.src || '')),
+          'alt-text': img['alt-text'] || 'Image',
+        }))
+    }
+  }
+
   if (comp.type === 'If') {
     cleaned.then = (Array.isArray(comp.then) ? comp.then : []).map((c: FlowComponent) => sanitizeComponent(c))
     if (Array.isArray(comp.else) && comp.else.length > 0) {
@@ -914,26 +1365,78 @@ function sanitizeComponent(comp: FlowComponent): Record<string, any> {
 }
 
 function sanitizeFlowForMeta(flowData: { screens: FlowScreen[] }): { screens: any[] } {
-  return {
-    screens: flowData.screens.map(screen => ({
-      id: screen.id,
-      title: screen.title,
-      data: screen.data,
-      layout: {
-        type: screen.layout.type,
-        children: screen.layout.children.map(comp => sanitizeComponent(comp))
-      }
-    }))
-  }
+  const cleaned = flowData.screens.map(screen => ({
+    id: screen.id,
+    title: screen.title,
+    data: screen.data,
+    formName: screen.formName,
+    layout: {
+      type: screen.layout.type,
+      children: screen.layout.children.map(comp => sanitizeComponent(comp)),
+    },
+  }))
+  // Meta requires a Form wrapper around screen fields; re-wrap after editing.
+  return { screens: wrapScreensForMeta(cleaned as any) }
 }
 
 defineExpose({
-  sanitizeFlowForMeta
+  sanitizeFlowForMeta,
+  getValidationIssues: () => flowIssues.value,
+  hasBlockingErrors: () => hasBlockingErrors(flowIssues.value),
 })
 </script>
 
 <template>
-  <div class="flex h-full gap-4">
+  <div class="flex h-full flex-col gap-3 min-h-0">
+    <!-- Live Meta rules validation -->
+    <div
+      v-if="flowIssues.length"
+      class="flex-shrink-0 rounded-lg border px-3 py-2"
+      :class="blockingErrorCount
+        ? 'border-destructive/40 bg-destructive/10'
+        : 'border-amber-500/40 bg-amber-500/10'"
+    >
+      <button
+        type="button"
+        class="w-full flex items-center gap-2 text-left text-sm"
+        @click="validationPanelOpen = !validationPanelOpen"
+      >
+        <AlertCircle v-if="blockingErrorCount" class="h-4 w-4 text-destructive flex-shrink-0" />
+        <AlertTriangle v-else class="h-4 w-4 text-amber-500 flex-shrink-0" />
+        <span class="flex-1 font-medium">
+          <template v-if="blockingErrorCount">
+            {{ blockingErrorCount }} Meta rule{{ blockingErrorCount === 1 ? '' : 's' }} to fix
+          </template>
+          <template v-else>
+            {{ warningCount }} warning{{ warningCount === 1 ? '' : 's' }}
+          </template>
+          <span v-if="blockingErrorCount && warningCount" class="font-normal text-muted-foreground">
+            · {{ warningCount }} warning{{ warningCount === 1 ? '' : 's' }}
+          </span>
+        </span>
+        <span class="text-[10px] text-muted-foreground">{{ validationPanelOpen ? 'Hide' : 'Show' }}</span>
+      </button>
+      <ul v-if="validationPanelOpen" class="mt-2 space-y-1 max-h-28 overflow-y-auto">
+        <li
+          v-for="(issue, i) in flowIssues"
+          :key="`${issue.code}-${issue.screenIndex}-${issue.componentId || i}`"
+        >
+          <button
+            type="button"
+            class="w-full text-left text-xs px-2 py-1 rounded hover:bg-background/60 flex gap-2"
+            @click="focusIssue(issue)"
+          >
+            <span
+              class="font-mono text-[10px] flex-shrink-0 mt-0.5"
+              :class="issue.severity === 'error' ? 'text-destructive' : 'text-amber-600'"
+            >{{ issue.code }}</span>
+            <span class="text-muted-foreground">{{ issue.message }}</span>
+          </button>
+        </li>
+      </ul>
+    </div>
+
+    <div class="flex flex-1 min-h-0 gap-4">
     <!-- Screens Panel -->
     <Card class="w-64 flex-shrink-0 flex flex-col overflow-hidden">
       <CardHeader class="py-3 px-4">
@@ -961,6 +1464,11 @@ defineExpose({
           >
             <GripVertical class="h-4 w-4 opacity-50" />
             <span class="flex-1 truncate">{{ screen.title }}</span>
+            <AlertCircle
+              v-if="screenHasIssues(index)"
+              class="h-3.5 w-3.5 text-destructive flex-shrink-0"
+              :class="selectedScreenIndex === index ? 'text-primary-foreground/90' : ''"
+            />
             <Button
               v-if="screens.length > 1"
               variant="ghost"
@@ -1024,8 +1532,16 @@ defineExpose({
           <!-- Left: component structure with drag reorder -->
           <div class="flex-1 flex flex-col border-r min-w-0 overflow-hidden">
             <div class="px-3 py-2 border-b flex-shrink-0">
-              <p class="text-xs font-medium text-muted-foreground">Structure</p>
-              <p class="text-[10px] text-muted-foreground">Drag to reorder</p>
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-medium text-muted-foreground">Structure</p>
+                <span
+                  v-if="selectedScreenIssues.some(i => i.severity === 'error')"
+                  class="text-[10px] text-destructive font-medium"
+                >
+                  {{ selectedScreenIssues.filter(i => i.severity === 'error').length }} issue{{ selectedScreenIssues.filter(i => i.severity === 'error').length === 1 ? '' : 's' }}
+                </span>
+              </div>
+              <p class="text-[10px] text-muted-foreground">Drag to reorder · Meta rules validated live</p>
             </div>
             <ScrollArea class="flex-1">
               <div class="p-3">
@@ -1044,7 +1560,9 @@ defineExpose({
                         'rounded-md border bg-card/50 cursor-pointer transition-colors',
                         selectedComponentIndex === index
                           ? 'border-primary ring-1 ring-primary/40'
-                          : 'border-border hover:border-muted-foreground/30'
+                          : componentHasIssues(comp.id)
+                            ? 'border-destructive/60 ring-1 ring-destructive/30'
+                            : 'border-border hover:border-muted-foreground/30'
                       ]"
                       @click="selectComponent(index)"
                     >
@@ -1054,6 +1572,10 @@ defineExpose({
                         </button>
                         <component :is="getComponentIcon(comp.type)" class="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                         <span class="text-xs font-medium truncate flex-1">{{ getComponentLabel(comp) }}</span>
+                        <AlertCircle
+                          v-if="componentHasIssues(comp.id)"
+                          class="h-3.5 w-3.5 text-destructive flex-shrink-0"
+                        />
                         <span class="text-[10px] text-muted-foreground tabular-nums">{{ index + 1 }}</span>
                       </div>
                       <div class="p-2 bg-white/[0.02] light:bg-white/80">
@@ -1332,7 +1854,10 @@ defineExpose({
                               :comp="comp"
                               :label-for-type="typeLabel"
                               playground
+                              :interactive="playgroundInteractive"
+                              :form-values="playgroundFormValues"
                               :dark="playgroundTheme === 'dark'"
+                              @set-form-value="setPlaygroundFormValue"
                             />
                           </div>
                           <div
@@ -1357,7 +1882,10 @@ defineExpose({
                             :comp="playgroundFooter"
                             :label-for-type="typeLabel"
                             playground
+                            :interactive="playgroundInteractive"
+                            :form-values="playgroundFormValues"
                             :dark="playgroundTheme === 'dark'"
+                            @set-form-value="setPlaygroundFormValue"
                           />
                         </div>
 
@@ -1432,6 +1960,18 @@ defineExpose({
       <Separator />
       <ScrollArea class="flex-1">
         <div v-if="selectedComponent" class="p-4 space-y-4">
+          <div
+            v-if="selectedComponentIssues.length"
+            class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 space-y-1"
+          >
+            <p
+              v-for="(issue, i) in selectedComponentIssues"
+              :key="`${issue.code}-${i}`"
+              class="text-[11px] text-destructive leading-snug"
+            >
+              {{ issue.message }}
+            </p>
+          </div>
           <div class="flex items-center justify-between">
             <div class="flex flex-col gap-1 min-w-0">
               <Badge>{{ getComponentLabel(selectedComponent) }}</Badge>
@@ -2067,6 +2607,241 @@ defineExpose({
             </template>
           </div>
 
+          <!-- ChipsSelector extras -->
+          <div v-if="selectedComponent.type === 'ChipsSelector' && !selectedNested" class="space-y-3">
+            <div class="space-y-2">
+              <Label class="text-xs">Description</Label>
+              <Input
+                :model-value="selectedComponent.description || ''"
+                @update:model-value="updateComponentProperty('description', $event)"
+                placeholder="Optional helper text"
+              />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="space-y-1">
+                <Label class="text-xs">Min selected</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  :model-value="selectedComponent['min-selected-items'] ?? ''"
+                  @update:model-value="updateComponentProperty('min-selected-items', $event === '' ? undefined : Number($event))"
+                />
+              </div>
+              <div class="space-y-1">
+                <Label class="text-xs">Max selected</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  :model-value="selectedComponent['max-selected-items'] ?? ''"
+                  @update:model-value="updateComponentProperty('max-selected-items', $event === '' ? undefined : Number($event))"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- NavigationList -->
+          <div v-if="selectedComponent.type === 'NavigationList' && !selectedNested" class="space-y-3">
+            <div class="space-y-2">
+              <Label class="text-xs">Label</Label>
+              <Input
+                :model-value="selectedComponent.label || ''"
+                @update:model-value="updateComponentProperty('label', $event)"
+              />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs">Description</Label>
+              <Input
+                :model-value="selectedComponent.description || ''"
+                @update:model-value="updateComponentProperty('description', $event)"
+              />
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs">Media size</Label>
+              <Select
+                :model-value="selectedComponent['media-size'] || 'regular'"
+                @update:model-value="updateComponentProperty('media-size', $event)"
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="regular">Regular</SelectItem>
+                  <SelectItem value="large">Large</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs">Click action</Label>
+              <Select
+                :model-value="selectedComponent['on-click-action']?.name || 'navigate'"
+                @update:model-value="updateClickAction(String($event))"
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="navigate">Navigate</SelectItem>
+                  <SelectItem value="data_exchange">Data exchange</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div
+              v-if="selectedComponent['on-click-action']?.name === 'navigate'"
+              class="space-y-2"
+            >
+              <Label class="text-xs">Default target screen</Label>
+              <Select
+                :model-value="selectedComponent['on-click-action']?.next?.name || ''"
+                @update:model-value="updateComponentProperty('on-click-action', {
+                  name: 'navigate',
+                  next: { type: 'screen', name: $event },
+                  payload: {},
+                })"
+              >
+                <SelectTrigger><SelectValue placeholder="Select screen" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem
+                    v-for="screen in screens.filter(s => s.id !== selectedScreen?.id)"
+                    :key="screen.id"
+                    :value="screen.id"
+                  >
+                    {{ screen.title }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <Label class="text-xs">List items</Label>
+                <Button variant="ghost" size="sm" class="h-6 text-xs" @click="addNavListItem">
+                  <Plus class="h-3 w-3 mr-1" /> Add
+                </Button>
+              </div>
+              <div
+                v-for="(item, index) in selectedComponent['list-items'] || []"
+                :key="item.id || index"
+                class="space-y-1.5 rounded-md border p-2"
+              >
+                <div class="flex gap-2">
+                  <Input
+                    :model-value="item['main-content']?.title || ''"
+                    @update:model-value="updateNavListItem(Number(index), 'main-content.title', String($event))"
+                    class="text-sm"
+                    placeholder="Title"
+                  />
+                  <Button variant="ghost" size="icon" class="h-9 w-9 shrink-0" @click="removeNavListItem(Number(index))">
+                    <Trash2 class="h-3 w-3" />
+                  </Button>
+                </div>
+                <Input
+                  :model-value="item['main-content']?.description || ''"
+                  @update:model-value="updateNavListItem(Number(index), 'main-content.description', String($event))"
+                  class="text-xs"
+                  placeholder="Description"
+                />
+                <Input
+                  :model-value="(item.tags || []).join(', ')"
+                  @update:model-value="updateNavListItem(Number(index), 'tags', String($event))"
+                  class="text-xs"
+                  placeholder="Tags (comma-separated, max 3)"
+                />
+                <Input
+                  :model-value="item.badge || ''"
+                  @update:model-value="updateNavListItem(Number(index), 'badge', String($event))"
+                  class="text-xs"
+                  placeholder="Badge (optional)"
+                />
+                <div class="flex items-center gap-2">
+                  <label class="inline-flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">
+                    <Upload class="h-3 w-3" />
+                    {{ item.start?.image ? 'Replace img' : 'Start img' }}
+                    <input
+                      type="file"
+                      class="sr-only"
+                      accept="image/jpeg,image/png,image/jpg,.jpg,.jpeg,.png"
+                      @change="onNavItemImageSelected(Number(index), $event)"
+                    />
+                  </label>
+                  <img
+                    v-if="item.start?.image"
+                    :src="imagePreviewSrc(item.start.image)"
+                    class="h-6 w-6 rounded object-cover ml-auto"
+                    alt=""
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ImageCarousel -->
+          <div v-if="selectedComponent.type === 'ImageCarousel' && !selectedNested" class="space-y-3">
+            <div class="space-y-2">
+              <Label class="text-xs">Aspect ratio</Label>
+              <Select
+                :model-value="String(selectedComponent['aspect-ratio'] || '4:3')"
+                @update:model-value="updateComponentProperty('aspect-ratio', $event)"
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="4:3">4:3</SelectItem>
+                  <SelectItem value="16:9">16:9</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs">Scale type</Label>
+              <Select
+                :model-value="selectedComponent['scale-type'] || 'contain'"
+                @update:model-value="updateComponentProperty('scale-type', $event)"
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="contain">Contain</SelectItem>
+                  <SelectItem value="cover">Cover</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <Label class="text-xs">Images (1–3)</Label>
+                <Button variant="ghost" size="sm" class="h-6 text-xs" @click="addCarouselImage">
+                  <Plus class="h-3 w-3 mr-1" /> Add
+                </Button>
+              </div>
+              <div
+                v-for="(img, index) in selectedComponent.images || []"
+                :key="index"
+                class="space-y-1.5 rounded-md border p-2"
+              >
+                <div class="flex gap-2">
+                  <Input
+                    :model-value="img['alt-text'] || ''"
+                    @update:model-value="selectedComponent.images[index]['alt-text'] = String($event)"
+                    class="text-sm"
+                    placeholder="Alt text"
+                  />
+                  <Button variant="ghost" size="icon" class="h-9 w-9 shrink-0" @click="removeCarouselImage(Number(index))">
+                    <Trash2 class="h-3 w-3" />
+                  </Button>
+                </div>
+                <div class="flex items-center gap-2">
+                  <label class="inline-flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">
+                    <Upload class="h-3 w-3" />
+                    {{ img.src ? 'Replace image' : 'Upload image' }}
+                    <input
+                      type="file"
+                      class="sr-only"
+                      accept="image/jpeg,image/png,image/jpg,.jpg,.jpeg,.png"
+                      @change="onCarouselImageSelected(Number(index), $event)"
+                    />
+                  </label>
+                  <img
+                    v-if="img.src"
+                    :src="imagePreviewSrc(img.src)"
+                    class="h-10 w-14 rounded object-cover ml-auto"
+                    alt=""
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- EmbeddedLink actions -->
           <div v-if="selectedComponent.type === 'EmbeddedLink'" class="space-y-3">
             <div class="space-y-2">
@@ -2225,5 +3000,6 @@ defineExpose({
         </div>
       </ScrollArea>
     </Card>
+    </div>
   </div>
 </template>

@@ -5,6 +5,8 @@
     "last7Days": "آخر 7 أيام",
     "last30Days": "آخر 30 يومًا",
     "thisMonth": "هذا الشهر",
+    "last3Months": "آخر 3 أشهر",
+    "thisYear": "هذا العام",
     "customRange": "نطاق مخصص",
     "apply": "تطبيق"
   },
@@ -1315,6 +1317,8 @@
     "showPercentChange": "إظهار نسبة التغيير",
     "fromYesterday": "عن أمس",
     "fromLastMonth": "عن الشهر الماضي",
+    "fromPrevious3Months": "عن الأشهر الثلاثة السابقة",
+    "fromLastYear": "عن العام الماضي",
     "fromPreviousPeriod": "عن الفترة السابقة",
     "fromPrevious7Days": "عن السبعة أيام السابقة",
     "fromPrevious30Days": "عن الثلاثين يوماً السابقة",

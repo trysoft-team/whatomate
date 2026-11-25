@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue'
 import { CalendarDate } from '@internationalized/date'
 
-export type TimeRangePreset = 'today' | '7days' | '30days' | 'this_month' | 'custom'
+export type TimeRangePreset = 'today' | '7days' | '30days' | 'this_month' | '3months' | 'this_year' | 'custom'
 
 export interface DateRangeResult {
   from: string
@@ -76,6 +76,14 @@ export function useDateRange(options: UseDateRangeOptions = {}) {
         break
       case 'this_month':
         from = new Date(now.getFullYear(), now.getMonth(), 1)
+        to = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        break
+      case '3months':
+        from = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
+        to = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+        break
+      case 'this_year':
+        from = new Date(now.getFullYear(), 0, 1)
         to = new Date(now.getFullYear(), now.getMonth(), now.getDate())
         break
       case 'custom':

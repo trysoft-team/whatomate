@@ -1275,6 +1275,8 @@
     "fromPrevious7Days": "முந்தைய 7 நாட்களிலிருந்து",
     "fromPrevious30Days": "முந்தைய 30 நாட்களிலிருந்து",
     "fromLastMonth": "கடந்த மாதத்திலிருந்து",
+    "fromPrevious3Months": "முந்தைய 3 மாதங்களிலிருந்து",
+    "fromLastYear": "கடந்த ஆண்டிலிருந்து",
     "fromPreviousPeriod": "முந்தைய காலத்திலிருந்து",
     "justNow": "இப்போதுதான்",
     "minutesAgo": "{count} நிமி முன்",

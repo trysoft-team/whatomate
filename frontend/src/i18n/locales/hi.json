@@ -1275,6 +1275,8 @@
     "fromPrevious7Days": "7 दिनों से",
     "fromPrevious30Days": "30 दिनों से",
     "fromLastMonth": "महीने से",
+    "fromPrevious3Months": "पिछले 3 महीनों से",
+    "fromLastYear": "पिछले वर्ष से",
     "fromPreviousPeriod": "अवधि से",
     "justNow": "अभी",
     "minutesAgo": "{count}m",

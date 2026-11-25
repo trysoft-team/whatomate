@@ -35,14 +35,16 @@ const { t } = useI18n()
     :model-value="selectedRange"
     @update:model-value="emit('update:selectedRange', $event as TimeRangePreset)"
   >
-    <SelectTrigger class="w-[140px]">
+    <SelectTrigger class="w-[160px]">
       <SelectValue :placeholder="t('dateRange.selectRange', 'Date Range')" />
     </SelectTrigger>
     <SelectContent>
       <SelectItem value="today">{{ t('dateRange.today', 'Today') }}</SelectItem>
       <SelectItem value="7days">{{ t('dateRange.last7Days', 'Last 7 Days') }}</SelectItem>
       <SelectItem value="30days">{{ t('dateRange.last30Days', 'Last 30 Days') }}</SelectItem>
+      <SelectItem value="3months">{{ t('dateRange.last3Months', 'Last 3 Months') }}</SelectItem>
       <SelectItem value="this_month">{{ t('dateRange.thisMonth', 'This Month') }}</SelectItem>
+      <SelectItem value="this_year">{{ t('dateRange.thisYear', 'This Year') }}</SelectItem>
       <SelectItem value="custom">{{ t('dateRange.customRange', 'Custom Range') }}</SelectItem>
     </SelectContent>
   </Select>

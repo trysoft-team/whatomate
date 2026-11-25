@@ -301,6 +301,10 @@ const comparisonPeriodLabel = computed(() => {
       return t('dashboard.fromPrevious30Days')
     case 'this_month':
       return t('dashboard.fromLastMonth')
+    case '3months':
+      return t('dashboard.fromPrevious3Months')
+    case 'this_year':
+      return t('dashboard.fromLastYear')
     case 'custom':
       return t('dashboard.fromPreviousPeriod')
     default:

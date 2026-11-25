@@ -5,6 +5,8 @@
     "last7Days": "Últimos 7 dias",
     "last30Days": "Últimos 30 dias",
     "thisMonth": "Este Mês",
+    "last3Months": "Últimos 3 Meses",
+    "thisYear": "Este Ano",
     "customRange": "Intervalo Personalizado",
     "apply": "Aplicar"
   },
@@ -1507,6 +1509,8 @@
     "fromPrevious7Days": "dos últimos 7 dias",
     "fromPrevious30Days": "dos últimos 30 dias",
     "fromLastMonth": "do último mês",
+    "fromPrevious3Months": "dos últimos 3 meses",
+    "fromLastYear": "do ano passado",
     "fromPreviousPeriod": "do período anterior",
     "justNow": "Agora mesmo",
     "minutesAgo": "{count} meses atrás",
