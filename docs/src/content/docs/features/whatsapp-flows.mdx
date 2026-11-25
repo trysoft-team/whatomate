@@ -19,36 +19,42 @@ Whatomate provides a visual Flow Builder to design and manage your WhatsApp Flow
 
 ### Features
 
-- **Visual Editor** - Design flows with a drag-and-drop interface
-- **Screen Builder** - Create multi-screen experiences
-- **Component Library** - Use native WhatsApp UI components
-- **Preview** - Test your flow before publishing
-- **Sync with Meta** - Push and pull flows from Meta
+- **Visual Editor** — Design flows with a drag-and-drop structure panel
+- **Screen Builder** — Create multi-screen experiences
+- **Full Meta component library** — Text, inputs, media uploads, carousels, navigation lists, If/Switch logic, and more
+- **Interactive playground** — Preview screens like Meta’s Flow playground (form values drive If/Switch branches live)
+- **Live Meta rule validation** — Component limits and exclusivity rules are checked as you edit; save is blocked until errors are fixed
+- **Synced flows stay editable** — Flows pulled from Meta unwrap correctly for editing and re-wrap when you save
+- **Sync with Meta** — Push and pull flows from Meta; duplicate a published flow to revise it as a draft
 
 ## Flow Components
 
-WhatsApp Flows support various UI components:
+WhatsApp Flows support Meta’s native UI components, including:
 
 <CardGrid>
-  <Card title="Text Input" icon="pencil">
-    Single-line and multi-line text fields
+  <Card title="Text" icon="document">
+    Heading, subheading, body, caption, and rich text
   </Card>
-  <Card title="Dropdown" icon="down-caret">
-    Selection menus with multiple options
+  <Card title="Inputs" icon="pencil">
+    Text input, text area, dropdown, radio, checkboxes, chips, opt-in
   </Card>
-  <Card title="Date Picker" icon="seti:clock">
-    Native date selection component
+  <Card title="Dates & media" icon="seti:clock">
+    Date/calendar pickers, image, carousel, photo and document upload
   </Card>
-  <Card title="Radio Buttons" icon="approve-check-circle">
-    Single-select option groups
+  <Card title="Logic" icon="random">
+    If and Switch branches that update live in the playground
   </Card>
-  <Card title="Checkboxes" icon="approve-check">
-    Multi-select options
+  <Card title="Navigation" icon="right-arrow">
+    Navigation list, embedded links, and footer actions
   </Card>
-  <Card title="Buttons" icon="right-arrow">
-    Action buttons for navigation
+  <Card title="Validation" icon="approve-check-circle">
+    Live checks for Meta screen rules (caps, exclusivity, required fields)
   </Card>
 </CardGrid>
+
+<Aside type="note">
+  Meta enforces rules such as one Footer per screen, NavigationList alone on a screen, and PhotoPicker/DocumentPicker exclusivity. The builder surfaces these as you edit and prevents saving until blocking issues are resolved.
+</Aside>
 
 ## Flow Lifecycle
 
@@ -56,7 +62,7 @@ WhatsApp Flows support various UI components:
 
 1. **Create**
 
-   Design your flow using the visual builder or JSON editor.
+   Design your flow using the visual builder (or generate a draft with AI), then edit screens and components.
 
 2. **Save to Meta**
 
@@ -64,7 +70,7 @@ WhatsApp Flows support various UI components:
 
 3. **Test**
 
-   Test the flow in draft mode before publishing.
+   Use the in-builder playground, then test the flow in draft mode on Meta before publishing.
 
 4. **Publish**
 
@@ -119,7 +125,7 @@ POST /api/messages
 ## Best Practices
 
 <Aside type="tip">
-  Keep flows concise - users prefer shorter, focused experiences over lengthy multi-screen journeys.
+  Keep flows concise - users prefer shorter, focused experiences over lengthy multi-screen journeys. Watch the live validation banner for Meta caps (for example, 50 components per screen).
 </Aside>
 
 <Aside type="note">
